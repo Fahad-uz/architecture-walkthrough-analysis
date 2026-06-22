@@ -7,7 +7,7 @@ import trimesh
 from architecture_walkthrough.config import AppConfig
 from architecture_walkthrough.pipeline import build_model
 from architecture_walkthrough.scene.simple_glb import export_simple_glb
-from architecture_walkthrough.geometry.models import FloorPlanModel
+from architecture_walkthrough.geometry.models import FloorPlanModel, FurniturePlacement, Point2D
 
 
 def test_simple_glb_export_writes_loadable_glb(tmp_path: Path) -> None:
@@ -23,3 +23,21 @@ def test_build_model_defaults_to_pure_python_glb_export(tmp_path: Path) -> None:
     output = build_model(Path("tests/fixtures/sample_floorplan.json"), tmp_path / "building.glb", AppConfig())
     assert output.exists()
     assert output.suffix == ".glb"
+
+
+def test_simple_glb_export_includes_furniture_geometry(tmp_path: Path) -> None:
+    model = FloorPlanModel.load_json(Path("tests/fixtures/sample_floorplan.json")).model_copy(
+        update={
+            "furniture": [
+                FurniturePlacement(
+                    category="sofa",
+                    center=Point2D(x=2.0, y=1.5),
+                    width_m=1.6,
+                    depth_m=0.8,
+                )
+            ]
+        }
+    )
+    output = export_simple_glb(model, tmp_path / "building.glb")
+    loaded = trimesh.load(output, force="scene")
+    assert any("Furniture" in name for name in loaded.graph.nodes_geometry)

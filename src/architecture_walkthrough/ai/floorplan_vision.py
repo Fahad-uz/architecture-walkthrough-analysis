@@ -10,7 +10,14 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from architecture_walkthrough.config import AISettings, AppConfig
-from architecture_walkthrough.geometry.models import DoorOpening, Point2D, RoomPolygon, WallSegment, WindowOpening
+from architecture_walkthrough.geometry.models import (
+    DoorOpening,
+    FurniturePlacement,
+    Point2D,
+    RoomPolygon,
+    WallSegment,
+    WindowOpening,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -46,10 +53,20 @@ class AIOpeningHint(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
 
 
+class AIFurnitureHint(BaseModel):
+    category: str
+    center: NormalizedPoint
+    width: float = Field(gt=0.0, le=1.0)
+    depth: float = Field(gt=0.0, le=1.0)
+    rotation_deg: float = 0.0
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
 class FloorPlanVisionHints(BaseModel):
     walls: list[AIWallHint] = Field(default_factory=list)
     rooms: list[AIRoomHint] = Field(default_factory=list)
     openings: list[AIOpeningHint] = Field(default_factory=list)
+    furniture: list[AIFurnitureHint] = Field(default_factory=list)
     notes: str = ""
 
 
@@ -74,7 +91,10 @@ class OpenAIFloorPlanVisionAnalyzer:
         prompt = (
             "Analyze this architectural floor-plan image. Return only JSON. "
             "Use normalized image coordinates from 0 to 1, origin at top-left. "
-            "Identify straight wall centerlines, room polygons, and door/window openings only when visible. "
+            "Identify straight wall centerlines as one segment per wall, not both wall edges. "
+            "Identify room polygons, door/window openings, and furniture footprints separately. "
+            "Furniture includes beds, sofas, chairs, tables, kitchen counters, wardrobes, fixtures, and plants. "
+            "Do not classify furniture outlines, labels, tiles, stairs, or shadows as walls. "
             "Prefer fewer high-confidence segments over noisy guesses. "
             "Do not invent hidden geometry."
         )
@@ -117,11 +137,17 @@ def hints_to_floorplan_geometry(
     image_height_px: int,
     pixels_per_metre: float,
     config: AppConfig,
-) -> tuple[list[WallSegment], list[RoomPolygon], list[DoorOpening], list[WindowOpening]]:
+) -> tuple[
+    list[WallSegment],
+    list[RoomPolygon],
+    list[DoorOpening],
+    list[WindowOpening],
+    list[FurniturePlacement],
+]:
     def to_point(point: NormalizedPoint) -> Point2D:
         return Point2D(
             x=(point.x * image_width_px) / pixels_per_metre,
-            y=(point.y * image_height_px) / pixels_per_metre,
+            y=((1.0 - point.y) * image_height_px) / pixels_per_metre,
         )
 
     walls = [
@@ -155,4 +181,15 @@ def hints_to_floorplan_geometry(
                     sill_height_m=config.defaults.sill_height_m,
                 )
             )
-    return walls, rooms, doors, windows
+    furniture = [
+        FurniturePlacement(
+            category=hint.category,
+            center=to_point(hint.center),
+            width_m=(hint.width * image_width_px) / pixels_per_metre,
+            depth_m=(hint.depth * image_height_px) / pixels_per_metre,
+            rotation_deg=hint.rotation_deg,
+        )
+        for hint in hints.furniture
+        if hint.confidence >= config.ai.openai_min_confidence
+    ]
+    return walls, rooms, doors, windows, furniture

@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import trimesh
 
-from architecture_walkthrough.geometry.models import FloorPlanModel, Point2D, WallSegment
+from architecture_walkthrough.geometry.models import FloorPlanModel, FurniturePlacement, Point2D, WallSegment
 
 
 def _wall_mesh(wall: WallSegment) -> trimesh.Trimesh:
@@ -43,6 +43,16 @@ def _floor_mesh(model: FloorPlanModel) -> trimesh.Trimesh:
     return trimesh.creation.box(extents=[width, depth, 0.1], transform=transform)
 
 
+def _furniture_mesh(item: FurniturePlacement) -> trimesh.Trimesh:
+    height = 0.45 if item.category.lower() in {"table", "coffee_table", "chair"} else 0.8
+    transform = trimesh.transformations.rotation_matrix(math.radians(item.rotation_deg), [0, 0, 1])
+    transform[:3, 3] = [item.center.x, item.center.y, height / 2]
+    return trimesh.creation.box(
+        extents=[item.width_m, item.depth_m, height],
+        transform=transform,
+    )
+
+
 def export_simple_glb(model: FloorPlanModel, output_glb: Path) -> Path:
     if not model.walls:
         raise ValueError("cannot export GLB: floorplan contains no wall geometry")
@@ -53,6 +63,12 @@ def export_simple_glb(model: FloorPlanModel, output_glb: Path) -> Path:
     scene.add_geometry(meshes[0], node_name="Floor_Slab", geom_name="Floor_Slab")
     for index, mesh in enumerate(meshes[1:]):
         scene.add_geometry(mesh, node_name=f"Wall_{index:03d}", geom_name=f"Wall_{index:03d}")
+    for index, item in enumerate(model.furniture):
+        scene.add_geometry(
+            _furniture_mesh(item),
+            node_name=f"Furniture_{index:03d}_{item.category}",
+            geom_name=f"Furniture_{index:03d}_{item.category}",
+        )
     exported = scene.export(file_type="glb")
     if isinstance(exported, str):
         output_glb.write_text(exported, encoding="utf-8")

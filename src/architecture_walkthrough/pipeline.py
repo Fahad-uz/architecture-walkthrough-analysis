@@ -22,15 +22,25 @@ from architecture_walkthrough.security.file_validation import validate_image_fil
 LOGGER = logging.getLogger(__name__)
 
 
-def _convert_walls_to_metres(walls: list[WallSegment], pixels_per_metre: float) -> list[WallSegment]:
+def _convert_walls_to_metres(
+    walls: list[WallSegment],
+    pixels_per_metre: float,
+    image_height_px: int,
+) -> list[WallSegment]:
     converter = ScaleConverter(pixels_per_metre=pixels_per_metre)
     converted: list[WallSegment] = []
     for wall in walls:
         converted.append(
             wall.model_copy(
                 update={
-                    "start": Point2D(x=converter.px_to_m(wall.start.x), y=converter.px_to_m(wall.start.y)),
-                    "end": Point2D(x=converter.px_to_m(wall.end.x), y=converter.px_to_m(wall.end.y)),
+                    "start": Point2D(
+                        x=converter.px_to_m(wall.start.x),
+                        y=converter.px_to_m(image_height_px - wall.start.y),
+                    ),
+                    "end": Point2D(
+                        x=converter.px_to_m(wall.end.x),
+                        y=converter.px_to_m(image_height_px - wall.end.y),
+                    ),
                 }
             )
         )
@@ -70,9 +80,10 @@ def analyze_image(input_path: Path, output_dir: Path, config: AppConfig, manual_
     rooms = []
     doors = []
     windows = []
+    furniture = []
     ai_wall_count = 0
     if ai_hints:
-        ai_walls, rooms, doors, windows = hints_to_floorplan_geometry(
+        ai_walls, rooms, doors, windows, furniture = hints_to_floorplan_geometry(
             ai_hints,
             image_width_px=resized_width,
             image_height_px=resized_height,
@@ -80,9 +91,9 @@ def analyze_image(input_path: Path, output_dir: Path, config: AppConfig, manual_
             config=config,
         )
         ai_wall_count = len(ai_walls)
-        walls = ai_walls if ai_walls else _convert_walls_to_metres(cv_walls, pixels_per_metre)
+        walls = ai_walls if ai_walls else _convert_walls_to_metres(cv_walls, pixels_per_metre, resized_height)
     else:
-        walls = _convert_walls_to_metres(cv_walls, pixels_per_metre)
+        walls = _convert_walls_to_metres(cv_walls, pixels_per_metre, resized_height)
     if not walls:
         walls = _fallback_perimeter_walls(resized_width, resized_height, pixels_per_metre, config)
     model = FloorPlanModel(
@@ -92,6 +103,7 @@ def analyze_image(input_path: Path, output_dir: Path, config: AppConfig, manual_
         doors=doors,
         windows=windows,
         rooms=rooms,
+        furniture=furniture,
         metadata={
             "source_image": str(input_path),
             "preprocessing": {key: str(value) for key, value in result.__dict__.items()},
@@ -99,6 +111,7 @@ def analyze_image(input_path: Path, output_dir: Path, config: AppConfig, manual_
             "approximate_reconstruction": True,
             "ai_assist_enabled": config.ai.openai_enabled,
             "ai_wall_hints_used": ai_wall_count,
+            "ai_furniture_hints_used": len(furniture),
         },
     )
     model.save_json(output_dir / "floorplan.json")
