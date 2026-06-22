@@ -1,0 +1,10 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      ARCH_WALK_CONFIG: configs/default.yaml
+    volumes:
+      - ./outputs:/app/outputs
+      - ./assets:/app/assets:ro

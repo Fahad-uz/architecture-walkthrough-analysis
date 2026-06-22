@@ -1,0 +1,35 @@
+paths:
+  work_root: outputs
+  blender_executable: blender
+  ffmpeg_executable: ffmpeg
+limits:
+  max_upload_mb: 20
+  max_image_width: 6000
+  max_image_height: 6000
+  processing_timeout_seconds: 120
+  subprocess_timeout_seconds: 600
+  max_frames: 900
+  preview_resolution:
+    width: 960
+    height: 540
+  final_resolution:
+    width: 1920
+    height: 1080
+defaults:
+  wall_height_m: 3.0
+  external_wall_thickness_m: 0.20
+  internal_wall_thickness_m: 0.12
+  door_width_m: 0.90
+  door_height_m: 2.10
+  window_width_m: 1.20
+  window_height_m: 1.20
+  sill_height_m: 0.90
+  camera_height_m: 1.65
+ai:
+  segmentation_checkpoint: null
+  device: cpu
+render:
+  preview_samples: 16
+  final_samples: 96
+  preview_fps: 24
+  camera_speed_mps: 1.0

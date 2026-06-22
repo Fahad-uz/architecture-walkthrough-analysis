@@ -1,0 +1,19 @@
+{
+  "coordinate_system": "metres",
+  "walls": [
+    {"start": {"x": 0, "y": 0}, "end": {"x": 4, "y": 0}, "thickness_m": 0.2, "height_m": 3.0, "external": true},
+    {"start": {"x": 4, "y": 0}, "end": {"x": 4, "y": 3}, "thickness_m": 0.2, "height_m": 3.0, "external": true},
+    {"start": {"x": 4, "y": 3}, "end": {"x": 0, "y": 3}, "thickness_m": 0.2, "height_m": 3.0, "external": true},
+    {"start": {"x": 0, "y": 3}, "end": {"x": 0, "y": 0}, "thickness_m": 0.2, "height_m": 3.0, "external": true}
+  ],
+  "doors": [{"center": {"x": 2, "y": 0}, "width_m": 0.9}],
+  "windows": [],
+  "rooms": [{"name": "Room", "points": [{"x": 0.3, "y": 0.3}, {"x": 3.7, "y": 0.3}, {"x": 3.7, "y": 2.7}, {"x": 0.3, "y": 2.7}]}],
+  "furniture": [],
+  "entrance": {"x": 2, "y": 0.5},
+  "camera_waypoints": [
+    {"position": {"x": 2, "y": 0.5}, "look_at": {"x": 2, "y": 2.5}, "pause_seconds": 0},
+    {"position": {"x": 2, "y": 2.5}, "look_at": {"x": 2, "y": 0.5}, "pause_seconds": 1}
+  ],
+  "metadata": {"fixture": true}
+}
