@@ -36,8 +36,9 @@ bpy.ops.render.render(animation=True)
     return f"""
 import bpy
 import math
+import json
 
-floorplan = {data}
+floorplan = json.loads({data!r})
 
 bpy.ops.object.select_all(action="SELECT")
 bpy.ops.object.delete()

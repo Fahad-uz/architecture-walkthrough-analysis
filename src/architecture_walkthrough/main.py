@@ -5,7 +5,7 @@ from pathlib import Path
 
 from architecture_walkthrough.config import load_config
 from architecture_walkthrough.logging_config import configure_logging
-from architecture_walkthrough.pipeline import analyze_image, build_model, render_walkthrough
+from architecture_walkthrough.pipeline import analyze_image, build_model, convert_image_to_glb, render_walkthrough
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -23,6 +23,13 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--output", required=True)
     build.add_argument("--use-blender", action="store_true", help="Use Blender instead of the default pure-Python GLB exporter")
     build.add_argument("--no-run-blender", action="store_true")
+
+    image_to_glb = sub.add_parser("image-to-glb")
+    image_to_glb.add_argument("--input", required=True)
+    image_to_glb.add_argument("--output", required=True)
+    image_to_glb.add_argument("--work-dir", default=None)
+    image_to_glb.add_argument("--manual-scale", type=float, default=None, help="metres per pixel")
+    image_to_glb.add_argument("--use-blender", action="store_true", help="Use Blender instead of the default pure-Python GLB exporter")
 
     walk = sub.add_parser("walkthrough")
     walk.add_argument("--floorplan", required=True)
@@ -47,6 +54,16 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "build-model":
         build_model(Path(args.floorplan), Path(args.output), config, run_blender=args.use_blender)
+        return 0
+    if args.command == "image-to-glb":
+        convert_image_to_glb(
+            Path(args.input),
+            Path(args.output),
+            config,
+            manual_scale=args.manual_scale,
+            work_dir=Path(args.work_dir) if args.work_dir else None,
+            run_blender=args.use_blender,
+        )
         return 0
     if args.command == "walkthrough":
         render_walkthrough(Path(args.floorplan), Path(args.output), config, args.mode)

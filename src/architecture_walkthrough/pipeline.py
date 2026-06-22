@@ -16,6 +16,7 @@ from architecture_walkthrough.vision.wall_detection import detect_wall_lines
 from architecture_walkthrough.walkthrough.camera_animation import waypoints_from_points
 from architecture_walkthrough.walkthrough.path_planner import manual_or_auto_waypoints
 from architecture_walkthrough.walkthrough.render_video import encode_frames_to_mp4
+from architecture_walkthrough.security.file_validation import validate_image_file
 
 LOGGER = logging.getLogger(__name__)
 
@@ -86,6 +87,25 @@ def analyze_image(input_path: Path, output_dir: Path, config: AppConfig, manual_
 def build_model(floorplan_path: Path, output_glb: Path, config: AppConfig, run_blender: bool = False) -> Path:
     model = FloorPlanModel.load_json(floorplan_path)
     return export_floorplan_glb(model, output_glb, config, run_blender=run_blender)
+
+
+def convert_image_to_glb(
+    input_image: Path,
+    output_glb: Path,
+    config: AppConfig,
+    manual_scale: float | None = None,
+    work_dir: Path | None = None,
+    run_blender: bool = False,
+) -> Path:
+    validate_image_file(input_image, config.limits)
+    if output_glb.suffix.lower() != ".glb":
+        raise ValueError("output path must end with .glb")
+    work_dir = work_dir or output_glb.parent / f"{output_glb.stem}_work"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    model = analyze_image(input_image, work_dir, config, manual_scale=manual_scale)
+    floorplan_path = work_dir / "floorplan.json"
+    model.save_json(floorplan_path)
+    return build_model(floorplan_path, output_glb, config, run_blender=run_blender)
 
 
 def prepare_walkthrough_floorplan(floorplan_path: Path, output_path: Path) -> FloorPlanModel:

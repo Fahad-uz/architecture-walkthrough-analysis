@@ -19,4 +19,6 @@ def export_floorplan_glb(model: FloorPlanModel, output_glb: Path, config: AppCon
     script_path.write_text(build_blender_script(model, output_glb, preview, blend), encoding="utf-8")
     if run_blender:
         run_blender_script(str(config.paths.blender_executable), script_path, config.limits.subprocess_timeout_seconds)
+        if not output_glb.exists():
+            raise RuntimeError(f"Blender completed without creating expected GLB: {output_glb}")
     return output_glb
