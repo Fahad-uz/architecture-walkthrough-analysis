@@ -45,6 +45,9 @@ class GeometryDefaults(BaseModel):
 class AISettings(BaseModel):
     segmentation_checkpoint: Path | None = None
     device: str = "cpu"
+    openai_enabled: bool = False
+    openai_model: str = "gpt-5.5"
+    openai_min_confidence: float = Field(default=0.55, ge=0.0, le=1.0)
 
 
 class RenderSettings(BaseModel):

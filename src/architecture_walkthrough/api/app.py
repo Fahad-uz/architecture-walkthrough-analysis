@@ -66,6 +66,7 @@ UPLOAD_PAGE = """
   <h1>Architecture Walkthrough Analysis</h1>
   <form id="upload-form">
     <input name="file" type="file" accept="image/png,image/jpeg,image/webp" required>
+    <label><input name="use_openai" type="checkbox" value="true"> Use OpenAI vision assist</label>
     <button type="submit">Create GLB</button>
   </form>
   <p id="download"></p>
@@ -105,7 +106,7 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     @app.post("/jobs", response_model=JobRecord)
-    async def create_job(file: UploadFile = File(...)) -> JobRecord:
+    async def create_job(file: UploadFile = File(...), use_openai: bool = False) -> JobRecord:
         record = runner.create_job()
         job_dir = config.paths.work_root / record.job_id
         suffix = Path(file.filename or "").suffix.lower()
@@ -116,6 +117,7 @@ def create_app() -> FastAPI:
             validated = validate_image_file(upload_path, config.limits, file.content_type)
             safe_path = job_dir / validated.safe_filename
             upload_path.replace(safe_path)
+            config.ai.openai_enabled = use_openai or config.ai.openai_enabled
             analyze_image(safe_path, job_dir, config)
             build_model(job_dir / "floorplan.json", job_dir / "building.glb", config, run_blender=False)
         except ValueError as exc:

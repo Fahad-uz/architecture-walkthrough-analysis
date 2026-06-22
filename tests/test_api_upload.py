@@ -28,3 +28,4 @@ def test_app_exposes_upload_and_download_routes() -> None:
     assert "/jobs" in routes
     assert "/jobs/{job_id}/artifacts/{artifact_name}" in routes
     assert "Create GLB" in UPLOAD_PAGE
+    assert "Use OpenAI vision assist" in UPLOAD_PAGE

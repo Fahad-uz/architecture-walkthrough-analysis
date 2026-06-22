@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 
 from architecture_walkthrough.config import AppConfig
+from architecture_walkthrough.ai.floorplan_vision import OpenAIFloorPlanVisionAnalyzer, hints_to_floorplan_geometry
 from architecture_walkthrough.geometry.cleanup import cleanup_walls
 from architecture_walkthrough.geometry.models import CoordinateSystem, FloorPlanModel
 from architecture_walkthrough.geometry.models import Point2D, WallSegment
@@ -53,7 +54,7 @@ def _fallback_perimeter_walls(width_px: int, height_px: int, pixels_per_metre: f
 def analyze_image(input_path: Path, output_dir: Path, config: AppConfig, manual_scale: float | None = None) -> FloorPlanModel:
     debug_dir = output_dir / "debug"
     result = preprocess_image(input_path, debug_dir)
-    walls = detect_wall_lines(
+    cv_walls = detect_wall_lines(
         result.edges_path,
         thickness_m=config.defaults.internal_wall_thickness_m,
         height_m=config.defaults.wall_height_m,
@@ -65,18 +66,39 @@ def analyze_image(input_path: Path, output_dir: Path, config: AppConfig, manual_
     else:
         pixels_per_metre = max(resized_width, resized_height) / config.defaults.auto_plan_long_side_m
         scale_source = "auto_assumed_long_side"
-    walls = _convert_walls_to_metres(walls, pixels_per_metre)
+    ai_hints = OpenAIFloorPlanVisionAnalyzer(config.ai).analyze(input_path)
+    rooms = []
+    doors = []
+    windows = []
+    ai_wall_count = 0
+    if ai_hints:
+        ai_walls, rooms, doors, windows = hints_to_floorplan_geometry(
+            ai_hints,
+            image_width_px=resized_width,
+            image_height_px=resized_height,
+            pixels_per_metre=pixels_per_metre,
+            config=config,
+        )
+        ai_wall_count = len(ai_walls)
+        walls = ai_walls if ai_walls else _convert_walls_to_metres(cv_walls, pixels_per_metre)
+    else:
+        walls = _convert_walls_to_metres(cv_walls, pixels_per_metre)
     if not walls:
         walls = _fallback_perimeter_walls(resized_width, resized_height, pixels_per_metre, config)
     model = FloorPlanModel(
         coordinate_system=CoordinateSystem.METRES,
         pixels_per_metre=pixels_per_metre,
         walls=cleanup_walls(walls),
+        doors=doors,
+        windows=windows,
+        rooms=rooms,
         metadata={
             "source_image": str(input_path),
             "preprocessing": {key: str(value) for key, value in result.__dict__.items()},
             "scale_source": scale_source,
             "approximate_reconstruction": True,
+            "ai_assist_enabled": config.ai.openai_enabled,
+            "ai_wall_hints_used": ai_wall_count,
         },
     )
     model.save_json(output_dir / "floorplan.json")

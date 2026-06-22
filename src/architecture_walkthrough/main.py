@@ -30,6 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     image_to_glb.add_argument("--work-dir", default=None)
     image_to_glb.add_argument("--manual-scale", type=float, default=None, help="metres per pixel")
     image_to_glb.add_argument("--use-blender", action="store_true", help="Use Blender instead of the default pure-Python GLB exporter")
+    image_to_glb.add_argument("--use-openai", action="store_true", help="Use OpenAI vision hints when OPENAI_API_KEY is configured")
 
     walk = sub.add_parser("walkthrough")
     walk.add_argument("--floorplan", required=True)
@@ -41,6 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_all.add_argument("--output", required=True)
     run_all.add_argument("--manual-scale", type=float, default=None)
     run_all.add_argument("--use-blender", action="store_true", help="Use Blender instead of the default pure-Python GLB exporter")
+    run_all.add_argument("--use-openai", action="store_true", help="Use OpenAI vision hints when OPENAI_API_KEY is configured")
     run_all.add_argument("--no-run-blender", action="store_true")
     return parser
 
@@ -56,6 +58,8 @@ def main(argv: list[str] | None = None) -> int:
         build_model(Path(args.floorplan), Path(args.output), config, run_blender=args.use_blender)
         return 0
     if args.command == "image-to-glb":
+        if args.use_openai:
+            config.ai.openai_enabled = True
         convert_image_to_glb(
             Path(args.input),
             Path(args.output),
@@ -69,6 +73,8 @@ def main(argv: list[str] | None = None) -> int:
         render_walkthrough(Path(args.floorplan), Path(args.output), config, args.mode)
         return 0
     if args.command == "run-all":
+        if args.use_openai:
+            config.ai.openai_enabled = True
         out = Path(args.output)
         analyze_image(Path(args.input), out / "debug", config, args.manual_scale)
         build_model(out / "debug" / "floorplan.json", out / "models" / "building.glb", config, run_blender=args.use_blender)
