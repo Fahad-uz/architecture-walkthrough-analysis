@@ -4,7 +4,7 @@ import json
 import shutil
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
@@ -66,7 +66,7 @@ UPLOAD_PAGE = """
   <h1>Architecture Walkthrough Analysis</h1>
   <form id="upload-form">
     <input name="file" type="file" accept="image/png,image/jpeg,image/webp" required>
-    <label><input name="use_openai" type="checkbox" value="true"> Use OpenAI vision assist</label>
+    <label><input name="use_openai" type="checkbox" value="true" checked> Use OpenAI vision assist</label>
     <button type="submit">Create GLB</button>
   </form>
   <p id="download"></p>
@@ -106,7 +106,7 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     @app.post("/jobs", response_model=JobRecord)
-    async def create_job(file: UploadFile = File(...), use_openai: bool = False) -> JobRecord:
+    async def create_job(file: UploadFile = File(...), use_openai: bool = Form(True)) -> JobRecord:
         record = runner.create_job()
         job_dir = config.paths.work_root / record.job_id
         suffix = Path(file.filename or "").suffix.lower()
