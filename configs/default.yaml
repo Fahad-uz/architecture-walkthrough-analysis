@@ -19,6 +19,7 @@ defaults:
   wall_height_m: 3.0
   external_wall_thickness_m: 0.20
   internal_wall_thickness_m: 0.12
+  auto_plan_long_side_m: 12.0
   door_width_m: 0.90
   door_height_m: 2.10
   window_width_m: 1.20

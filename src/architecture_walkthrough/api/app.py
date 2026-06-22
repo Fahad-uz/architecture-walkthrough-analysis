@@ -58,11 +58,12 @@ def create_app() -> FastAPI:
             safe_path = job_dir / validated.safe_filename
             upload_path.replace(safe_path)
             analyze_image(safe_path, job_dir, config)
+            build_model(job_dir / "floorplan.json", job_dir / "building.glb", config, run_blender=False)
         except ValueError as exc:
             record.status = "rejected"
             record.message = str(exc)
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        record.status = "analyzed"
+        record.status = "model_generated"
         return record
 
     @app.get("/jobs/{job_id}", response_model=JobRecord)
@@ -85,7 +86,7 @@ def create_app() -> FastAPI:
         if not floorplan.exists():
             floorplan = job_dir / "floorplan.json"
         output = job_dir / "building.glb"
-        build_model(floorplan, output, config)
+        build_model(floorplan, output, config, run_blender=False)
         return {"artifact": str(output)}
 
     @app.post("/jobs/{job_id}/generate-walkthrough")

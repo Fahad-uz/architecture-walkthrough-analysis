@@ -21,6 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     build = sub.add_parser("build-model")
     build.add_argument("--floorplan", required=True)
     build.add_argument("--output", required=True)
+    build.add_argument("--use-blender", action="store_true", help="Use Blender instead of the default pure-Python GLB exporter")
     build.add_argument("--no-run-blender", action="store_true")
 
     walk = sub.add_parser("walkthrough")
@@ -32,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_all.add_argument("--input", required=True)
     run_all.add_argument("--output", required=True)
     run_all.add_argument("--manual-scale", type=float, default=None)
+    run_all.add_argument("--use-blender", action="store_true", help="Use Blender instead of the default pure-Python GLB exporter")
     run_all.add_argument("--no-run-blender", action="store_true")
     return parser
 
@@ -44,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
         analyze_image(Path(args.input), Path(args.output), config, args.manual_scale)
         return 0
     if args.command == "build-model":
-        build_model(Path(args.floorplan), Path(args.output), config, run_blender=not args.no_run_blender)
+        build_model(Path(args.floorplan), Path(args.output), config, run_blender=args.use_blender)
         return 0
     if args.command == "walkthrough":
         render_walkthrough(Path(args.floorplan), Path(args.output), config, args.mode)
@@ -52,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run-all":
         out = Path(args.output)
         analyze_image(Path(args.input), out / "debug", config, args.manual_scale)
-        build_model(out / "debug" / "floorplan.json", out / "models" / "building.glb", config, run_blender=not args.no_run_blender)
+        build_model(out / "debug" / "floorplan.json", out / "models" / "building.glb", config, run_blender=args.use_blender)
         return 0
     return 2
 

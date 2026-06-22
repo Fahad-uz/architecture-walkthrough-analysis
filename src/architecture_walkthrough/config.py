@@ -33,6 +33,7 @@ class GeometryDefaults(BaseModel):
     wall_height_m: PositiveFloat = 3.0
     external_wall_thickness_m: PositiveFloat = 0.20
     internal_wall_thickness_m: PositiveFloat = 0.12
+    auto_plan_long_side_m: PositiveFloat = 12.0
     door_width_m: PositiveFloat = 0.90
     door_height_m: PositiveFloat = 2.10
     window_width_m: PositiveFloat = 1.20
