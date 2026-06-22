@@ -13,6 +13,7 @@ from architecture_walkthrough.scene.export_glb import export_floorplan_glb
 from architecture_walkthrough.scene.blender_runner import run_blender_script
 from architecture_walkthrough.scene.scene_builder import build_blender_script
 from architecture_walkthrough.vision.preprocessing import preprocess_image
+from architecture_walkthrough.vision.furniture_detection import detect_furniture_from_image, suggest_rendered_plan_furniture
 from architecture_walkthrough.vision.wall_detection import detect_wall_lines
 from architecture_walkthrough.walkthrough.camera_animation import waypoints_from_points
 from architecture_walkthrough.walkthrough.path_planner import manual_or_auto_waypoints
@@ -77,11 +78,14 @@ def analyze_image(input_path: Path, output_dir: Path, config: AppConfig, manual_
         pixels_per_metre = max(resized_width, resized_height) / config.defaults.auto_plan_long_side_m
         scale_source = "auto_assumed_long_side"
     ai_hints = OpenAIFloorPlanVisionAnalyzer(config.ai).analyze(input_path)
+    detected_furniture = detect_furniture_from_image(input_path, pixels_per_metre, resized_height)
+    template_furniture = suggest_rendered_plan_furniture(resized_width, resized_height, pixels_per_metre)
     rooms = []
     doors = []
     windows = []
     furniture = []
     ai_wall_count = 0
+    ai_furniture_count = 0
     if ai_hints:
         ai_walls, rooms, doors, windows, furniture = hints_to_floorplan_geometry(
             ai_hints,
@@ -91,9 +95,16 @@ def analyze_image(input_path: Path, output_dir: Path, config: AppConfig, manual_
             config=config,
         )
         ai_wall_count = len(ai_walls)
+        ai_furniture_count = len(furniture)
         walls = ai_walls if ai_walls else _convert_walls_to_metres(cv_walls, pixels_per_metre, resized_height)
+        if not furniture:
+            furniture = detected_furniture
     else:
         walls = _convert_walls_to_metres(cv_walls, pixels_per_metre, resized_height)
+        furniture = detected_furniture
+    semantic_categories = {item.category for item in furniture}
+    if len(furniture) < 15 or semantic_categories <= {"furniture"}:
+        furniture = _merge_furniture(furniture, template_furniture)
     if not walls:
         walls = _fallback_perimeter_walls(resized_width, resized_height, pixels_per_metre, config)
     model = FloorPlanModel(
@@ -111,12 +122,23 @@ def analyze_image(input_path: Path, output_dir: Path, config: AppConfig, manual_
             "approximate_reconstruction": True,
             "ai_assist_enabled": config.ai.openai_enabled,
             "ai_wall_hints_used": ai_wall_count,
-            "ai_furniture_hints_used": len(furniture),
+            "ai_furniture_hints_used": ai_furniture_count,
+            "local_furniture_hints_used": len(detected_furniture),
+            "template_furniture_hints_used": len(template_furniture),
         },
     )
     model.save_json(output_dir / "floorplan.json")
     LOGGER.info("saved floorplan JSON to %s", output_dir / "floorplan.json")
     return model
+
+
+def _merge_furniture(base: list, additions: list) -> list:
+    merged = list(base)
+    for item in additions:
+        if any(item.center.distance_to(existing.center) < max(0.35, min(item.width_m, item.depth_m) * 0.5) for existing in merged):
+            continue
+        merged.append(item)
+    return merged
 
 
 def build_model(floorplan_path: Path, output_glb: Path, config: AppConfig, run_blender: bool = False) -> Path:

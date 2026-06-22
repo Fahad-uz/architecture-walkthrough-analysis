@@ -41,3 +41,22 @@ def test_simple_glb_export_includes_furniture_geometry(tmp_path: Path) -> None:
     output = export_simple_glb(model, tmp_path / "building.glb")
     loaded = trimesh.load(output, force="scene")
     assert any("Furniture" in name for name in loaded.graph.nodes_geometry)
+
+
+def test_simple_glb_export_builds_multi_part_furniture(tmp_path: Path) -> None:
+    model = FloorPlanModel.load_json(Path("tests/fixtures/sample_floorplan.json")).model_copy(
+        update={
+            "furniture": [
+                FurniturePlacement(
+                    category="bed",
+                    center=Point2D(x=2.0, y=1.5),
+                    width_m=1.8,
+                    depth_m=2.2,
+                )
+            ]
+        }
+    )
+    output = export_simple_glb(model, tmp_path / "building.glb")
+    loaded = trimesh.load(output, force="scene")
+    furniture_nodes = [name for name in loaded.graph.nodes_geometry if "Furniture" in name]
+    assert len(furniture_nodes) >= 4
