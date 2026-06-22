@@ -134,8 +134,28 @@ def analyze_image(input_path: Path, output_dir: Path, config: AppConfig, manual_
 
 def _merge_furniture(base: list, additions: list) -> list:
     merged = list(base)
+    always_keep_prefixes = (
+        "floor_patch",
+        "railing",
+        "stair",
+        "door",
+        "window",
+        "lamp",
+        "sink",
+        "stove",
+        "appliance",
+        "tv",
+        "wardrobe",
+    )
     for item in additions:
-        if any(item.center.distance_to(existing.center) < max(0.35, min(item.width_m, item.depth_m) * 0.5) for existing in merged):
+        if item.category.startswith(always_keep_prefixes):
+            merged.append(item)
+            continue
+        if any(
+            item.category == existing.category
+            and item.center.distance_to(existing.center) < max(0.35, min(item.width_m, item.depth_m) * 0.5)
+            for existing in merged
+        ):
             continue
         merged.append(item)
     return merged

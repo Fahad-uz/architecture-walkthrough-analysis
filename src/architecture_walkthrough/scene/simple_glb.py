@@ -12,6 +12,11 @@ RGBA = tuple[int, int, int, int]
 
 COLORS: dict[str, RGBA] = {
     "floor": (218, 205, 185, 255),
+    "floor_marble": (224, 214, 196, 255),
+    "floor_balcony": (154, 90, 55, 255),
+    "floor_kitchen": (105, 32, 25, 255),
+    "floor_bath": (150, 145, 137, 255),
+    "floor_lift": (88, 89, 88, 255),
     "wall": (230, 226, 218, 255),
     "wall_cap": (105, 108, 108, 255),
     "bed": (116, 116, 63, 255),
@@ -25,6 +30,10 @@ COLORS: dict[str, RGBA] = {
     "plant": (40, 118, 45, 255),
     "pillow": (232, 224, 203, 255),
     "fixture": (238, 238, 232, 255),
+    "glass": (125, 172, 190, 180),
+    "door": (128, 74, 34, 255),
+    "metal": (38, 40, 42, 255),
+    "step": (196, 181, 158, 255),
     "dark": (48, 48, 44, 255),
     "pot": (104, 69, 43, 255),
 }
@@ -122,12 +131,17 @@ def _table_meshes(item: FurniturePlacement, color: RGBA) -> list[trimesh.Trimesh
 
 def _sofa_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
     arm = min(item.depth_m * 0.18, 0.18)
-    return [
+    meshes = [
         _part(item, 0, 0, item.width_m, item.depth_m, 0.32, COLORS["sofa"], 0.28),
         _part(item, 0, item.depth_m * 0.44, item.width_m, arm, 0.82, COLORS["sofa"], 0.42),
         _part(item, -item.width_m * 0.48, 0, arm, item.depth_m, 0.62, COLORS["sofa"], 0.34),
         _part(item, item.width_m * 0.48, 0, arm, item.depth_m, 0.62, COLORS["sofa"], 0.34),
     ]
+    cushion_count = max(1, min(4, round(item.width_m / 0.6)))
+    for index in range(cushion_count):
+        local_x = (index - (cushion_count - 1) / 2) * (item.width_m / cushion_count)
+        meshes.append(_part(item, local_x, -item.depth_m * 0.04, item.width_m / cushion_count * 0.82, item.depth_m * 0.55, 0.08, COLORS["bed"], 0.48))
+    return meshes
 
 
 def _bed_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
@@ -142,6 +156,80 @@ def _bed_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
     return meshes
 
 
+def _floor_patch_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
+    category = item.category.lower()
+    if "balcony" in category:
+        color = COLORS["floor_balcony"]
+    elif "kitchen" in category:
+        color = COLORS["floor_kitchen"]
+    elif "bath" in category:
+        color = COLORS["floor_bath"]
+    elif "lift" in category:
+        color = COLORS["floor_lift"]
+    else:
+        color = COLORS["floor_marble"]
+    return [_part(item, 0, 0, item.width_m, item.depth_m, 0.035, color, 0.02)]
+
+
+def _railing_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
+    if "post" in item.category.lower():
+        return [_part(item, 0, 0, item.width_m, item.depth_m, 0.95, COLORS["metal"], 0.48)]
+    meshes = [
+        _part(item, 0, 0, item.width_m, item.depth_m, 0.08, COLORS["metal"], 0.95),
+        _part(item, 0, 0, item.width_m, item.depth_m, 0.06, COLORS["metal"], 0.45),
+    ]
+    post_count = max(2, int(item.width_m / 0.45))
+    for index in range(post_count + 1):
+        local_x = -item.width_m / 2 + item.width_m * index / post_count
+        meshes.append(_part(item, local_x, 0, 0.04, 0.05, 0.9, COLORS["metal"], 0.45))
+    return meshes
+
+
+def _door_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
+    return [
+        _part(item, 0, 0, item.width_m, item.depth_m, 2.0, COLORS["door"], 1.0),
+        _part(item, 0, -item.depth_m * 0.38, item.width_m * 1.3, 0.05, 0.05, COLORS["metal"], 1.05),
+    ]
+
+
+def _window_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
+    return [
+        _part(item, 0, 0, item.width_m, item.depth_m, 1.1, COLORS["glass"], 1.45),
+        _part(item, 0, 0, item.width_m, item.depth_m * 1.8, 0.08, COLORS["metal"], 0.92),
+        _part(item, 0, 0, item.width_m, item.depth_m * 1.8, 0.08, COLORS["metal"], 2.02),
+    ]
+
+
+def _stair_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
+    return [_part(item, 0, 0, item.width_m, item.depth_m, 0.16, COLORS["step"], 0.08)]
+
+
+def _wardrobe_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
+    return [
+        _part(item, 0, 0, item.width_m, item.depth_m, 1.8, COLORS["door"], 0.9),
+        _part(item, -item.width_m * 0.18, 0, 0.03, item.depth_m * 0.9, 1.65, COLORS["dark"], 0.95),
+        _part(item, item.width_m * 0.18, 0, 0.03, item.depth_m * 0.9, 1.65, COLORS["dark"], 0.95),
+    ]
+
+
+def _lamp_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
+    radius = max(min(item.width_m, item.depth_m) * 0.22, 0.06)
+    pole = trimesh.creation.cylinder(radius=radius * 0.22, height=0.45, sections=12)
+    pole.apply_translation([item.center.x, item.center.y, 0.42])
+    shade = trimesh.creation.cone(radius=radius, height=0.22, sections=20)
+    shade.apply_translation([item.center.x, item.center.y, 0.78])
+    bulb = trimesh.creation.icosphere(subdivisions=1, radius=radius * 0.35)
+    bulb.apply_translation([item.center.x, item.center.y, 0.72])
+    return [_paint(pole, COLORS["metal"]), _paint(shade, (246, 226, 180, 255)), _paint(bulb, (255, 238, 180, 255))]
+
+
+def _tv_unit_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
+    return [
+        _part(item, 0, 0, item.width_m, item.depth_m, 0.45, COLORS["door"], 0.22),
+        _part(item, 0, 0, item.width_m * 0.12, item.depth_m * 0.82, 1.05, COLORS["dark"], 0.88),
+    ]
+
+
 def _counter_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
     meshes = [
         _part(item, 0, 0, item.width_m, item.depth_m, 0.9, COLORS["kitchen_counter"], 0.45),
@@ -150,6 +238,31 @@ def _counter_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
     sink_w = min(item.width_m * 0.28, 0.6)
     meshes.append(_part(item, item.width_m * 0.22, 0, sink_w, item.depth_m * 0.5, 0.05, COLORS["dark"], 1.0))
     return meshes
+
+
+def _stove_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
+    meshes = [_part(item, 0, 0, item.width_m, item.depth_m, 0.08, COLORS["dark"], 1.0)]
+    for sx in (-0.22, 0.22):
+        for sy in (-0.22, 0.22):
+            burner = trimesh.creation.torus(major_radius=0.10, minor_radius=0.012)
+            x, y = _oriented_offset(item, sx * item.width_m, sy * item.depth_m)
+            burner.apply_translation([x, y, 1.06])
+            meshes.append(_paint(burner, COLORS["metal"]))
+    return meshes
+
+
+def _sink_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
+    return [
+        _part(item, 0, 0, item.width_m, item.depth_m, 0.16, COLORS["fixture"], 0.98),
+        _part(item, 0, 0, item.width_m * 0.70, item.depth_m * 0.62, 0.06, COLORS["glass"], 1.08),
+    ]
+
+
+def _appliance_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
+    return [
+        _part(item, 0, 0, item.width_m, item.depth_m, 1.7, COLORS["dark"], 0.85),
+        _part(item, 0, -item.depth_m * 0.35, item.width_m * 0.8, 0.04, 0.08, COLORS["metal"], 1.35),
+    ]
 
 
 def _fixture_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
@@ -171,6 +284,28 @@ def _plant_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
 
 def _furniture_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
     category = item.category.lower()
+    if "floor_patch" in category:
+        return _floor_patch_meshes(item)
+    if "railing" in category:
+        return _railing_meshes(item)
+    if "stair" in category:
+        return _stair_meshes(item)
+    if "door" in category:
+        return _door_meshes(item)
+    if "window" in category:
+        return _window_meshes(item)
+    if "wardrobe" in category:
+        return _wardrobe_meshes(item)
+    if "lamp" in category:
+        return _lamp_meshes(item)
+    if "tv" in category:
+        return _tv_unit_meshes(item)
+    if "stove" in category:
+        return _stove_meshes(item)
+    if "sink" in category:
+        return _sink_meshes(item)
+    if "appliance" in category:
+        return _appliance_meshes(item)
     if "bed" in category:
         return _bed_meshes(item)
     if "sofa" in category:
