@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import mimetypes
@@ -136,8 +135,8 @@ def _strict_schema() -> dict:
                     "properties": {
                         "category": {"type": "string"},
                         "center": {"$ref": "#/$defs/normalized_point"},
-                        "width": {"type": "number", "exclusiveMinimum": 0.0, "maximum": 1.0},
-                        "depth": {"type": "number", "exclusiveMinimum": 0.0, "maximum": 1.0},
+                        "width": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                        "depth": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                         "rotation_deg": {"type": "number"},
                         "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                     },
@@ -221,7 +220,7 @@ class GeminiFloorPlanVisionAnalyzer:
             ],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                response_schema=FloorPlanVisionHints,
+                response_schema=_strict_schema(),
             ),
         )
         content = getattr(response, "text", None)
