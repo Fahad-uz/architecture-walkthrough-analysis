@@ -81,20 +81,26 @@ class FloorPlanVisionAnalysis(BaseModel):
 
 
 def _strict_schema() -> dict:
+    point_schema = {
+        "type": "object",
+        "required": ["x", "y"],
+        "properties": {
+            "x": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+            "y": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        },
+    }
     return {
         "type": "object",
-        "additionalProperties": False,
         "required": ["walls", "rooms", "openings", "furniture", "notes"],
         "properties": {
             "walls": {
                 "type": "array",
                 "items": {
                     "type": "object",
-                    "additionalProperties": False,
                     "required": ["start", "end", "confidence", "external"],
                     "properties": {
-                        "start": {"$ref": "#/$defs/normalized_point"},
-                        "end": {"$ref": "#/$defs/normalized_point"},
+                        "start": point_schema,
+                        "end": point_schema,
                         "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                         "external": {"type": "boolean"},
                     },
@@ -104,11 +110,10 @@ def _strict_schema() -> dict:
                 "type": "array",
                 "items": {
                     "type": "object",
-                    "additionalProperties": False,
                     "required": ["name", "points", "confidence"],
                     "properties": {
                         "name": {"type": "string"},
-                        "points": {"type": "array", "minItems": 3, "items": {"$ref": "#/$defs/normalized_point"}},
+                        "points": {"type": "array", "minItems": 3, "items": point_schema},
                         "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                     },
                 },
@@ -117,11 +122,10 @@ def _strict_schema() -> dict:
                 "type": "array",
                 "items": {
                     "type": "object",
-                    "additionalProperties": False,
                     "required": ["kind", "center", "confidence"],
                     "properties": {
                         "kind": {"type": "string", "enum": ["door", "window"]},
-                        "center": {"$ref": "#/$defs/normalized_point"},
+                        "center": point_schema,
                         "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                     },
                 },
@@ -130,11 +134,10 @@ def _strict_schema() -> dict:
                 "type": "array",
                 "items": {
                     "type": "object",
-                    "additionalProperties": False,
                     "required": ["category", "center", "width", "depth", "rotation_deg", "confidence"],
                     "properties": {
                         "category": {"type": "string"},
-                        "center": {"$ref": "#/$defs/normalized_point"},
+                        "center": point_schema,
                         "width": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                         "depth": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                         "rotation_deg": {"type": "number"},
@@ -143,17 +146,6 @@ def _strict_schema() -> dict:
                 },
             },
             "notes": {"type": "string"},
-        },
-        "$defs": {
-            "normalized_point": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["x", "y"],
-                "properties": {
-                    "x": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-                    "y": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-                },
-            }
         },
     }
 
