@@ -107,7 +107,7 @@ def _strict_schema() -> dict:
                     "additionalProperties": False,
                     "required": ["name", "points", "confidence"],
                     "properties": {
-                        "name": {"type": ["string", "null"]},
+                        "name": {"type": "string"},
                         "points": {"type": "array", "minItems": 3, "items": {"$ref": "#/$defs/normalized_point"}},
                         "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                     },
