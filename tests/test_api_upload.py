@@ -19,7 +19,7 @@ def test_image_upload_pipeline_generates_glb_artifact(tmp_path: Path) -> None:
     output = convert_image_to_glb(
         image_path,
         tmp_path / "building.glb",
-        AppConfig(ai=AISettings(openai_enabled=False)),
+        AppConfig(ai=AISettings(gemini_enabled=False)),
         work_dir=tmp_path / "work",
     )
     assert output.exists()
@@ -32,6 +32,6 @@ def test_app_exposes_upload_and_download_routes() -> None:
     assert "/" in routes
     assert "/jobs" in routes
     assert "/jobs/{job_id}/artifacts/{artifact_name}" in routes
-    assert "/openai-status" in routes
+    assert "/gemini-status" in routes
     assert "Create GLB" in UPLOAD_PAGE
-    assert "Use OpenAI vision assist" in UPLOAD_PAGE
+    assert "Use Gemini vision assist" in UPLOAD_PAGE

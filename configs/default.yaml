@@ -32,9 +32,9 @@ defaults:
 ai:
   segmentation_checkpoint: null
   device: cpu
-  openai_enabled: true
-  openai_model: gpt-5.5
-  openai_min_confidence: 0.55
+  gemini_enabled: true
+  gemini_model: gemini-2.5-flash
+  gemini_min_confidence: 0.55
 render:
   preview_samples: 16
   final_samples: 96

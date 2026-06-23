@@ -15,9 +15,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--work-dir", default=None, help="Directory for debug images and floorplan.json")
     parser.add_argument("--manual-scale", type=float, default=None, help="Metres per pixel; optional but more accurate")
-    parser.add_argument("--use-openai", action="store_true", help="Use OpenAI vision hints when OPENAI_API_KEY is configured")
-    parser.add_argument("--require-openai", action="store_true", help="Fail if OpenAI vision hints cannot be generated")
-    parser.add_argument("--openai-model", default=None, help="Override the OpenAI model used for vision hints")
+    parser.add_argument("--use-gemini", action="store_true", help="Use Gemini vision hints when GEMINI_API_KEY is configured")
+    parser.add_argument("--require-gemini", action="store_true", help="Fail if Gemini vision hints cannot be generated")
+    parser.add_argument("--gemini-model", default=None, help="Override the Gemini model used for vision hints")
     parser.add_argument("--use-blender", action="store_true", help="Use Blender for export instead of the default pure-Python exporter")
     parser.add_argument("--blender", default=None, help="Optional path to blender.exe when --use-blender is set")
     return parser
@@ -29,10 +29,10 @@ def main(argv: list[str] | None = None) -> int:
     config = load_config(args.config)
     if args.blender:
         config.paths.blender_executable = args.blender
-    if args.use_openai:
-        config.ai.openai_enabled = True
-    if args.openai_model:
-        config.ai.openai_model = args.openai_model
+    if args.use_gemini:
+        config.ai.gemini_enabled = True
+    if args.gemini_model:
+        config.ai.gemini_model = args.gemini_model
     output = convert_image_to_glb(
         Path(args.input),
         Path(args.output),
@@ -40,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
         manual_scale=args.manual_scale,
         work_dir=Path(args.work_dir) if args.work_dir else None,
         run_blender=args.use_blender,
-        require_openai_success=args.require_openai,
+        require_ai_success=args.require_gemini,
     )
     print(output)
     return 0

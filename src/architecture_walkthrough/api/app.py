@@ -9,7 +9,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
-from architecture_walkthrough.ai.floorplan_vision import OpenAIFloorPlanVisionError
+from architecture_walkthrough.ai.floorplan_vision import GeminiFloorPlanVisionError
 from architecture_walkthrough.config import AppConfig, load_config
 from architecture_walkthrough.geometry.floorplan import load_corrected_floorplan
 from architecture_walkthrough.pipeline import analyze_image, build_model, prepare_walkthrough_floorplan
@@ -71,7 +71,7 @@ UPLOAD_PAGE = """
   <h1>Architecture Walkthrough Analysis</h1>
   <form id="upload-form">
     <input name="file" type="file" accept="image/png,image/jpeg,image/webp" required>
-    <label><input name="use_openai" type="checkbox" value="true" checked> Use OpenAI vision assist</label>
+    <label><input name="use_gemini" type="checkbox" value="true" checked> Use Gemini vision assist</label>
     <button type="submit">Create GLB</button>
   </form>
   <p id="download"></p>
@@ -91,8 +91,8 @@ UPLOAD_PAGE = """
         download.innerHTML = `<a href="${data.glb_url}">Download building.glb</a>`;
       }
     });
-    fetch("/openai-status").then(r => r.json()).then(data => {
-      result.textContent = `OpenAI configured for this server: ${data.available}`;
+    fetch("/gemini-status").then(r => r.json()).then(data => {
+      result.textContent = `Gemini configured for this server: ${data.available}`;
     }).catch(() => {});
   </script>
 </body>
@@ -113,17 +113,17 @@ def create_app() -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.get("/openai-status")
-    def openai_status() -> dict[str, object]:
+    @app.get("/gemini-status")
+    def gemini_status() -> dict[str, object]:
         return {
-            "enabled": config.ai.openai_enabled,
-            "api_key_present": bool(os.getenv("OPENAI_API_KEY")),
-            "model": config.ai.openai_model,
-            "available": config.ai.openai_enabled and bool(os.getenv("OPENAI_API_KEY")),
+            "enabled": config.ai.gemini_enabled,
+            "api_key_present": bool(os.getenv("GEMINI_API_KEY")),
+            "model": config.ai.gemini_model,
+            "available": config.ai.gemini_enabled and bool(os.getenv("GEMINI_API_KEY")),
         }
 
     @app.post("/jobs", response_model=JobRecord)
-    async def create_job(file: UploadFile = File(...), use_openai: bool = Form(True)) -> JobRecord:
+    async def create_job(file: UploadFile = File(...), use_gemini: bool = Form(True)) -> JobRecord:
         record = runner.create_job()
         job_dir = config.paths.work_root / record.job_id
         suffix = Path(file.filename or "").suffix.lower()
@@ -134,12 +134,12 @@ def create_app() -> FastAPI:
             validated = validate_image_file(upload_path, config.limits, file.content_type)
             safe_path = job_dir / validated.safe_filename
             upload_path.replace(safe_path)
-            config.ai.openai_enabled = use_openai or config.ai.openai_enabled
+            config.ai.gemini_enabled = use_gemini or config.ai.gemini_enabled
             model = analyze_image(
                 safe_path,
                 job_dir,
                 config,
-                require_openai_success=use_openai,
+                require_ai_success=use_gemini,
             )
             build_model(job_dir / "floorplan.json", job_dir / "building.glb", config, run_blender=False)
             metadata = model.metadata
@@ -151,8 +151,8 @@ def create_app() -> FastAPI:
             record.message = str(exc)
             runner.save(record)
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except OpenAIFloorPlanVisionError as exc:
-            record.status = "openai_failed"
+        except GeminiFloorPlanVisionError as exc:
+            record.status = "gemini_failed"
             record.message = str(exc)
             record.ai_assist_attempted = True
             record.ai_assist_succeeded = False

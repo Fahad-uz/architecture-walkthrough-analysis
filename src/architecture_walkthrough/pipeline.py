@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 
 from architecture_walkthrough.config import AppConfig
-from architecture_walkthrough.ai.floorplan_vision import OpenAIFloorPlanVisionAnalyzer, hints_to_floorplan_geometry
+from architecture_walkthrough.ai.floorplan_vision import GeminiFloorPlanVisionAnalyzer, hints_to_floorplan_geometry
 from architecture_walkthrough.geometry.cleanup import cleanup_walls
 from architecture_walkthrough.geometry.models import CoordinateSystem, FloorPlanModel
 from architecture_walkthrough.geometry.models import Point2D, WallSegment
@@ -67,7 +67,7 @@ def analyze_image(
     output_dir: Path,
     config: AppConfig,
     manual_scale: float | None = None,
-    require_openai_success: bool = False,
+    require_ai_success: bool = False,
 ) -> FloorPlanModel:
     debug_dir = output_dir / "debug"
     result = preprocess_image(input_path, debug_dir)
@@ -83,9 +83,9 @@ def analyze_image(
     else:
         pixels_per_metre = max(resized_width, resized_height) / config.defaults.auto_plan_long_side_m
         scale_source = "auto_assumed_long_side"
-    ai_analysis = OpenAIFloorPlanVisionAnalyzer(config.ai).analyze_with_diagnostics(
+    ai_analysis = GeminiFloorPlanVisionAnalyzer(config.ai).analyze_with_diagnostics(
         input_path,
-        require_success=require_openai_success,
+        require_success=require_ai_success,
     )
     ai_hints = ai_analysis.hints
     detected_furniture = detect_furniture_from_image(input_path, pixels_per_metre, resized_height)
@@ -130,7 +130,8 @@ def analyze_image(
             "preprocessing": {key: str(value) for key, value in result.__dict__.items()},
             "scale_source": scale_source,
             "approximate_reconstruction": True,
-            "ai_assist_enabled": config.ai.openai_enabled,
+            "ai_provider": "gemini",
+            "ai_assist_enabled": config.ai.gemini_enabled,
             "ai_assist_attempted": ai_analysis.attempted,
             "ai_assist_succeeded": ai_analysis.succeeded,
             "ai_assist_error": ai_analysis.error,
@@ -186,7 +187,7 @@ def convert_image_to_glb(
     manual_scale: float | None = None,
     work_dir: Path | None = None,
     run_blender: bool = False,
-    require_openai_success: bool = False,
+    require_ai_success: bool = False,
 ) -> Path:
     validate_image_file(input_image, config.limits)
     if output_glb.suffix.lower() != ".glb":
@@ -198,7 +199,7 @@ def convert_image_to_glb(
         work_dir,
         config,
         manual_scale=manual_scale,
-        require_openai_success=require_openai_success,
+        require_ai_success=require_ai_success,
     )
     floorplan_path = work_dir / "floorplan.json"
     model.save_json(floorplan_path)

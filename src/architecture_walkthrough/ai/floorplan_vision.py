@@ -22,7 +22,7 @@ from architecture_walkthrough.geometry.models import (
 LOGGER = logging.getLogger(__name__)
 
 
-class OpenAIFloorPlanVisionError(RuntimeError):
+class GeminiFloorPlanVisionError(RuntimeError):
     pass
 
 
@@ -159,34 +159,34 @@ def _strict_schema() -> dict:
     }
 
 
-class OpenAIFloorPlanVisionAnalyzer:
+class GeminiFloorPlanVisionAnalyzer:
     def __init__(self, settings: AISettings) -> None:
         self.settings = settings
 
     def is_available(self) -> bool:
-        return self.settings.openai_enabled and bool(os.getenv("OPENAI_API_KEY"))
+        return self.settings.gemini_enabled and bool(os.getenv("GEMINI_API_KEY"))
 
     def analyze_with_diagnostics(self, image_path: Path, require_success: bool = False) -> FloorPlanVisionAnalysis:
-        if not self.settings.openai_enabled:
-            error = "OpenAI vision is disabled in configuration"
+        if not self.settings.gemini_enabled:
+            error = "Gemini vision is disabled in configuration"
             if require_success:
-                raise OpenAIFloorPlanVisionError(error)
+                raise GeminiFloorPlanVisionError(error)
             return FloorPlanVisionAnalysis(error=error)
-        if not os.getenv("OPENAI_API_KEY"):
-            error = "OPENAI_API_KEY is not set for the running server process"
+        if not os.getenv("GEMINI_API_KEY"):
+            error = "GEMINI_API_KEY is not set for the running server process"
             if require_success:
-                raise OpenAIFloorPlanVisionError(error)
+                raise GeminiFloorPlanVisionError(error)
             return FloorPlanVisionAnalysis(attempted=True, error=error)
         try:
             hints = self._request_hints(image_path)
             return FloorPlanVisionAnalysis(attempted=True, succeeded=True, hints=hints)
-        except OpenAIFloorPlanVisionError:
+        except GeminiFloorPlanVisionError:
             raise
         except (json.JSONDecodeError, ValidationError, Exception) as exc:
-            error = f"OpenAI floor-plan analysis failed: {exc}"
+            error = f"Gemini floor-plan analysis failed: {exc}"
             LOGGER.warning("%s", error)
             if require_success:
-                raise OpenAIFloorPlanVisionError(error) from exc
+                raise GeminiFloorPlanVisionError(error) from exc
             return FloorPlanVisionAnalysis(attempted=True, error=error)
 
     def analyze(self, image_path: Path) -> FloorPlanVisionHints | None:
@@ -194,12 +194,13 @@ class OpenAIFloorPlanVisionAnalyzer:
 
     def _request_hints(self, image_path: Path) -> FloorPlanVisionHints:
         try:
-            from openai import OpenAI
+            from google import genai
+            from google.genai import types
         except ImportError:
-            raise OpenAIFloorPlanVisionError("OpenAI package is not installed")
+            raise GeminiFloorPlanVisionError("google-genai package is not installed")
 
         mime_type = mimetypes.guess_type(image_path.name)[0] or "image/png"
-        image_data = base64.b64encode(image_path.read_bytes()).decode("utf-8")
+        image_bytes = image_path.read_bytes()
         prompt = (
             "Analyze this architectural floor-plan image. Return only JSON. "
             "Use normalized image coordinates from 0 to 1, origin at top-left. "
@@ -211,36 +212,22 @@ class OpenAIFloorPlanVisionAnalyzer:
             "Do not invent hidden geometry. "
             "Return empty arrays when uncertain, but include all required keys."
         )
-        client = OpenAI()
-        response = client.responses.create(
-            model=self.settings.openai_model,
-            input=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": prompt},
-                        {
-                            "type": "input_image",
-                            "image_url": f"data:{mime_type};base64,{image_data}",
-                            "detail": "high",
-                        },
-                    ],
-                }
+        client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+        response = client.models.generate_content(
+            model=self.settings.gemini_model,
+            contents=[
+                prompt,
+                types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
             ],
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "name": "floorplan_vision_hints",
-                    "strict": True,
-                    "schema": _strict_schema(),
-                }
-            },
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=FloorPlanVisionHints,
+            ),
         )
-        content = getattr(response, "output_text", None)
+        content = getattr(response, "text", None)
         if not content:
-            raise OpenAIFloorPlanVisionError("OpenAI response did not contain output_text")
+            raise GeminiFloorPlanVisionError("Gemini response did not contain text")
         return FloorPlanVisionHints.model_validate(json.loads(content))
-
 
 def hints_to_floorplan_geometry(
     hints: FloorPlanVisionHints,
@@ -270,17 +257,17 @@ def hints_to_floorplan_geometry(
             external=hint.external,
         )
         for hint in hints.walls
-        if hint.confidence >= config.ai.openai_min_confidence
+        if hint.confidence >= config.ai.gemini_min_confidence
     ]
     rooms = [
         RoomPolygon(name=hint.name, points=[to_point(point) for point in hint.points])
         for hint in hints.rooms
-        if hint.confidence >= config.ai.openai_min_confidence
+        if hint.confidence >= config.ai.gemini_min_confidence
     ]
     doors: list[DoorOpening] = []
     windows: list[WindowOpening] = []
     for hint in hints.openings:
-        if hint.confidence < config.ai.openai_min_confidence:
+        if hint.confidence < config.ai.gemini_min_confidence:
             continue
         if hint.kind.lower() == "door":
             doors.append(DoorOpening(center=to_point(hint.center), width_m=config.defaults.door_width_m))
@@ -301,6 +288,6 @@ def hints_to_floorplan_geometry(
             rotation_deg=hint.rotation_deg,
         )
         for hint in hints.furniture
-        if hint.confidence >= config.ai.openai_min_confidence
+        if hint.confidence >= config.ai.gemini_min_confidence
     ]
     return walls, rooms, doors, windows, furniture
