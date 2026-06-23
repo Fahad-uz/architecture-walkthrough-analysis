@@ -1,0 +1,37 @@
+{
+  "coordinate_system": "metres",
+  "pixels_per_metre": 100,
+  "walls": [
+    {"start": {"x": 0, "y": 0}, "end": {"x": 6, "y": 0}, "thickness_m": 0.2, "height_m": 3.0, "external": true, "wall_type": "external"},
+    {"start": {"x": 6, "y": 0}, "end": {"x": 6, "y": 4}, "thickness_m": 0.2, "height_m": 3.0, "external": true, "wall_type": "external"},
+    {"start": {"x": 6, "y": 4}, "end": {"x": 0, "y": 4}, "thickness_m": 0.2, "height_m": 3.0, "external": true, "wall_type": "external"},
+    {"start": {"x": 0, "y": 4}, "end": {"x": 0, "y": 0}, "thickness_m": 0.2, "height_m": 3.0, "external": true, "wall_type": "external"},
+    {"start": {"x": 3, "y": 0}, "end": {"x": 3, "y": 4}, "thickness_m": 0.12, "height_m": 3.0, "external": false, "wall_type": "internal"}
+  ],
+  "doors": [
+    {"center": {"x": 3, "y": 2.0}, "width_m": 0.9, "height_m": 2.1, "wall_id": "4", "offset_m": 2.0}
+  ],
+  "windows": [
+    {"center": {"x": 1.5, "y": 4}, "width_m": 1.2, "height_m": 1.1, "sill_height_m": 0.9, "wall_id": "2", "offset_m": 4.5}
+  ],
+  "rooms": [
+    {"name": "bedroom", "points": [{"x": 0, "y": 0}, {"x": 3, "y": 0}, {"x": 3, "y": 4}, {"x": 0, "y": 4}]},
+    {"name": "living", "points": [{"x": 3, "y": 0}, {"x": 6, "y": 0}, {"x": 6, "y": 4}, {"x": 3, "y": 4}]}
+  ],
+  "furniture": [
+    {"category": "bed", "center": {"x": 1.4, "y": 1.5}, "width_m": 1.5, "depth_m": 2.0, "rotation_deg": 0},
+    {"category": "sofa", "center": {"x": 4.8, "y": 1.2}, "width_m": 1.7, "depth_m": 0.8, "rotation_deg": 0}
+  ],
+  "asset_placements": [
+    {"category": "bed_double", "center": {"x": 1.4, "y": 1.5}, "width_m": 1.5, "depth_m": 2.0, "rotation_deg": 0, "asset_preset": "bed_double"},
+    {"category": "sofa_3seat", "center": {"x": 4.8, "y": 1.2}, "width_m": 1.7, "depth_m": 0.8, "rotation_deg": 0, "asset_preset": "sofa_3seat"}
+  ],
+  "material_assignments": [
+    {"target": "bedroom", "preset": "wood"},
+    {"target": "living", "preset": "ceramic_tile"}
+  ],
+  "ceiling": {"enabled": true, "height_m": 3.0, "thickness_m": 0.08, "material_preset": "painted_wall"},
+  "style": {"preset": "modern", "wall_material": "painted_wall", "floor_material": "marble", "door_material": "wood", "window_frame_material": "metal", "furniture_family": "procedural"},
+  "camera_waypoints": [],
+  "metadata": {"sample": true, "approximate_reconstruction": false}
+}

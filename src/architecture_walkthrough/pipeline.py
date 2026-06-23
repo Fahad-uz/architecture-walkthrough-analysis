@@ -62,7 +62,13 @@ def _fallback_perimeter_walls(width_px: int, height_px: int, pixels_per_metre: f
     ]
 
 
-def analyze_image(input_path: Path, output_dir: Path, config: AppConfig, manual_scale: float | None = None) -> FloorPlanModel:
+def analyze_image(
+    input_path: Path,
+    output_dir: Path,
+    config: AppConfig,
+    manual_scale: float | None = None,
+    require_openai_success: bool = False,
+) -> FloorPlanModel:
     debug_dir = output_dir / "debug"
     result = preprocess_image(input_path, debug_dir)
     cv_walls = detect_wall_lines(
@@ -77,7 +83,11 @@ def analyze_image(input_path: Path, output_dir: Path, config: AppConfig, manual_
     else:
         pixels_per_metre = max(resized_width, resized_height) / config.defaults.auto_plan_long_side_m
         scale_source = "auto_assumed_long_side"
-    ai_hints = OpenAIFloorPlanVisionAnalyzer(config.ai).analyze(input_path)
+    ai_analysis = OpenAIFloorPlanVisionAnalyzer(config.ai).analyze_with_diagnostics(
+        input_path,
+        require_success=require_openai_success,
+    )
+    ai_hints = ai_analysis.hints
     detected_furniture = detect_furniture_from_image(input_path, pixels_per_metre, resized_height)
     template_furniture = suggest_rendered_plan_furniture(resized_width, resized_height, pixels_per_metre)
     rooms = []
@@ -121,6 +131,9 @@ def analyze_image(input_path: Path, output_dir: Path, config: AppConfig, manual_
             "scale_source": scale_source,
             "approximate_reconstruction": True,
             "ai_assist_enabled": config.ai.openai_enabled,
+            "ai_assist_attempted": ai_analysis.attempted,
+            "ai_assist_succeeded": ai_analysis.succeeded,
+            "ai_assist_error": ai_analysis.error,
             "ai_wall_hints_used": ai_wall_count,
             "ai_furniture_hints_used": ai_furniture_count,
             "local_furniture_hints_used": len(detected_furniture),
@@ -173,13 +186,20 @@ def convert_image_to_glb(
     manual_scale: float | None = None,
     work_dir: Path | None = None,
     run_blender: bool = False,
+    require_openai_success: bool = False,
 ) -> Path:
     validate_image_file(input_image, config.limits)
     if output_glb.suffix.lower() != ".glb":
         raise ValueError("output path must end with .glb")
     work_dir = work_dir or output_glb.parent / f"{output_glb.stem}_work"
     work_dir.mkdir(parents=True, exist_ok=True)
-    model = analyze_image(input_image, work_dir, config, manual_scale=manual_scale)
+    model = analyze_image(
+        input_image,
+        work_dir,
+        config,
+        manual_scale=manual_scale,
+        require_openai_success=require_openai_success,
+    )
     floorplan_path = work_dir / "floorplan.json"
     model.save_json(floorplan_path)
     return build_model(floorplan_path, output_glb, config, run_blender=run_blender)

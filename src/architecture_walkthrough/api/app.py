@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
+from architecture_walkthrough.ai.floorplan_vision import OpenAIFloorPlanVisionError
 from architecture_walkthrough.config import AppConfig, load_config
 from architecture_walkthrough.geometry.floorplan import load_corrected_floorplan
 from architecture_walkthrough.pipeline import analyze_image, build_model, prepare_walkthrough_floorplan
@@ -19,6 +21,9 @@ class JobRecord(BaseModel):
     status: str
     message: str = ""
     glb_url: str | None = None
+    ai_assist_attempted: bool = False
+    ai_assist_succeeded: bool = False
+    ai_assist_error: str | None = None
 
 
 class LocalJobRunner:
@@ -86,6 +91,9 @@ UPLOAD_PAGE = """
         download.innerHTML = `<a href="${data.glb_url}">Download building.glb</a>`;
       }
     });
+    fetch("/openai-status").then(r => r.json()).then(data => {
+      result.textContent = `OpenAI configured for this server: ${data.available}`;
+    }).catch(() => {});
   </script>
 </body>
 </html>
@@ -105,6 +113,15 @@ def create_app() -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.get("/openai-status")
+    def openai_status() -> dict[str, object]:
+        return {
+            "enabled": config.ai.openai_enabled,
+            "api_key_present": bool(os.getenv("OPENAI_API_KEY")),
+            "model": config.ai.openai_model,
+            "available": config.ai.openai_enabled and bool(os.getenv("OPENAI_API_KEY")),
+        }
+
     @app.post("/jobs", response_model=JobRecord)
     async def create_job(file: UploadFile = File(...), use_openai: bool = Form(True)) -> JobRecord:
         record = runner.create_job()
@@ -118,13 +135,30 @@ def create_app() -> FastAPI:
             safe_path = job_dir / validated.safe_filename
             upload_path.replace(safe_path)
             config.ai.openai_enabled = use_openai or config.ai.openai_enabled
-            analyze_image(safe_path, job_dir, config)
+            model = analyze_image(
+                safe_path,
+                job_dir,
+                config,
+                require_openai_success=use_openai,
+            )
             build_model(job_dir / "floorplan.json", job_dir / "building.glb", config, run_blender=False)
+            metadata = model.metadata
+            record.ai_assist_attempted = bool(metadata.get("ai_assist_attempted"))
+            record.ai_assist_succeeded = bool(metadata.get("ai_assist_succeeded"))
+            record.ai_assist_error = metadata.get("ai_assist_error")
         except ValueError as exc:
             record.status = "rejected"
             record.message = str(exc)
             runner.save(record)
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OpenAIFloorPlanVisionError as exc:
+            record.status = "openai_failed"
+            record.message = str(exc)
+            record.ai_assist_attempted = True
+            record.ai_assist_succeeded = False
+            record.ai_assist_error = str(exc)
+            runner.save(record)
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
         record.status = "model_generated"
         record.glb_url = f"/jobs/{record.job_id}/artifacts/building.glb"
         runner.save(record)

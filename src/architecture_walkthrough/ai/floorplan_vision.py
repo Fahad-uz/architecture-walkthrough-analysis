@@ -22,6 +22,10 @@ from architecture_walkthrough.geometry.models import (
 LOGGER = logging.getLogger(__name__)
 
 
+class OpenAIFloorPlanVisionError(RuntimeError):
+    pass
+
+
 class NormalizedPoint(BaseModel):
     x: float = Field(ge=0.0, le=1.0)
     y: float = Field(ge=0.0, le=1.0)
@@ -70,6 +74,91 @@ class FloorPlanVisionHints(BaseModel):
     notes: str = ""
 
 
+class FloorPlanVisionAnalysis(BaseModel):
+    attempted: bool = False
+    succeeded: bool = False
+    hints: FloorPlanVisionHints | None = None
+    error: str | None = None
+
+
+def _strict_schema() -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["walls", "rooms", "openings", "furniture", "notes"],
+        "properties": {
+            "walls": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["start", "end", "confidence", "external"],
+                    "properties": {
+                        "start": {"$ref": "#/$defs/normalized_point"},
+                        "end": {"$ref": "#/$defs/normalized_point"},
+                        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                        "external": {"type": "boolean"},
+                    },
+                },
+            },
+            "rooms": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["name", "points", "confidence"],
+                    "properties": {
+                        "name": {"type": ["string", "null"]},
+                        "points": {"type": "array", "minItems": 3, "items": {"$ref": "#/$defs/normalized_point"}},
+                        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                    },
+                },
+            },
+            "openings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["kind", "center", "confidence"],
+                    "properties": {
+                        "kind": {"type": "string", "enum": ["door", "window"]},
+                        "center": {"$ref": "#/$defs/normalized_point"},
+                        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                    },
+                },
+            },
+            "furniture": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["category", "center", "width", "depth", "rotation_deg", "confidence"],
+                    "properties": {
+                        "category": {"type": "string"},
+                        "center": {"$ref": "#/$defs/normalized_point"},
+                        "width": {"type": "number", "exclusiveMinimum": 0.0, "maximum": 1.0},
+                        "depth": {"type": "number", "exclusiveMinimum": 0.0, "maximum": 1.0},
+                        "rotation_deg": {"type": "number"},
+                        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                    },
+                },
+            },
+            "notes": {"type": "string"},
+        },
+        "$defs": {
+            "normalized_point": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["x", "y"],
+                "properties": {
+                    "x": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                    "y": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                },
+            }
+        },
+    }
+
+
 class OpenAIFloorPlanVisionAnalyzer:
     def __init__(self, settings: AISettings) -> None:
         self.settings = settings
@@ -77,14 +166,37 @@ class OpenAIFloorPlanVisionAnalyzer:
     def is_available(self) -> bool:
         return self.settings.openai_enabled and bool(os.getenv("OPENAI_API_KEY"))
 
+    def analyze_with_diagnostics(self, image_path: Path, require_success: bool = False) -> FloorPlanVisionAnalysis:
+        if not self.settings.openai_enabled:
+            error = "OpenAI vision is disabled in configuration"
+            if require_success:
+                raise OpenAIFloorPlanVisionError(error)
+            return FloorPlanVisionAnalysis(error=error)
+        if not os.getenv("OPENAI_API_KEY"):
+            error = "OPENAI_API_KEY is not set for the running server process"
+            if require_success:
+                raise OpenAIFloorPlanVisionError(error)
+            return FloorPlanVisionAnalysis(attempted=True, error=error)
+        try:
+            hints = self._request_hints(image_path)
+            return FloorPlanVisionAnalysis(attempted=True, succeeded=True, hints=hints)
+        except OpenAIFloorPlanVisionError:
+            raise
+        except (json.JSONDecodeError, ValidationError, Exception) as exc:
+            error = f"OpenAI floor-plan analysis failed: {exc}"
+            LOGGER.warning("%s", error)
+            if require_success:
+                raise OpenAIFloorPlanVisionError(error) from exc
+            return FloorPlanVisionAnalysis(attempted=True, error=error)
+
     def analyze(self, image_path: Path) -> FloorPlanVisionHints | None:
-        if not self.is_available():
-            return None
+        return self.analyze_with_diagnostics(image_path).hints
+
+    def _request_hints(self, image_path: Path) -> FloorPlanVisionHints:
         try:
             from openai import OpenAI
         except ImportError:
-            LOGGER.warning("OpenAI package is not installed; AI floor-plan hints disabled")
-            return None
+            raise OpenAIFloorPlanVisionError("OpenAI package is not installed")
 
         mime_type = mimetypes.guess_type(image_path.name)[0] or "image/png"
         image_data = base64.b64encode(image_path.read_bytes()).decode("utf-8")
@@ -96,39 +208,38 @@ class OpenAIFloorPlanVisionAnalyzer:
             "Furniture includes beds, sofas, chairs, tables, kitchen counters, wardrobes, fixtures, and plants. "
             "Do not classify furniture outlines, labels, tiles, stairs, or shadows as walls. "
             "Prefer fewer high-confidence segments over noisy guesses. "
-            "Do not invent hidden geometry."
+            "Do not invent hidden geometry. "
+            "Return empty arrays when uncertain, but include all required keys."
         )
-        schema = FloorPlanVisionHints.model_json_schema()
         client = OpenAI()
-        try:
-            response = client.chat.completions.create(
-                model=self.settings.openai_model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:{mime_type};base64,{image_data}"},
-                            },
-                        ],
-                    }
-                ],
-                response_format={
+        response = client.responses.create(
+            model=self.settings.openai_model,
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": prompt},
+                        {
+                            "type": "input_image",
+                            "image_url": f"data:{mime_type};base64,{image_data}",
+                            "detail": "high",
+                        },
+                    ],
+                }
+            ],
+            text={
+                "format": {
                     "type": "json_schema",
-                    "json_schema": {
-                        "name": "floorplan_vision_hints",
-                        "strict": True,
-                        "schema": schema,
-                    },
-                },
-            )
-            content = response.choices[0].message.content or "{}"
-            return FloorPlanVisionHints.model_validate(json.loads(content))
-        except (json.JSONDecodeError, ValidationError, Exception) as exc:
-            LOGGER.warning("OpenAI floor-plan analysis failed; falling back to rule-based detection: %s", exc)
-            return None
+                    "name": "floorplan_vision_hints",
+                    "strict": True,
+                    "schema": _strict_schema(),
+                }
+            },
+        )
+        content = getattr(response, "output_text", None)
+        if not content:
+            raise OpenAIFloorPlanVisionError("OpenAI response did not contain output_text")
+        return FloorPlanVisionHints.model_validate(json.loads(content))
 
 
 def hints_to_floorplan_geometry(

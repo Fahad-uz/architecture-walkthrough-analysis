@@ -40,6 +40,9 @@ class GeometryDefaults(BaseModel):
     window_height_m: PositiveFloat = 1.20
     sill_height_m: PositiveFloat = 0.90
     camera_height_m: PositiveFloat = 1.65
+    floor_thickness_m: PositiveFloat = 0.10
+    ceiling_thickness_m: PositiveFloat = 0.08
+    bevel_width_m: PositiveFloat = 0.008
 
 
 class AISettings(BaseModel):
@@ -57,12 +60,45 @@ class RenderSettings(BaseModel):
     camera_speed_mps: PositiveFloat = 1.0
 
 
+class TextureSettings(BaseModel):
+    default_resolution: PositiveInt = 2048
+    allow_4k: bool = False
+    embed_in_glb: bool = True
+    max_texture_size: PositiveInt = 4096
+
+
+class AssetSettings(BaseModel):
+    registry_path: Path = Path("assets/models/asset_registry.yaml")
+    allow_placeholder_fallback: bool = True
+
+
+class ExportSettings(BaseModel):
+    include_cameras: bool = False
+    include_lights: bool = False
+    apply_modifiers: bool = True
+    export_normals: bool = True
+    export_tangents: bool = True
+    validation_enabled: bool = True
+
+
+class QualitySettings(BaseModel):
+    preset: str = "high"
+    generate_ceilings: bool = True
+    generate_trims: bool = True
+    generate_doors: bool = True
+    generate_windows: bool = True
+
+
 class AppConfig(BaseModel):
     paths: PathSettings = Field(default_factory=PathSettings)
     limits: LimitSettings = Field(default_factory=LimitSettings)
     defaults: GeometryDefaults = Field(default_factory=GeometryDefaults)
     ai: AISettings = Field(default_factory=AISettings)
     render: RenderSettings = Field(default_factory=RenderSettings)
+    textures: TextureSettings = Field(default_factory=TextureSettings)
+    assets: AssetSettings = Field(default_factory=AssetSettings)
+    export: ExportSettings = Field(default_factory=ExportSettings)
+    quality: QualitySettings = Field(default_factory=QualitySettings)
 
 
 def load_config(path: Path | str = Path("configs/default.yaml")) -> AppConfig:

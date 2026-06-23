@@ -5,7 +5,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 import trimesh
 
-from architecture_walkthrough.config import AppConfig
+from architecture_walkthrough.config import AISettings, AppConfig
 from architecture_walkthrough.pipeline import convert_image_to_glb
 
 
@@ -20,7 +20,7 @@ def test_convert_image_to_glb_from_png(tmp_path: Path) -> None:
     output = convert_image_to_glb(
         image_path,
         tmp_path / "building.glb",
-        AppConfig(),
+            AppConfig(ai=AISettings(openai_enabled=False)),
         manual_scale=0.05,
         work_dir=tmp_path / "work",
     )

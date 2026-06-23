@@ -7,6 +7,14 @@ import numpy as np
 import trimesh
 
 from architecture_walkthrough.geometry.models import FloorPlanModel, FurniturePlacement, Point2D, WallSegment
+from architecture_walkthrough.scene.ceiling_builder import ceiling_meshes
+from architecture_walkthrough.scene.door_builder import door_meshes
+from architecture_walkthrough.scene.floor_builder import fallback_floor_mesh, room_floor_meshes
+from architecture_walkthrough.scene.opening_builder import nearest_wall_index, openings_for_wall
+from architecture_walkthrough.scene.trim_builder import skirting_meshes
+from architecture_walkthrough.scene.uv_mapping import apply_planar_uv
+from architecture_walkthrough.scene.wall_builder import split_wall_meshes
+from architecture_walkthrough.scene.window_builder import window_meshes
 
 RGBA = tuple[int, int, int, int]
 
@@ -329,15 +337,54 @@ def export_simple_glb(model: FloorPlanModel, output_glb: Path) -> Path:
     if not model.walls:
         raise ValueError("cannot export GLB: floorplan contains no wall geometry")
     output_glb.parent.mkdir(parents=True, exist_ok=True)
-    meshes: list[trimesh.Trimesh] = [_floor_mesh(model)]
-    meshes.extend(_wall_mesh(wall) for wall in model.walls)
-    wall_cap_meshes = [_wall_cap_mesh(wall) for wall in model.walls]
     scene = trimesh.Scene()
-    scene.add_geometry(meshes[0], node_name="Floor_Slab", geom_name="Floor_Slab")
-    for index, mesh in enumerate(meshes[1:]):
-        scene.add_geometry(mesh, node_name=f"Wall_{index:03d}", geom_name=f"Wall_{index:03d}")
+
+    if model.rooms:
+        floor_meshes = room_floor_meshes(model.rooms, 0.10, COLORS["floor"])
+    else:
+        floor_meshes = [fallback_floor_mesh(model, 0.10, COLORS["floor"])]
+    for index, mesh in enumerate(floor_meshes):
+        scene.add_geometry(apply_planar_uv(mesh), node_name=f"Floor_{index:03d}", geom_name=f"Floor_{index:03d}")
+
+    wall_cap_meshes = []
+    for wall_index, wall in enumerate(model.walls):
+        wall_openings = openings_for_wall(wall, model.doors, model.windows, wall_index, model.walls)
+        try:
+            wall_meshes = split_wall_meshes(wall, wall_openings, COLORS["wall"])
+        except ValueError:
+            wall_meshes = [_wall_mesh(wall)]
+        for section_index, mesh in enumerate(wall_meshes):
+            scene.add_geometry(
+                apply_planar_uv(mesh),
+                node_name=f"Wall_{wall_index:03d}_{section_index:02d}",
+                geom_name=f"Wall_{wall_index:03d}_{section_index:02d}",
+            )
+        wall_cap_meshes.append(_wall_cap_mesh(wall))
+
     for index, mesh in enumerate(wall_cap_meshes):
         scene.add_geometry(mesh, node_name=f"Wall_Cap_{index:03d}", geom_name=f"Wall_Cap_{index:03d}")
+
+    for door_index, door in enumerate(model.doors):
+        wall_index = int(door.wall_id) if door.wall_id and door.wall_id.isdigit() else nearest_wall_index(model.walls, door.center)
+        if wall_index is None:
+            continue
+        for part_index, mesh in enumerate(door_meshes(model.walls[wall_index], door, COLORS["door"])):
+            scene.add_geometry(mesh, node_name=f"Door_{door_index:03d}_{part_index:02d}", geom_name=f"Door_{door_index:03d}_{part_index:02d}")
+
+    for window_index, window in enumerate(model.windows):
+        wall_index = int(window.wall_id) if window.wall_id and window.wall_id.isdigit() else nearest_wall_index(model.walls, window.center)
+        if wall_index is None:
+            continue
+        for part_index, mesh in enumerate(window_meshes(model.walls[wall_index], window, COLORS["metal"], COLORS["glass"])):
+            scene.add_geometry(mesh, node_name=f"Window_{window_index:03d}_{part_index:02d}", geom_name=f"Window_{window_index:03d}_{part_index:02d}")
+
+    if model.ceiling.enabled and model.rooms:
+        for index, mesh in enumerate(ceiling_meshes(model.rooms, model.ceiling.height_m, model.ceiling.thickness_m, COLORS["wall"])):
+            scene.add_geometry(apply_planar_uv(mesh), node_name=f"Ceiling_{index:03d}", geom_name=f"Ceiling_{index:03d}")
+
+    for index, mesh in enumerate(skirting_meshes(model.walls, COLORS["wall_cap"])):
+        scene.add_geometry(mesh, node_name=f"Skirting_{index:03d}", geom_name=f"Skirting_{index:03d}")
+
     for index, item in enumerate(model.furniture):
         for part_index, mesh in enumerate(_furniture_meshes(item)):
             scene.add_geometry(

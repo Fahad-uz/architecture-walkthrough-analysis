@@ -16,6 +16,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--work-dir", default=None, help="Directory for debug images and floorplan.json")
     parser.add_argument("--manual-scale", type=float, default=None, help="Metres per pixel; optional but more accurate")
     parser.add_argument("--use-openai", action="store_true", help="Use OpenAI vision hints when OPENAI_API_KEY is configured")
+    parser.add_argument("--require-openai", action="store_true", help="Fail if OpenAI vision hints cannot be generated")
     parser.add_argument("--openai-model", default=None, help="Override the OpenAI model used for vision hints")
     parser.add_argument("--use-blender", action="store_true", help="Use Blender for export instead of the default pure-Python exporter")
     parser.add_argument("--blender", default=None, help="Optional path to blender.exe when --use-blender is set")
@@ -39,6 +40,7 @@ def main(argv: list[str] | None = None) -> int:
         manual_scale=args.manual_scale,
         work_dir=Path(args.work_dir) if args.work_dir else None,
         run_blender=args.use_blender,
+        require_openai_success=args.require_openai,
     )
     print(output)
     return 0

@@ -7,6 +7,7 @@ from architecture_walkthrough.ai.floorplan_vision import (
     FloorPlanVisionHints,
     NormalizedPoint,
     OpenAIFloorPlanVisionAnalyzer,
+    OpenAIFloorPlanVisionError,
     hints_to_floorplan_geometry,
 )
 from architecture_walkthrough.config import AISettings, AppConfig
@@ -17,6 +18,30 @@ def test_openai_analyzer_is_disabled_without_flag(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     analyzer = OpenAIFloorPlanVisionAnalyzer(AISettings(openai_enabled=False))
     assert not analyzer.is_available()
+
+
+def test_openai_analyzer_reports_missing_key(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    image_path = tmp_path / "plan.png"
+    image_path.write_bytes(b"not-used")
+    analyzer = OpenAIFloorPlanVisionAnalyzer(AISettings(openai_enabled=True))
+
+    result = analyzer.analyze_with_diagnostics(image_path)
+
+    assert result.attempted is True
+    assert result.succeeded is False
+    assert result.error is not None
+    assert "OPENAI_API_KEY" in result.error
+
+
+def test_openai_analyzer_can_require_success(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    image_path = tmp_path / "plan.png"
+    image_path.write_bytes(b"not-used")
+    analyzer = OpenAIFloorPlanVisionAnalyzer(AISettings(openai_enabled=True))
+
+    with pytest.raises(OpenAIFloorPlanVisionError, match="OPENAI_API_KEY"):
+        analyzer.analyze_with_diagnostics(image_path, require_success=True)
 
 
 def test_hints_convert_to_floorplan_geometry() -> None:

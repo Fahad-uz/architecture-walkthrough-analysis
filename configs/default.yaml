@@ -26,6 +26,9 @@ defaults:
   window_height_m: 1.20
   sill_height_m: 0.90
   camera_height_m: 1.65
+  floor_thickness_m: 0.10
+  ceiling_thickness_m: 0.08
+  bevel_width_m: 0.008
 ai:
   segmentation_checkpoint: null
   device: cpu
@@ -37,3 +40,24 @@ render:
   final_samples: 96
   preview_fps: 24
   camera_speed_mps: 1.0
+textures:
+  default_resolution: 2048
+  allow_4k: false
+  embed_in_glb: true
+  max_texture_size: 4096
+assets:
+  registry_path: assets/models/asset_registry.yaml
+  allow_placeholder_fallback: true
+export:
+  include_cameras: false
+  include_lights: false
+  apply_modifiers: true
+  export_normals: true
+  export_tangents: true
+  validation_enabled: true
+quality:
+  preset: high
+  generate_ceilings: true
+  generate_trims: true
+  generate_doors: true
+  generate_windows: true
