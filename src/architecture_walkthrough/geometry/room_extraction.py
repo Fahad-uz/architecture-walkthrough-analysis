@@ -144,7 +144,7 @@ def extract_rooms_from_geometry_mask(
     labels: list[OCRText],
     pixels_per_metre: float,
     image_height_px: int,
-    close_gap_px: int = 70,
+    close_gap_px: int = 90,
     min_area_m2: float = 0.45,
 ) -> RoomExtractionResult:
     mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
