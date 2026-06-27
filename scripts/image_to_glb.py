@@ -15,6 +15,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--work-dir", default=None, help="Directory for debug images and floorplan.json")
     parser.add_argument("--manual-scale", type=float, default=None, help="Metres per pixel; optional but more accurate")
+    parser.add_argument("--crop", nargs=4, type=int, metavar=("X", "Y", "W", "H"), help="optional manual crop rectangle in source pixels")
     parser.add_argument("--use-gemini", action="store_true", help="Use Gemini vision hints when GEMINI_API_KEY is configured")
     parser.add_argument("--require-gemini", action="store_true", help="Fail if Gemini vision hints cannot be generated")
     parser.add_argument("--gemini-model", default=None, help="Override the Gemini model used for vision hints")
@@ -41,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
         work_dir=Path(args.work_dir) if args.work_dir else None,
         run_blender=args.use_blender,
         require_ai_success=args.require_gemini,
+        crop_rect=tuple(args.crop) if args.crop else None,
     )
     print(output)
     return 0

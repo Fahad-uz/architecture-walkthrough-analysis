@@ -1,26 +1,63 @@
 from __future__ import annotations
 
+import json
 import logging
+import time
 from pathlib import Path
+from typing import Any
 
+import cv2
+
+from architecture_walkthrough.ai.floorplan_vision import GeminiFloorPlanVisionAnalyzer
 from architecture_walkthrough.config import AppConfig
-from architecture_walkthrough.ai.floorplan_vision import GeminiFloorPlanVisionAnalyzer, hints_to_floorplan_geometry
-from architecture_walkthrough.geometry.cleanup import cleanup_walls
-from architecture_walkthrough.geometry.models import CoordinateSystem, FloorPlanModel
-from architecture_walkthrough.geometry.models import Point2D, WallSegment
+from architecture_walkthrough.geometry.models import (
+    ArchitecturalElement,
+    CoordinateSystem,
+    FloorPlanModel,
+    Point2D,
+    ReconstructionMetadata,
+    ValidationIssue,
+    WallSegment,
+)
+from architecture_walkthrough.geometry.reconstruction import reconstruct_walls
+from architecture_walkthrough.geometry.room_extraction import extract_rooms_from_walls
 from architecture_walkthrough.geometry.scale import ScaleConverter
+from architecture_walkthrough.geometry.scale_solver import ScaleConstraint, solve_scale
+from architecture_walkthrough.geometry.validation import score_quality, validate_reconstruction
 from architecture_walkthrough.scene.export_glb import export_floorplan_glb
 from architecture_walkthrough.scene.blender_runner import run_blender_script
 from architecture_walkthrough.scene.scene_builder import build_blender_script
-from architecture_walkthrough.vision.preprocessing import preprocess_image
-from architecture_walkthrough.vision.furniture_detection import detect_furniture_from_image, suggest_rendered_plan_furniture
-from architecture_walkthrough.vision.wall_detection import detect_wall_lines
+from architecture_walkthrough.security.file_validation import validate_image_file
+from architecture_walkthrough.vision.ocr import OCRText, parse_dimension_pair, run_ocr
+from architecture_walkthrough.vision.opening_detection import (
+    attach_openings_to_walls,
+    openings_from_semantic_hints,
+)
+from architecture_walkthrough.vision.overlay import write_analysis_overlay
+from architecture_walkthrough.vision.plan_roi import detect_plan_roi
+from architecture_walkthrough.vision.preprocessing import load_image, preprocess_array
+from architecture_walkthrough.vision.wall_detection import detect_wall_bands
+from architecture_walkthrough.vision.wall_detection import WallBand
 from architecture_walkthrough.walkthrough.camera_animation import waypoints_from_points
 from architecture_walkthrough.walkthrough.path_planner import manual_or_auto_waypoints
 from architecture_walkthrough.walkthrough.render_video import encode_frames_to_mp4
-from architecture_walkthrough.security.file_validation import validate_image_file
 
 LOGGER = logging.getLogger(__name__)
+
+
+class StageLogger:
+    def __init__(self) -> None:
+        self.stages: list[dict[str, Any]] = []
+
+    def record(self, name: str, started: float, **outputs: Any) -> None:
+        self.stages.append({"name": name, "duration_seconds": round(time.perf_counter() - started, 4), **outputs})
+
+
+def _write_roi_image(path: Path, image) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not cv2.imwrite(str(path), image):
+        raise RuntimeError(f"failed to write ROI image: {path}")
+    return path
 
 
 def _convert_walls_to_metres(
@@ -48,18 +85,133 @@ def _convert_walls_to_metres(
     return converted
 
 
-def _fallback_perimeter_walls(width_px: int, height_px: int, pixels_per_metre: float, config: AppConfig) -> list[WallSegment]:
+def _manual_pixels_per_metre(manual_scale: float | None) -> float | None:
+    if manual_scale is None:
+        return None
+    if manual_scale <= 0:
+        raise ValueError("manual scale must be positive metres per pixel")
+    return 1.0 / manual_scale
+
+
+def _ocr_labels(ocr_results: list[OCRText]) -> list[OCRText]:
+    return [item for item in ocr_results if item.semantic_type in {"room_label", "dimension", "balcony_label", "lift_label", "stair_label"}]
+
+
+def _scale_constraints_from_rooms(preliminary_rooms, ocr_results: list[OCRText]) -> list[ScaleConstraint]:
+    constraints: list[ScaleConstraint] = []
+    for room in preliminary_rooms:
+        if room.dimension_m is None:
+            continue
+        xs = [point.x for point in room.points]
+        ys = [point.y for point in room.points]
+        constraints.append(
+            ScaleConstraint(
+                id=f"room_dim_{len(constraints):03d}",
+                source="ocr_room_polygon",
+                label=room.name,
+                measured_px=(max(xs) - min(xs), max(ys) - min(ys)),
+                expected_m=room.dimension_m,
+                weight=1.0,
+            )
+        )
+    for item in ocr_results:
+        if item.semantic_type != "dimension":
+            continue
+        try:
+            parsed = parse_dimension_pair(item.normalized_text)
+        except ValueError:
+            continue
+        if parsed is None:
+            continue
+        xs = [point[0] for point in item.polygon]
+        ys = [point[1] for point in item.polygon]
+        text_width_px = max(xs) - min(xs)
+        text_height_px = max(ys) - min(ys)
+        if text_width_px > 0 and text_height_px > 0:
+            # Text boxes are low-weight hints only; exact scale should come from
+            # associated room geometry or manual scale.
+            constraints.append(
+                ScaleConstraint(
+                    id=f"text_dim_hint_{len(constraints):03d}",
+                    source="ocr_text_low_weight",
+                    label=item.normalized_text,
+                    measured_px=(text_width_px * 8.0, max(text_height_px * 8.0, text_width_px * 0.35)),
+                    expected_m=(parsed.width_m, parsed.height_m),
+                    weight=0.15,
+                )
+            )
+    return constraints
+
+
+def _scale_constraints_from_wall_bands(
+    bands: list[WallBand],
+    internal_thickness_m: float,
+    external_thickness_m: float,
+) -> list[ScaleConstraint]:
+    constraints: list[ScaleConstraint] = []
+    for band in bands:
+        expected = external_thickness_m if band.external else internal_thickness_m
+        constraints.append(
+            ScaleConstraint(
+                id=f"wall_thickness_{len(constraints):03d}",
+                source="wall_band_thickness_low_weight",
+                label=band.id,
+                measured_px=(band.thickness_px, band.thickness_px),
+                expected_m=(expected, expected),
+                weight=0.25 if band.external else 0.18,
+            )
+        )
+    return constraints
+
+
+def _classify_special_elements(ocr_results: list[OCRText], pixels_per_metre: float, image_height_px: int) -> list[ArchitecturalElement]:
+    elements: list[ArchitecturalElement] = []
     converter = ScaleConverter(pixels_per_metre=pixels_per_metre)
-    width_m = converter.px_to_m(width_px)
-    height_m = converter.px_to_m(height_px)
-    thickness = config.defaults.external_wall_thickness_m
-    wall_height = config.defaults.wall_height_m
-    return [
-        WallSegment(start=Point2D(x=0, y=0), end=Point2D(x=width_m, y=0), thickness_m=thickness, height_m=wall_height, external=True),
-        WallSegment(start=Point2D(x=width_m, y=0), end=Point2D(x=width_m, y=height_m), thickness_m=thickness, height_m=wall_height, external=True),
-        WallSegment(start=Point2D(x=width_m, y=height_m), end=Point2D(x=0, y=height_m), thickness_m=thickness, height_m=wall_height, external=True),
-        WallSegment(start=Point2D(x=0, y=height_m), end=Point2D(x=0, y=0), thickness_m=thickness, height_m=wall_height, external=True),
-    ]
+    for item in ocr_results:
+        kind = None
+        if item.semantic_type == "stair_label":
+            kind = "staircase"
+        elif item.semantic_type == "lift_label":
+            kind = "lift"
+        elif item.semantic_type == "balcony_label":
+            kind = "balcony"
+        elif "shelf" in item.normalized_text.lower():
+            kind = "shelf"
+        elif "entrance" in item.normalized_text.lower():
+            kind = "entrance"
+        if kind is None:
+            continue
+        cx = sum(point[0] for point in item.polygon) / len(item.polygon)
+        cy = sum(point[1] for point in item.polygon) / len(item.polygon)
+        elements.append(
+            ArchitecturalElement(
+                id=f"{kind}_{len(elements):03d}",
+                kind=kind,
+                center=Point2D(x=converter.px_to_m(cx), y=converter.px_to_m(image_height_px - cy)),
+                width_m=max(0.3, converter.px_to_m(max(point[0] for point in item.polygon) - min(point[0] for point in item.polygon))),
+                depth_m=max(0.3, converter.px_to_m(max(point[1] for point in item.polygon) - min(point[1] for point in item.polygon))),
+                confidence=item.confidence,
+                evidence_source="ocr_label",
+            )
+        )
+    return elements
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _validation_report(model: FloorPlanModel) -> dict[str, Any]:
+    return {
+        "schema_version": model.schema_version,
+        "quality_state": model.reconstruction.quality_state,
+        "quality_score": model.reconstruction.quality_score,
+        "pixels_per_metre": model.pixels_per_metre,
+        "scale_constraints": [item.model_dump() for item in model.scale_constraints],
+        "issues": [item.model_dump() for item in model.validation_issues],
+        "metadata": model.metadata,
+    }
 
 
 def analyze_image(
@@ -68,115 +220,225 @@ def analyze_image(
     config: AppConfig,
     manual_scale: float | None = None,
     require_ai_success: bool = False,
+    crop_rect: tuple[int, int, int, int] | None = None,
 ) -> FloorPlanModel:
+    output_dir.mkdir(parents=True, exist_ok=True)
     debug_dir = output_dir / "debug"
-    result = preprocess_image(input_path, debug_dir)
-    cv_walls = detect_wall_lines(
-        result.edges_path,
-        thickness_m=config.defaults.internal_wall_thickness_m,
-        height_m=config.defaults.wall_height_m,
+    stages = StageLogger()
+
+    started = time.perf_counter()
+    image = load_image(input_path)
+    stages.record("validate_input", started, image_shape=list(image.shape))
+
+    started = time.perf_counter()
+    roi_result = detect_plan_roi(
+        image,
+        padding_ratio=config.roi_detection.padding_ratio,
+        min_confidence=config.roi_detection.min_confidence,
+        crop_rect=crop_rect,
+        debug_dir=debug_dir,
     )
-    resized_height, resized_width = result.resized_shape[:2]
-    if manual_scale:
-        pixels_per_metre = 1.0 / manual_scale
-        scale_source = "manual"
-    else:
-        pixels_per_metre = max(resized_width, resized_height) / config.defaults.auto_plan_long_side_m
-        scale_source = "auto_assumed_long_side"
+    _write_roi_image(debug_dir / "plan_roi.png", roi_result.image)
+    stages.record("detect_plan_roi", started, roi=roi_result.roi.model_dump())
+
+    started = time.perf_counter()
+    preprocessing = preprocess_array(
+        roi_result.image,
+        debug_dir,
+        max_side=config.preprocessing.max_side_px,
+        options=config.preprocessing.model_dump(),
+    )
+    resized_height, resized_width = preprocessing.resized_shape[:2]
+    stages.record("preprocess_layers", started, layers={key: str(value) for key, value in preprocessing.layers.items()})
+
+    started = time.perf_counter()
+    analysis_image_path = preprocessing.layers["original_roi"]
+    ocr_results = run_ocr(analysis_image_path, config.ocr.backend, config.ocr.min_confidence) if config.ocr.enabled else []
+    stages.record("run_ocr", started, text_count=len(ocr_results))
+
+    started = time.perf_counter()
     ai_analysis = GeminiFloorPlanVisionAnalyzer(config.ai).analyze_with_diagnostics(
         input_path,
         require_success=require_ai_success,
     )
     ai_hints = ai_analysis.hints
-    detected_furniture = detect_furniture_from_image(input_path, pixels_per_metre, resized_height)
-    template_furniture = suggest_rendered_plan_furniture(resized_width, resized_height, pixels_per_metre)
-    rooms = []
-    doors = []
-    windows = []
-    furniture = []
-    ai_wall_count = 0
-    ai_furniture_count = 0
-    if ai_hints:
-        ai_walls, rooms, doors, windows, furniture = hints_to_floorplan_geometry(
-            ai_hints,
-            image_width_px=resized_width,
-            image_height_px=resized_height,
-            pixels_per_metre=pixels_per_metre,
-            config=config,
-        )
-        ai_wall_count = len(ai_walls)
-        ai_furniture_count = len(furniture)
-        walls = ai_walls if ai_walls else _convert_walls_to_metres(cv_walls, pixels_per_metre, resized_height)
-        if not furniture:
-            furniture = detected_furniture
-    else:
-        walls = _convert_walls_to_metres(cv_walls, pixels_per_metre, resized_height)
-        furniture = detected_furniture
-    semantic_categories = {item.category for item in furniture}
-    if len(furniture) < 15 or semantic_categories <= {"furniture"}:
-        furniture = _merge_furniture(furniture, template_furniture)
-    if not walls:
-        walls = _fallback_perimeter_walls(resized_width, resized_height, pixels_per_metre, config)
+    stages.record("gemini_semantic_hints", started, attempted=ai_analysis.attempted, succeeded=ai_analysis.succeeded)
+
+    started = time.perf_counter()
+    wall_detection = detect_wall_bands(
+        preprocessing.layers["horizontal_wall_band"],
+        preprocessing.layers["vertical_wall_band"],
+        debug_dir=debug_dir,
+        min_length_ratio=config.wall_bands.min_length_ratio,
+        merge_gap_ratio=config.wall_bands.merge_gap_ratio,
+        coordinate_tolerance_ratio=config.wall_bands.coordinate_tolerance_ratio,
+        min_thickness_px=config.wall_bands.min_thickness_px,
+        max_thickness_ratio=config.wall_bands.max_thickness_ratio,
+        internal_thickness_m=config.defaults.internal_wall_thickness_m,
+        external_thickness_m=config.defaults.external_wall_thickness_m,
+        wall_height_m=config.defaults.wall_height_m,
+    )
+    if not wall_detection.walls:
+        raise ValueError("no structural walls were found in the plan ROI")
+    stages.record("detect_raw_wall_bands", started, raw_wall_count=len(wall_detection.walls), band_count=len(wall_detection.bands))
+
+    started = time.perf_counter()
+    preliminary_rooms = extract_rooms_from_walls(wall_detection.walls, _ocr_labels(ocr_results), pixels_per_metre=1.0).rooms
+    stages.record("estimate_preliminary_rooms", started, room_count=len(preliminary_rooms))
+
+    started = time.perf_counter()
+    constraints = [
+        *_scale_constraints_from_rooms(preliminary_rooms, ocr_results),
+        *_scale_constraints_from_wall_bands(
+            wall_detection.bands,
+            config.defaults.internal_wall_thickness_m,
+            config.defaults.external_wall_thickness_m,
+        ),
+    ]
+    scale_result = solve_scale(
+        constraints,
+        manual_pixels_per_metre=_manual_pixels_per_metre(manual_scale),
+        min_pixels_per_metre=config.scale_solver.min_pixels_per_metre,
+        max_pixels_per_metre=config.scale_solver.max_pixels_per_metre,
+        outlier_mad_factor=config.scale_solver.outlier_mad_factor,
+    )
+    pixels_per_metre = scale_result.pixels_per_metre
+    stages.record(
+        "solve_scale",
+        started,
+        pixels_per_metre=pixels_per_metre,
+        source=scale_result.source,
+        used=len(scale_result.constraints_used),
+        rejected=len(scale_result.rejected_constraints),
+    )
+
+    started = time.perf_counter()
+    raw_walls_m = _convert_walls_to_metres(wall_detection.walls, pixels_per_metre, resized_height)
+    estimated_thickness = max(config.defaults.internal_wall_thickness_m, 1.0 / pixels_per_metre * 4.0)
+    reconstruction = reconstruct_walls(
+        raw_walls_m,
+        estimated_thickness_m=estimated_thickness,
+        angle_tolerance_deg=config.snapping.angle_tolerance_deg,
+        gap_tolerance_factor=config.snapping.gap_tolerance_thickness_factor,
+        merge_overlap_tolerance_factor=config.snapping.merge_overlap_tolerance_factor,
+        min_wall_length_m=config.snapping.min_wall_length_m,
+    )
+    stages.record("optimize_wall_topology", started, optimized_wall_count=len(reconstruction.walls))
+
+    started = time.perf_counter()
+    doors, windows, rejected_opening_hints = openings_from_semantic_hints(
+        ai_hints,
+        resized_width,
+        resized_height,
+        pixels_per_metre,
+        config.opening_detection.default_door_width_m,
+        config.opening_detection.default_window_width_m,
+        config.ai.gemini_min_confidence,
+    )
+    opening_result = attach_openings_to_walls(
+        reconstruction.walls,
+        doors,
+        windows,
+        tolerance_m=config.opening_detection.projection_tolerance_m,
+    )
+    stages.record("detect_attach_openings", started, doors=len(opening_result.doors), windows=len(opening_result.windows), rejected=len(opening_result.rejected))
+
+    started = time.perf_counter()
+    final_rooms = extract_rooms_from_walls(reconstruction.walls, _ocr_labels(ocr_results), pixels_per_metre=pixels_per_metre).rooms
+    stages.record("extract_final_rooms", started, room_count=len(final_rooms))
+
+    started = time.perf_counter()
+    special_elements = _classify_special_elements(ocr_results, pixels_per_metre, resized_height)
+    stages.record("classify_special_elements", started, element_count=len(special_elements))
+
+    raw_model = FloorPlanModel(
+        coordinate_system=CoordinateSystem.PIXELS,
+        pixels_per_metre=pixels_per_metre,
+        plan_roi=roi_result.roi,
+        walls=wall_detection.walls,
+        metadata={"source_image": str(input_path), "coordinate_note": "raw wall coordinates are ROI pixels"},
+    )
+    raw_model.save_json(output_dir / "floorplan.raw.json")
+
+    semantic_used = [f"opening:{door.id}" for door in opening_result.doors] + [f"opening:{window.id}" for window in opening_result.windows]
+    semantic_rejected = rejected_opening_hints + opening_result.rejected
     model = FloorPlanModel(
         coordinate_system=CoordinateSystem.METRES,
         pixels_per_metre=pixels_per_metre,
-        walls=cleanup_walls(walls),
-        doors=doors,
-        windows=windows,
-        rooms=rooms,
-        furniture=furniture,
+        plan_roi=roi_result.roi,
+        walls=reconstruction.walls,
+        doors=opening_result.doors,
+        windows=opening_result.windows,
+        rooms=final_rooms,
+        special_elements=special_elements,
+        scale_constraints=[*scale_result.constraints_used, *scale_result.rejected_constraints],
         metadata={
             "source_image": str(input_path),
-            "preprocessing": {key: str(value) for key, value in result.__dict__.items()},
-            "scale_source": scale_source,
-            "approximate_reconstruction": True,
+            "roi_image": str(analysis_image_path),
+            "scale_source": scale_result.source,
+            "scale_confidence": scale_result.confidence,
             "ai_provider": "gemini",
             "ai_assist_enabled": config.ai.gemini_enabled,
             "ai_assist_attempted": ai_analysis.attempted,
             "ai_assist_succeeded": ai_analysis.succeeded,
             "ai_assist_error": ai_analysis.error,
-            "ai_wall_hints_used": ai_wall_count,
-            "ai_furniture_hints_used": ai_furniture_count,
-            "local_furniture_hints_used": len(detected_furniture),
-            "template_furniture_hints_used": len(template_furniture),
+            "ai_wall_hints_rejected_as_geometry": len(ai_hints.walls) if ai_hints else 0,
+            "ai_room_hints_rejected_as_geometry": len(ai_hints.rooms) if ai_hints else 0,
+            "geometry_originated_only_from_ai": False,
+            "ocr_text_count": len(ocr_results),
+            "raw_wall_count": len(wall_detection.walls),
+            "wall_band_count": len(wall_detection.bands),
+            "opening_hints_rejected": semantic_rejected,
+            "room_extraction_source": "wall_topology",
         },
+        reconstruction=ReconstructionMetadata(
+            ai_geometry_originated=False,
+            stages=[*stages.stages, *reconstruction.audit_trail],
+            semantic_hints_used=semantic_used,
+            semantic_hints_rejected=semantic_rejected,
+        ),
     )
+    issues = validate_reconstruction(model)
+    for issue in semantic_rejected:
+        issues.append(ValidationIssue(code="semantic_hint_rejected", severity="info", message=issue))
+    score, state = score_quality(model.model_copy(update={"validation_issues": issues}))
+    model = model.model_copy(
+        update={
+            "validation_issues": issues,
+            "reconstruction": model.reconstruction.model_copy(update={"quality_score": score, "quality_state": state}),
+        }
+    )
+    model.save_json(output_dir / "floorplan.optimized.json")
     model.save_json(output_dir / "floorplan.json")
-    LOGGER.info("saved floorplan JSON to %s", output_dir / "floorplan.json")
+    _write_json(output_dir / "validation_report.json", _validation_report(model))
+    write_analysis_overlay(
+        analysis_image_path,
+        model,
+        output_dir / "analysis_overlay.svg",
+        output_dir / "analysis_overlay.png",
+        raw_walls=raw_walls_m,
+    )
+    LOGGER.info("saved optimized floorplan JSON to %s", output_dir / "floorplan.optimized.json")
     return model
 
 
-def _merge_furniture(base: list, additions: list) -> list:
-    merged = list(base)
-    always_keep_prefixes = (
-        "floor_patch",
-        "railing",
-        "stair",
-        "door",
-        "window",
-        "lamp",
-        "sink",
-        "stove",
-        "appliance",
-        "tv",
-        "wardrobe",
-    )
-    for item in additions:
-        if item.category.startswith(always_keep_prefixes):
-            merged.append(item)
-            continue
-        if any(
-            item.category == existing.category
-            and item.center.distance_to(existing.center) < max(0.35, min(item.width_m, item.depth_m) * 0.5)
-            for existing in merged
-        ):
-            continue
-        merged.append(item)
-    return merged
+def _select_floorplan_for_build(path: Path) -> Path:
+    if path.is_dir():
+        for name in ("floorplan.corrected.json", "floorplan.optimized.json", "floorplan.json"):
+            candidate = path / name
+            if candidate.exists():
+                return candidate
+    return path
 
 
 def build_model(floorplan_path: Path, output_glb: Path, config: AppConfig, run_blender: bool = False) -> Path:
-    model = FloorPlanModel.load_json(floorplan_path)
+    selected = _select_floorplan_for_build(floorplan_path)
+    model = FloorPlanModel.load_json(selected)
+    severe = [issue for issue in model.validation_issues if issue.severity == "severe"]
+    if severe and config.overlay.severe_error_blocks_glb:
+        raise ValueError(f"cannot generate GLB with severe validation errors: {', '.join(issue.code for issue in severe)}")
+    if model.reconstruction.quality_state == "failed" and model.reconstruction.quality_score < config.reconstruction_quality.min_glb_quality_score:
+        raise ValueError("cannot generate GLB: reconstruction quality is failed")
     return export_floorplan_glb(model, output_glb, config, run_blender=run_blender)
 
 
@@ -188,26 +450,26 @@ def convert_image_to_glb(
     work_dir: Path | None = None,
     run_blender: bool = False,
     require_ai_success: bool = False,
+    crop_rect: tuple[int, int, int, int] | None = None,
 ) -> Path:
     validate_image_file(input_image, config.limits)
     if output_glb.suffix.lower() != ".glb":
         raise ValueError("output path must end with .glb")
     work_dir = work_dir or output_glb.parent / f"{output_glb.stem}_work"
     work_dir.mkdir(parents=True, exist_ok=True)
-    model = analyze_image(
+    analyze_image(
         input_image,
         work_dir,
         config,
         manual_scale=manual_scale,
         require_ai_success=require_ai_success,
+        crop_rect=crop_rect,
     )
-    floorplan_path = work_dir / "floorplan.json"
-    model.save_json(floorplan_path)
-    return build_model(floorplan_path, output_glb, config, run_blender=run_blender)
+    return build_model(work_dir, output_glb, config, run_blender=run_blender)
 
 
 def prepare_walkthrough_floorplan(floorplan_path: Path, output_path: Path) -> FloorPlanModel:
-    model = FloorPlanModel.load_json(floorplan_path)
+    model = FloorPlanModel.load_json(_select_floorplan_for_build(floorplan_path))
     path = manual_or_auto_waypoints(model)
     updated = model.model_copy(update={"camera_waypoints": waypoints_from_points(path)})
     updated.save_json(output_path)
