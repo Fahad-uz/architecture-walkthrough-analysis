@@ -150,6 +150,18 @@ def _merged_room_floors(model: FloorPlanModel) -> list[RoomPolygon]:
     return rooms
 
 
+def _wall_index_for_opening(model: FloorPlanModel, wall_id: str | None, center: Point2D) -> int | None:
+    if wall_id:
+        for index, wall in enumerate(model.walls):
+            if wall.id == wall_id:
+                return index
+        if wall_id.isdigit():
+            numeric = int(wall_id)
+            if 0 <= numeric < len(model.walls):
+                return numeric
+    return nearest_wall_index(model.walls, center)
+
+
 def _chair_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
     width = min(item.width_m, 0.7)
     depth = min(item.depth_m, 0.7)
@@ -399,14 +411,14 @@ def export_simple_glb(model: FloorPlanModel, output_glb: Path) -> Path:
         scene.add_geometry(mesh, node_name=f"Wall_Cap_{index:03d}", geom_name=f"Wall_Cap_{index:03d}")
 
     for door_index, door in enumerate(model.doors):
-        wall_index = int(door.wall_id) if door.wall_id and door.wall_id.isdigit() else nearest_wall_index(model.walls, door.center)
+        wall_index = _wall_index_for_opening(model, door.wall_id, door.center)
         if wall_index is None:
             continue
         for part_index, mesh in enumerate(door_meshes(model.walls[wall_index], door, COLORS["door"])):
             scene.add_geometry(mesh, node_name=f"Door_{door_index:03d}_{part_index:02d}", geom_name=f"Door_{door_index:03d}_{part_index:02d}")
 
     for window_index, window in enumerate(model.windows):
-        wall_index = int(window.wall_id) if window.wall_id and window.wall_id.isdigit() else nearest_wall_index(model.walls, window.center)
+        wall_index = _wall_index_for_opening(model, window.wall_id, window.center)
         if wall_index is None:
             continue
         for part_index, mesh in enumerate(window_meshes(model.walls[wall_index], window, COLORS["metal"], COLORS["glass"])):
