@@ -12,9 +12,12 @@ from pydantic import BaseModel
 from architecture_walkthrough.ai.floorplan_vision import GeminiFloorPlanVisionError
 from architecture_walkthrough.config import AppConfig, load_config
 from architecture_walkthrough.geometry.floorplan import load_corrected_floorplan
+from architecture_walkthrough.geometry.furniture_layout import deduplicate_furniture, fit_furniture_to_rooms
 from architecture_walkthrough.geometry.validation import score_quality, validate_reconstruction
 from architecture_walkthrough.pipeline import analyze_image, build_model, prepare_walkthrough_floorplan
 from architecture_walkthrough.vision.overlay import write_analysis_overlay
+from architecture_walkthrough.vision.furniture_detection import detect_furniture_from_image
+from architecture_walkthrough.vision.preprocessing import load_image, resize_preserving_aspect
 from architecture_walkthrough.security.file_validation import create_job_dir, ensure_within_directory, validate_image_file
 
 
@@ -181,10 +184,13 @@ EDITOR_PAGE = """
         <label>Name / Type<input id="nameInput" type="text"></label>
         <label>Scale px/m<input id="scaleInput" type="number" min="1" step="0.01"></label>
         <label>Wall thickness m<input id="thicknessInput" type="number" min="0.01" step="0.01"></label>
+        <label>Opening width m<input id="openingWidthInput" type="number" min="0.1" step="0.05"></label>
+        <label>Opening height m<input id="openingHeightInput" type="number" min="0.1" step="0.05"></label>
         <label><span><input id="externalInput" type="checkbox"> External wall</span></label>
         <div class="row">
           <button id="applyBtn">Apply</button>
           <button id="snapBtn">Snap 90°</button>
+          <button id="fillWindowBtn">Fit Window</button>
         </div>
       </div>
       <div class="panel">
@@ -202,6 +208,8 @@ EDITOR_PAGE = """
     const nameInput = document.getElementById("nameInput");
     const scaleInput = document.getElementById("scaleInput");
     const thicknessInput = document.getElementById("thicknessInput");
+    const openingWidthInput = document.getElementById("openingWidthInput");
+    const openingHeightInput = document.getElementById("openingHeightInput");
     const externalInput = document.getElementById("externalInput");
     const downloadGlb = document.getElementById("downloadGlb");
     let model = null;
@@ -242,6 +250,26 @@ EDITOR_PAGE = """
       }
       return best;
     }
+    function wallById(id) {
+      return model.walls.find((wall) => wall.id === id) || null;
+    }
+    function openingEndpoints(item) {
+      const wall = wallById(item.wall_id) || nearestWall(item.center)?.wall;
+      const center = toPx(item.center);
+      if (!wall) return { a: { x: center.x - 8, y: center.y }, b: { x: center.x + 8, y: center.y } };
+      const start = toPx(wall.start);
+      const end = toPx(wall.end);
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      const length = Math.hypot(dx, dy) || 1;
+      const ux = dx / length;
+      const uy = dy / length;
+      const half = ((item.width_m || 1) * ppm()) / 2;
+      return {
+        a: { x: center.x - ux * half, y: center.y - uy * half },
+        b: { x: center.x + ux * half, y: center.y + uy * half }
+      };
+    }
     function select(type, index) {
       selected = type ? { type, index } : null;
       updateInspector();
@@ -252,6 +280,8 @@ EDITOR_PAGE = """
         selectedInfo.value = "";
         nameInput.value = "";
         thicknessInput.value = "";
+        openingWidthInput.value = "";
+        openingHeightInput.value = "";
         externalInput.checked = false;
         return;
       }
@@ -259,6 +289,8 @@ EDITOR_PAGE = """
       selectedInfo.value = `${selected.type} ${item.id || selected.index}`;
       nameInput.value = item.name || item.opening_type || item.category || "";
       thicknessInput.value = item.thickness_m || "";
+      openingWidthInput.value = item.width_m || "";
+      openingHeightInput.value = item.height_m || "";
       externalInput.checked = Boolean(item.external);
     }
     function render() {
@@ -302,13 +334,14 @@ EDITOR_PAGE = """
       }
     }
     function drawOpening(type, index, item, cls) {
-      const p = toPx(item.center);
-      const el = document.createElementNS("http://www.w3.org/2000/svg", cls === "door" ? "circle" : "rect");
-      if (cls === "door") {
-        el.setAttribute("cx", p.x); el.setAttribute("cy", p.y); el.setAttribute("r", 8);
-      } else {
-        el.setAttribute("x", p.x - 8); el.setAttribute("y", p.y - 8); el.setAttribute("width", 16); el.setAttribute("height", 16);
-      }
+      const endpoints = openingEndpoints(item);
+      const el = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      el.setAttribute("x1", endpoints.a.x);
+      el.setAttribute("y1", endpoints.a.y);
+      el.setAttribute("x2", endpoints.b.x);
+      el.setAttribute("y2", endpoints.b.y);
+      el.setAttribute("stroke-width", cls === "door" ? 9 : 7);
+      el.setAttribute("stroke-linecap", "square");
       el.setAttribute("class", cls);
       el.addEventListener("pointerdown", (evt) => { evt.stopPropagation(); select(type, index); drag = { type: "opening", collection: type, index }; svg.setPointerCapture(evt.pointerId); });
       svg.appendChild(el);
@@ -393,8 +426,26 @@ EDITOR_PAGE = """
           item.external = externalInput.checked;
           item.wall_type = item.external ? "external" : "internal";
         }
-        if (selected.type === "doors" || selected.type === "windows") item.opening_type = nameInput.value || item.opening_type;
+        if (selected.type === "doors" || selected.type === "windows") {
+          item.opening_type = nameInput.value || item.opening_type;
+          item.width_m = Number(openingWidthInput.value || item.width_m || 1);
+          item.height_m = Number(openingHeightInput.value || item.height_m || 1);
+          const match = nearestWall(item.center);
+          item.wall_id = match?.wall.id || item.wall_id || null;
+          item.offset_m = match?.offset || item.offset_m || null;
+          item.center = match?.point || item.center;
+        }
       }
+      render();
+    });
+    document.getElementById("fillWindowBtn").addEventListener("click", () => {
+      if (selected?.type !== "windows") return;
+      const item = model.windows[selected.index];
+      const wall = wallById(item.wall_id) || nearestWall(item.center)?.wall;
+      if (!wall) return;
+      const length = Math.hypot(wall.end.x - wall.start.x, wall.end.y - wall.start.y);
+      item.width_m = Math.max(0.3, length - 0.16);
+      openingWidthInput.value = item.width_m.toFixed(2);
       render();
     });
     document.getElementById("snapBtn").addEventListener("click", () => {
@@ -610,12 +661,32 @@ def create_app() -> FastAPI:
         path = config.paths.work_root / job_id / "floorplan.corrected.json"
         path.write_text(json.dumps(correction, indent=2), encoding="utf-8")
         model = load_corrected_floorplan(path)
+        source_image = source_image_path(job_dir)
+        source_height = resize_preserving_aspect(
+            load_image(source_image),
+            max_side=config.preprocessing.max_side_px,
+        ).shape[0]
+        local_furniture = detect_furniture_from_image(
+            source_image,
+            model.pixels_per_metre or 1.0,
+            source_height,
+            max_side=config.preprocessing.max_side_px,
+        )
+        furniture = fit_furniture_to_rooms(deduplicate_furniture([*model.furniture, *local_furniture]), model.rooms)
+        model = model.model_copy(update={"furniture": furniture})
         issues = validate_reconstruction(model)
         score, state = score_quality(model.model_copy(update={"validation_issues": issues}))
         model = model.model_copy(
             update={
                 "validation_issues": issues,
                 "reconstruction": model.reconstruction.model_copy(update={"quality_score": score, "quality_state": state}),
+                "metadata": {
+                    **model.metadata,
+                    "correction_source": model.metadata.get("correction_source", "browser_editor"),
+                    "furniture_rechecked_on_save": True,
+                    "local_furniture_rechecked_count": len(local_furniture),
+                    "accepted_furniture_count": len(furniture),
+                },
             }
         )
         model.save_json(path)
@@ -625,10 +696,9 @@ def create_app() -> FastAPI:
             "issues": [issue.model_dump() for issue in issues],
         }
         (job_dir / "validation_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-        source_image = model.metadata.get("roi_image")
-        if source_image and Path(source_image).exists():
-            write_analysis_overlay(Path(source_image), model, job_dir / "analysis_overlay.svg", job_dir / "analysis_overlay.png")
-        return {"status": "accepted"}
+        if source_image.exists():
+            write_analysis_overlay(source_image, model, job_dir / "analysis_overlay.svg", job_dir / "analysis_overlay.png")
+        return {"status": "accepted", "furniture": str(len(furniture))}
 
     @app.post("/jobs/{job_id}/validate-corrections")
     def validate_corrections(job_id: str) -> dict[str, object]:
