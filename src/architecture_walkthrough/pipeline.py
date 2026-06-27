@@ -21,6 +21,7 @@ from architecture_walkthrough.geometry.models import (
     ValidationIssue,
     WallSegment,
 )
+from architecture_walkthrough.geometry.furniture_layout import deduplicate_furniture, fit_furniture_to_rooms
 from architecture_walkthrough.geometry.reconstruction import reconstruct_walls
 from architecture_walkthrough.geometry.room_extraction import (
     extract_rooms_from_geometry_mask,
@@ -283,19 +284,6 @@ def _furniture_from_gemini(
             )
         )
     return placements
-
-
-def _dedupe_furniture(items: list[FurniturePlacement]) -> list[FurniturePlacement]:
-    kept: list[FurniturePlacement] = []
-    for item in sorted(items, key=lambda value: value.width_m * value.depth_m, reverse=True):
-        if any(
-            item.category == existing.category
-            and item.center.distance_to(existing.center) < max(0.25, min(item.width_m, item.depth_m) * 0.55)
-            for existing in kept
-        ):
-            continue
-        kept.append(item)
-    return kept[:80]
 
 
 def _project_semantic_rooms(
@@ -586,7 +574,7 @@ def analyze_image(
         pixels_per_metre,
         config.ai.gemini_min_confidence,
     )
-    furniture = _dedupe_furniture([*local_furniture, *gemini_furniture])
+    furniture = fit_furniture_to_rooms(deduplicate_furniture([*local_furniture, *gemini_furniture]), final_rooms)
     stages.record(
         "detect_optional_furniture",
         started,
