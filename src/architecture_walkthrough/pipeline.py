@@ -14,6 +14,7 @@ from architecture_walkthrough.geometry.models import (
     ArchitecturalElement,
     CoordinateSystem,
     FloorPlanModel,
+    FurniturePlacement,
     Point2D,
     ReconstructionMetadata,
     RoomPolygon,
@@ -33,6 +34,7 @@ from architecture_walkthrough.scene.blender_runner import run_blender_script
 from architecture_walkthrough.scene.scene_builder import build_blender_script
 from architecture_walkthrough.security.file_validation import validate_image_file
 from architecture_walkthrough.vision.ocr import OCRText, parse_dimension_pair, run_ocr
+from architecture_walkthrough.vision.furniture_detection import detect_furniture_from_image
 from architecture_walkthrough.vision.opening_detection import (
     attach_openings_to_walls,
     openings_from_semantic_hints,
@@ -247,6 +249,53 @@ def _classify_special_elements(ocr_results: list[OCRText], pixels_per_metre: flo
             )
         )
     return elements
+
+
+def _furniture_from_gemini(
+    ai_hints,
+    image_width_px: int,
+    image_height_px: int,
+    pixels_per_metre: float,
+    min_confidence: float,
+) -> list[FurniturePlacement]:
+    if ai_hints is None:
+        return []
+    placements: list[FurniturePlacement] = []
+    structural_tokens = ("wall", "door", "window", "balcony", "lift", "stair", "entrance", "railing")
+    for hint in ai_hints.furniture:
+        category = hint.category.strip().lower().replace(" ", "_")
+        if hint.confidence < min_confidence * 0.65 or any(token in category for token in structural_tokens):
+            continue
+        width_m = max(0.20, hint.width * image_width_px / pixels_per_metre)
+        depth_m = max(0.20, hint.depth * image_height_px / pixels_per_metre)
+        if width_m > 5.0 or depth_m > 5.0:
+            continue
+        placements.append(
+            FurniturePlacement(
+                category=category,
+                center=Point2D(
+                    x=hint.center.x * image_width_px / pixels_per_metre,
+                    y=(1.0 - hint.center.y) * image_height_px / pixels_per_metre,
+                ),
+                width_m=width_m,
+                depth_m=depth_m,
+                rotation_deg=hint.rotation_deg,
+            )
+        )
+    return placements
+
+
+def _dedupe_furniture(items: list[FurniturePlacement]) -> list[FurniturePlacement]:
+    kept: list[FurniturePlacement] = []
+    for item in sorted(items, key=lambda value: value.width_m * value.depth_m, reverse=True):
+        if any(
+            item.category == existing.category
+            and item.center.distance_to(existing.center) < max(0.25, min(item.width_m, item.depth_m) * 0.55)
+            for existing in kept
+        ):
+            continue
+        kept.append(item)
+    return kept[:80]
 
 
 def _project_semantic_rooms(
@@ -528,6 +577,24 @@ def analyze_image(
     special_elements = _classify_special_elements([*ocr_results, *semantic_special_labels], pixels_per_metre, resized_height)
     stages.record("classify_special_elements", started, element_count=len(special_elements))
 
+    started = time.perf_counter()
+    local_furniture = detect_furniture_from_image(analysis_image_path, pixels_per_metre, resized_height, max_side=config.preprocessing.max_side_px)
+    gemini_furniture = _furniture_from_gemini(
+        ai_hints,
+        resized_width,
+        resized_height,
+        pixels_per_metre,
+        config.ai.gemini_min_confidence,
+    )
+    furniture = _dedupe_furniture([*local_furniture, *gemini_furniture])
+    stages.record(
+        "detect_optional_furniture",
+        started,
+        local_furniture=len(local_furniture),
+        gemini_furniture=len(gemini_furniture),
+        accepted_furniture=len(furniture),
+    )
+
     raw_model = FloorPlanModel(
         coordinate_system=CoordinateSystem.PIXELS,
         pixels_per_metre=pixels_per_metre,
@@ -548,6 +615,7 @@ def analyze_image(
         windows=opening_result.windows,
         rooms=final_rooms,
         special_elements=special_elements,
+        furniture=furniture,
         scale_constraints=[*scale_result.constraints_used, *scale_result.rejected_constraints],
         metadata={
             "source_image": str(input_path),
@@ -565,6 +633,9 @@ def analyze_image(
             "ocr_text_count": len(ocr_results),
             "gemini_semantic_label_count": len(semantic_room_labels) + len(semantic_special_labels),
             "gemini_projected_room_count": len(semantic_room_additions),
+            "local_furniture_count": len(local_furniture),
+            "gemini_furniture_count": len(gemini_furniture),
+            "accepted_furniture_count": len(furniture),
             "raw_wall_count": len(wall_detection.walls),
             "wall_band_count": len(wall_detection.bands),
             "opening_hints_rejected": semantic_rejected,
