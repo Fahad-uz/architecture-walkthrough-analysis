@@ -20,7 +20,10 @@ from architecture_walkthrough.geometry.models import (
     WallSegment,
 )
 from architecture_walkthrough.geometry.reconstruction import reconstruct_walls
-from architecture_walkthrough.geometry.room_extraction import extract_rooms_from_walls
+from architecture_walkthrough.geometry.room_extraction import (
+    extract_rooms_from_geometry_mask,
+    extract_rooms_from_walls,
+)
 from architecture_walkthrough.geometry.scale import ScaleConverter
 from architecture_walkthrough.geometry.scale_solver import ScaleConstraint, solve_scale
 from architecture_walkthrough.geometry.validation import score_quality, validate_reconstruction
@@ -400,6 +403,13 @@ def analyze_image(
         pixels_per_metre=pixels_per_metre,
         image_height_px=resized_height,
     ).rooms
+    if not final_rooms:
+        final_rooms = extract_rooms_from_geometry_mask(
+            preprocessing.layers["cleaned_geometry_only"],
+            all_labels,
+            pixels_per_metre=pixels_per_metre,
+            image_height_px=resized_height,
+        ).rooms
     stages.record("extract_final_rooms", started, room_count=len(final_rooms))
 
     started = time.perf_counter()
