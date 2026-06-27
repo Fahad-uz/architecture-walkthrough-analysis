@@ -80,9 +80,27 @@ Useful endpoints:
 
 ## Correction Workflow
 
-Submit corrected `FloorPlanModel` JSON to `/jobs/{job_id}/corrections`. The API validates it, refreshes `validation_report.json`, regenerates the overlay when the ROI image is available, and uses corrected geometry for subsequent GLB generation.
+Open `/jobs/{job_id}/edit` after upload. The browser editor shows the plan image under an SVG overlay and lets you:
 
-The current frontend remains minimal. It exposes upload and manual scale; the correction API is ready for a richer SVG editor.
+- drag wall endpoints
+- add and delete walls
+- mark walls as external/internal
+- add room rectangles and edit room names
+- add doors and windows projected to the nearest wall
+- correct pixels-per-metre scale
+- save `floorplan.corrected.json`
+- validate the corrected model
+- generate `building.glb` from the corrected model
+
+The API also accepts corrected `FloorPlanModel` JSON at `/jobs/{job_id}/corrections`. Saving a correction refreshes `validation_report.json`, regenerates the overlay when the ROI image is available, and makes future GLB generation prefer `floorplan.corrected.json`.
+
+For near-human precision, use this order:
+
+```text
+upload -> inspect overlay -> correct 2D geometry -> save -> validate -> generate GLB
+```
+
+The automatic result is a starting point, not the final authority.
 
 ## Configuration
 
