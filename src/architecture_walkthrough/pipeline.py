@@ -16,6 +16,7 @@ from architecture_walkthrough.geometry.models import (
     FloorPlanModel,
     Point2D,
     ReconstructionMetadata,
+    RoomPolygon,
     ValidationIssue,
     WallSegment,
 )
@@ -248,6 +249,62 @@ def _classify_special_elements(ocr_results: list[OCRText], pixels_per_metre: flo
     return elements
 
 
+def _project_semantic_rooms(
+    ai_hints,
+    existing_rooms,
+    walls: list[WallSegment],
+    image_width_px: int,
+    image_height_px: int,
+    pixels_per_metre: float,
+    min_confidence: float,
+):
+    if ai_hints is None:
+        return []
+    verticals = sorted({(wall.start.x + wall.end.x) / 2 for wall in walls if abs(wall.start.x - wall.end.x) < abs(wall.start.y - wall.end.y)})
+    horizontals = sorted({(wall.start.y + wall.end.y) / 2 for wall in walls if abs(wall.start.y - wall.end.y) <= abs(wall.start.x - wall.end.x)})
+    projected = []
+    existing_names = {room.name.lower() for room in existing_rooms if room.name}
+    tolerance_m = 0.75
+
+    def snap(value: float, candidates: list[float]) -> tuple[float, bool]:
+        if not candidates:
+            return value, False
+        best = min(candidates, key=lambda item: abs(item - value))
+        return (best, True) if abs(best - value) <= tolerance_m else (value, False)
+
+    for hint in ai_hints.rooms:
+        if not hint.name or hint.confidence < min_confidence * 0.65:
+            continue
+        normalized_name = hint.name.lower()
+        if normalized_name in existing_names:
+            continue
+        xs = [point.x * image_width_px / pixels_per_metre for point in hint.points]
+        ys = [(1.0 - point.y) * image_height_px / pixels_per_metre for point in hint.points]
+        x0, x1 = min(xs), max(xs)
+        y0, y1 = min(ys), max(ys)
+        x0, sx0 = snap(x0, verticals)
+        x1, sx1 = snap(x1, verticals)
+        y0, sy0 = snap(y0, horizontals)
+        y1, sy1 = snap(y1, horizontals)
+        support = sum((sx0, sx1, sy0, sy1))
+        if support < 2 or x1 - x0 < 0.4 or y1 - y0 < 0.4:
+            continue
+        projected.append(
+            {
+                "name": hint.name,
+                "points": [
+                    Point2D(x=x0, y=y0),
+                    Point2D(x=x1, y=y0),
+                    Point2D(x=x1, y=y1),
+                    Point2D(x=x0, y=y1),
+                ],
+                "confidence": min(0.72, hint.confidence * (0.35 + support * 0.12)),
+            }
+        )
+        existing_names.add(normalized_name)
+    return projected
+
+
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -411,6 +468,25 @@ def analyze_image(
             pixels_per_metre=pixels_per_metre,
             image_height_px=resized_height,
         ).rooms
+    semantic_room_additions = _project_semantic_rooms(
+        ai_hints,
+        final_rooms,
+        reconstruction.walls,
+        resized_width,
+        resized_height,
+        pixels_per_metre,
+        config.ai.gemini_min_confidence,
+    )
+    for room_hint in semantic_room_additions:
+        final_rooms.append(
+            RoomPolygon(
+                id=f"room_{len(final_rooms):03d}",
+                name=room_hint["name"],
+                points=room_hint["points"],
+                confidence=room_hint["confidence"],
+                evidence_source="gemini_semantic_projected_to_walls",
+            )
+        )
     stages.record("extract_final_rooms", started, room_count=len(final_rooms))
 
     started = time.perf_counter()
@@ -453,6 +529,7 @@ def analyze_image(
             "geometry_originated_only_from_ai": False,
             "ocr_text_count": len(ocr_results),
             "gemini_semantic_label_count": len(semantic_room_labels) + len(semantic_special_labels),
+            "gemini_projected_room_count": len(semantic_room_additions),
             "raw_wall_count": len(wall_detection.walls),
             "wall_band_count": len(wall_detection.bands),
             "opening_hints_rejected": semantic_rejected,
