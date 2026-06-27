@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
+import cv2
+import numpy as np
 from shapely.geometry import LineString, Point, Polygon
 from shapely.ops import polygonize, unary_union
 
@@ -133,4 +136,57 @@ def extract_rooms_from_walls(
             rejected.append("discarded likely exterior polygon")
             continue
         rooms.append(_to_room_polygon(len(rooms), polygon, labels, pixels_per_metre, image_height_px))
+    return RoomExtractionResult(rooms=rooms, rejected=rejected)
+
+
+def extract_rooms_from_geometry_mask(
+    mask_path: Path,
+    labels: list[OCRText],
+    pixels_per_metre: float,
+    image_height_px: int,
+    close_gap_px: int = 70,
+    min_area_m2: float = 0.45,
+) -> RoomExtractionResult:
+    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+    if mask is None:
+        return RoomExtractionResult(rooms=[], rejected=[f"failed to read geometry mask: {mask_path}"])
+    _, wall_mask = cv2.threshold(mask, 1, 255, cv2.THRESH_BINARY)
+    kernel_size = max(5, close_gap_px | 1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
+    closed_walls = cv2.morphologyEx(wall_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+    closed_walls = cv2.dilate(closed_walls, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)), iterations=1)
+    free = cv2.bitwise_not(closed_walls)
+    flood = free.copy()
+    flood_mask = np.zeros((free.shape[0] + 2, free.shape[1] + 2), dtype=np.uint8)
+    for seed in ((0, 0), (free.shape[1] - 1, 0), (0, free.shape[0] - 1), (free.shape[1] - 1, free.shape[0] - 1)):
+        if flood[seed[1], seed[0]]:
+            cv2.floodFill(flood, flood_mask, seed, 0)
+    interior = flood
+    contours, _ = cv2.findContours(interior, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    rooms: list[RoomPolygon] = []
+    rejected: list[str] = []
+    min_area_px = min_area_m2 * pixels_per_metre * pixels_per_metre
+    for contour in sorted(contours, key=cv2.contourArea, reverse=True):
+        area_px = cv2.contourArea(contour)
+        if area_px < min_area_px:
+            rejected.append("mask room contour area below threshold")
+            continue
+        epsilon = max(2.0, cv2.arcLength(contour, True) * 0.01)
+        approx = cv2.approxPolyDP(contour, epsilon, True)
+        if len(approx) < 3:
+            rejected.append("mask room contour simplified below polygon threshold")
+            continue
+        points = [
+            Point2D(
+                x=float(point[0][0]) / pixels_per_metre,
+                y=float(image_height_px - point[0][1]) / pixels_per_metre,
+            )
+            for point in approx
+        ]
+        polygon = Polygon([(point.x, point.y) for point in points])
+        if not polygon.is_valid or polygon.area < min_area_m2:
+            rejected.append("mask room polygon invalid or too small")
+            continue
+        room = _to_room_polygon(len(rooms), polygon, labels, pixels_per_metre, image_height_px)
+        rooms.append(room.model_copy(update={"points": points, "evidence_source": "closed_wall_mask"}))
     return RoomExtractionResult(rooms=rooms, rejected=rejected)
