@@ -15,16 +15,28 @@ class RoomExtractionResult:
     rejected: list[str]
 
 
-def _to_room_polygon(index: int, polygon: Polygon, labels: list[OCRText], pixels_per_metre: float) -> RoomPolygon:
+def _label_point(label: OCRText, pixels_per_metre: float, image_height_px: int | None) -> Point:
+    lx = sum(point[0] for point in label.polygon) / len(label.polygon)
+    ly = sum(point[1] for point in label.polygon) / len(label.polygon)
+    if image_height_px is None:
+        return Point(lx / pixels_per_metre, ly / pixels_per_metre)
+    return Point(lx / pixels_per_metre, (image_height_px - ly) / pixels_per_metre)
+
+
+def _to_room_polygon(
+    index: int,
+    polygon: Polygon,
+    labels: list[OCRText],
+    pixels_per_metre: float,
+    image_height_px: int | None,
+) -> RoomPolygon:
     coords = list(polygon.exterior.coords)[:-1]
     points = [Point2D(x=x, y=y) for x, y in coords]
     centroid = polygon.centroid
     best_label: OCRText | None = None
     best_distance = float("inf")
     for label in labels:
-        lx = sum(point[0] for point in label.polygon) / len(label.polygon)
-        ly = sum(point[1] for point in label.polygon) / len(label.polygon)
-        label_point = Point(lx / pixels_per_metre, ly / pixels_per_metre)
+        label_point = _label_point(label, pixels_per_metre, image_height_px)
         if polygon.contains(label_point):
             best_label = label
             best_distance = 0.0
@@ -55,16 +67,55 @@ def _to_room_polygon(index: int, polygon: Polygon, labels: list[OCRText], pixels
     )
 
 
+def _close_collinear_gaps(lines: list[LineString], max_gap: float, coord_tol: float) -> list[LineString]:
+    endpoints: list[tuple[float, float, str]] = []
+    for line in lines:
+        coords = list(line.coords)
+        if len(coords) < 2:
+            continue
+        (x1, y1), (x2, y2) = coords[0], coords[-1]
+        if abs(y1 - y2) <= coord_tol:
+            y = (y1 + y2) / 2
+            endpoints.append((x1, y, "h"))
+            endpoints.append((x2, y, "h"))
+        elif abs(x1 - x2) <= coord_tol:
+            x = (x1 + x2) / 2
+            endpoints.append((x, y1, "v"))
+            endpoints.append((x, y2, "v"))
+    closures: list[LineString] = []
+    for orientation in ("h", "v"):
+        oriented = [item for item in endpoints if item[2] == orientation]
+        if orientation == "h":
+            oriented.sort(key=lambda item: (round(item[1] / coord_tol), item[0]))
+        else:
+            oriented.sort(key=lambda item: (round(item[0] / coord_tol), item[1]))
+        for first, second in zip(oriented, oriented[1:]):
+            if orientation == "h":
+                same_line = abs(first[1] - second[1]) <= coord_tol
+                gap = second[0] - first[0]
+                if same_line and 0.03 < gap <= max_gap:
+                    closures.append(LineString([(first[0], first[1]), (second[0], first[1])]))
+            else:
+                same_line = abs(first[0] - second[0]) <= coord_tol
+                gap = second[1] - first[1]
+                if same_line and 0.03 < gap <= max_gap:
+                    closures.append(LineString([(first[0], first[1]), (first[0], second[1])]))
+    return closures
+
+
 def extract_rooms_from_walls(
     walls: list[WallSegment],
     labels: list[OCRText],
     pixels_per_metre: float,
     min_area_m2: float = 0.45,
+    close_gap_m: float = 2.4,
+    image_height_px: int | None = None,
 ) -> RoomExtractionResult:
     lines = [LineString([(wall.start.x, wall.start.y), (wall.end.x, wall.end.y)]) for wall in walls if wall.start.distance_to(wall.end) > 0]
     if not lines:
         return RoomExtractionResult(rooms=[], rejected=["no wall lines available for room extraction"])
-    merged = unary_union(lines)
+    coord_tol = max(0.04, min((wall.thickness_m for wall in walls), default=0.12) * 0.75)
+    merged = unary_union([*lines, *_close_collinear_gaps(lines, close_gap_m, coord_tol)])
     polygons = list(polygonize(merged))
     if not polygons:
         return RoomExtractionResult(rooms=[], rejected=["wall topology did not close any room polygons"])
@@ -76,10 +127,10 @@ def extract_rooms_from_walls(
             rejected.append("polygon area below room threshold")
             continue
         if polygon.area == max_area and len(polygons) > 1 and not any(
-            polygon.contains(Point(sum(p[0] for p in label.polygon) / len(label.polygon) / pixels_per_metre, sum(p[1] for p in label.polygon) / len(label.polygon) / pixels_per_metre))
+            polygon.contains(_label_point(label, pixels_per_metre, image_height_px))
             for label in labels
         ):
             rejected.append("discarded likely exterior polygon")
             continue
-        rooms.append(_to_room_polygon(len(rooms), polygon, labels, pixels_per_metre))
+        rooms.append(_to_room_polygon(len(rooms), polygon, labels, pixels_per_metre, image_height_px))
     return RoomExtractionResult(rooms=rooms, rejected=rejected)
