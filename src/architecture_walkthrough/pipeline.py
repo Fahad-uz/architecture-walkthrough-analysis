@@ -100,16 +100,17 @@ def _ocr_labels(ocr_results: list[OCRText]) -> list[OCRText]:
     return [item for item in ocr_results if item.semantic_type in {"room_label", "dimension", "balcony_label", "lift_label", "stair_label"}]
 
 
-def _semantic_labels_from_gemini(ai_hints, image_width_px: int, image_height_px: int) -> list[OCRText]:
+def _semantic_labels_from_gemini(ai_hints, image_width_px: int, image_height_px: int) -> tuple[list[OCRText], list[OCRText]]:
     if ai_hints is None:
-        return []
-    labels: list[OCRText] = []
+        return [], []
+    room_labels: list[OCRText] = []
+    special_labels: list[OCRText] = []
     for room in ai_hints.rooms:
         if not room.name or room.confidence < 0.35 or not room.points:
             continue
         cx = sum(point.x for point in room.points) / len(room.points) * image_width_px
         cy = sum(point.y for point in room.points) / len(room.points) * image_height_px
-        labels.append(
+        room_labels.append(
             OCRText(
                 text=room.name,
                 polygon=[(cx - 5, cy - 5), (cx + 5, cy - 5), (cx + 5, cy + 5), (cx - 5, cy + 5)],
@@ -133,7 +134,7 @@ def _semantic_labels_from_gemini(ai_hints, image_width_px: int, image_height_px:
             semantic_type = "lift_label"
         elif "balcony" in category:
             semantic_type = "balcony_label"
-        labels.append(
+        special_labels.append(
             OCRText(
                 text=furniture.category,
                 polygon=[(cx - 5, cy - 5), (cx + 5, cy - 5), (cx + 5, cy + 5), (cx - 5, cy + 5)],
@@ -142,7 +143,7 @@ def _semantic_labels_from_gemini(ai_hints, image_width_px: int, image_height_px:
                 semantic_type=semantic_type,
             )
         )
-    return labels
+    return room_labels, special_labels
 
 
 def _scale_constraints_from_rooms(preliminary_rooms, ocr_results: list[OCRText]) -> list[ScaleConstraint]:
@@ -333,10 +334,10 @@ def analyze_image(
     stages.record("detect_raw_wall_bands", started, raw_wall_count=len(wall_detection.walls), band_count=len(wall_detection.bands))
 
     started = time.perf_counter()
-    semantic_labels = _semantic_labels_from_gemini(ai_hints, resized_width, resized_height)
-    all_labels = [*_ocr_labels(ocr_results), *semantic_labels]
+    semantic_room_labels, semantic_special_labels = _semantic_labels_from_gemini(ai_hints, resized_width, resized_height)
+    all_room_labels = [*_ocr_labels(ocr_results), *semantic_room_labels]
 
-    preliminary_rooms = extract_rooms_from_walls(wall_detection.walls, all_labels, pixels_per_metre=1.0).rooms
+    preliminary_rooms = extract_rooms_from_walls(wall_detection.walls, all_room_labels, pixels_per_metre=1.0).rooms
     stages.record("estimate_preliminary_rooms", started, room_count=len(preliminary_rooms))
 
     started = time.perf_counter()
@@ -399,21 +400,21 @@ def analyze_image(
     started = time.perf_counter()
     final_rooms = extract_rooms_from_walls(
         reconstruction.walls,
-        all_labels,
+        all_room_labels,
         pixels_per_metre=pixels_per_metre,
         image_height_px=resized_height,
     ).rooms
     if not final_rooms:
         final_rooms = extract_rooms_from_geometry_mask(
             preprocessing.layers["cleaned_geometry_only"],
-            all_labels,
+            all_room_labels,
             pixels_per_metre=pixels_per_metre,
             image_height_px=resized_height,
         ).rooms
     stages.record("extract_final_rooms", started, room_count=len(final_rooms))
 
     started = time.perf_counter()
-    special_elements = _classify_special_elements([*ocr_results, *semantic_labels], pixels_per_metre, resized_height)
+    special_elements = _classify_special_elements([*ocr_results, *semantic_special_labels], pixels_per_metre, resized_height)
     stages.record("classify_special_elements", started, element_count=len(special_elements))
 
     raw_model = FloorPlanModel(
@@ -451,7 +452,7 @@ def analyze_image(
             "ai_room_hints_rejected_as_geometry": len(ai_hints.rooms) if ai_hints else 0,
             "geometry_originated_only_from_ai": False,
             "ocr_text_count": len(ocr_results),
-            "gemini_semantic_label_count": len(semantic_labels),
+            "gemini_semantic_label_count": len(semantic_room_labels) + len(semantic_special_labels),
             "raw_wall_count": len(wall_detection.walls),
             "wall_band_count": len(wall_detection.bands),
             "opening_hints_rejected": semantic_rejected,
