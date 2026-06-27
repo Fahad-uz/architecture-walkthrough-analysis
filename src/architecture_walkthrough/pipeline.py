@@ -276,6 +276,8 @@ def _project_semantic_rooms(
         if not hint.name or hint.confidence < min_confidence * 0.65:
             continue
         normalized_name = hint.name.lower()
+        if any(token in normalized_name for token in ("lift", "stair", "entrance", "shelf", "counter")):
+            continue
         if normalized_name in existing_names:
             continue
         xs = [point.x * image_width_px / pixels_per_metre for point in hint.points]
@@ -303,6 +305,19 @@ def _project_semantic_rooms(
         )
         existing_names.add(normalized_name)
     return projected
+
+
+def _bbox_overlap_ratio(points_a: list[Point2D], points_b: list[Point2D]) -> float:
+    ax0, ax1 = min(point.x for point in points_a), max(point.x for point in points_a)
+    ay0, ay1 = min(point.y for point in points_a), max(point.y for point in points_a)
+    bx0, bx1 = min(point.x for point in points_b), max(point.x for point in points_b)
+    by0, by1 = min(point.y for point in points_b), max(point.y for point in points_b)
+    ix = max(0.0, min(ax1, bx1) - max(ax0, bx0))
+    iy = max(0.0, min(ay1, by1) - max(ay0, by0))
+    intersection = ix * iy
+    area_a = max((ax1 - ax0) * (ay1 - ay0), 1e-6)
+    area_b = max((bx1 - bx0) * (by1 - by0), 1e-6)
+    return intersection / min(area_a, area_b)
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -478,6 +493,26 @@ def analyze_image(
         config.ai.gemini_min_confidence,
     )
     for room_hint in semantic_room_additions:
+        best_index = None
+        best_overlap = 0.0
+        for index, room in enumerate(final_rooms):
+            if room.name:
+                continue
+            overlap = _bbox_overlap_ratio(room.points, room_hint["points"])
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_index = index
+        if best_index is not None and best_overlap >= 0.25:
+            final_rooms[best_index] = final_rooms[best_index].model_copy(
+                update={
+                    "name": room_hint["name"],
+                    "confidence": max(final_rooms[best_index].confidence, room_hint["confidence"]),
+                    "evidence_source": f"{final_rooms[best_index].evidence_source}+gemini_semantic_label",
+                }
+            )
+            continue
+        if any(_bbox_overlap_ratio(room.points, room_hint["points"]) > 0.85 for room in final_rooms):
+            continue
         final_rooms.append(
             RoomPolygon(
                 id=f"room_{len(final_rooms):03d}",
