@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
+
+from architecture_walkthrough.vision.ocr import parse_dimension_pair as parse_ocr_dimension_pair
 
 
 @dataclass(frozen=True)
@@ -19,19 +20,8 @@ class ScaleConverter:
         return value_m * self.pixels_per_metre
 
 
-_MEASURE_RE = re.compile(r"(?P<a>\d+(?:\.\d+)?)\s*(?:x|×|by)\s*(?P<b>\d+(?:\.\d+)?)\s*(?P<u>cm|m)?", re.I)
-
-
 def parse_dimension_pair(text: str) -> tuple[float, float, str] | None:
-    match = _MEASURE_RE.search(text)
-    if not match:
+    parsed = parse_ocr_dimension_pair(text)
+    if parsed is None:
         return None
-    unit = (match.group("u") or "cm").lower()
-    a = float(match.group("a"))
-    b = float(match.group("b"))
-    if unit == "cm":
-        a /= 100.0
-        b /= 100.0
-    if not (0.2 <= a <= 100 and 0.2 <= b <= 100):
-        raise ValueError(f"unreasonable architectural dimension: {text!r}")
-    return a, b, "m"
+    return parsed.width_m, parsed.height_m, "m"

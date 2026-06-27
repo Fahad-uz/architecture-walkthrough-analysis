@@ -53,6 +53,65 @@ class AISettings(BaseModel):
     gemini_min_confidence: float = Field(default=0.55, ge=0.0, le=1.0)
 
 
+class ROIDetectionSettings(BaseModel):
+    enabled: bool = True
+    padding_ratio: float = Field(default=0.02, ge=0.0, le=0.20)
+    min_confidence: float = Field(default=0.35, ge=0.0, le=1.0)
+
+
+class PreprocessingSettings(BaseModel):
+    max_side_px: PositiveInt = 1800
+    adaptive_block_ratio: float = Field(default=0.018, gt=0.0, le=0.10)
+    dark_threshold: PositiveInt = 95
+    min_symbol_area_ratio: float = Field(default=0.000002, gt=0.0, le=0.01)
+    max_text_component_area_ratio: float = Field(default=0.0007, gt=0.0, le=0.05)
+
+
+class WallBandSettings(BaseModel):
+    min_length_ratio: float = Field(default=0.035, gt=0.0, le=0.5)
+    merge_gap_ratio: float = Field(default=0.012, gt=0.0, le=0.1)
+    coordinate_tolerance_ratio: float = Field(default=0.006, gt=0.0, le=0.1)
+    min_thickness_px: PositiveInt = 3
+    max_thickness_ratio: float = Field(default=0.04, gt=0.0, le=0.2)
+
+
+class OCRSettings(BaseModel):
+    backend: str = "auto"
+    enabled: bool = True
+    min_confidence: float = Field(default=0.35, ge=0.0, le=1.0)
+
+
+class ScaleSolverSettings(BaseModel):
+    min_pixels_per_metre: PositiveFloat = 10.0
+    max_pixels_per_metre: PositiveFloat = 1000.0
+    outlier_mad_factor: PositiveFloat = 2.8
+    min_confidence: float = Field(default=0.35, ge=0.0, le=1.0)
+
+
+class SnappingSettings(BaseModel):
+    angle_tolerance_deg: PositiveFloat = 7.0
+    gap_tolerance_thickness_factor: PositiveFloat = 2.5
+    merge_overlap_tolerance_factor: PositiveFloat = 1.5
+    min_wall_length_m: PositiveFloat = 0.20
+
+
+class OpeningDetectionSettings(BaseModel):
+    enabled: bool = True
+    projection_tolerance_m: PositiveFloat = 0.35
+    default_door_width_m: PositiveFloat = 0.90
+    default_window_width_m: PositiveFloat = 1.20
+
+
+class OverlaySettings(BaseModel):
+    enabled: bool = True
+    severe_error_blocks_glb: bool = True
+
+
+class ReconstructionQualitySettings(BaseModel):
+    min_glb_quality_score: float = Field(default=0.25, ge=0.0, le=1.0)
+    allow_debug_fallback_rectangle: bool = False
+
+
 class RenderSettings(BaseModel):
     preview_samples: PositiveInt = 16
     final_samples: PositiveInt = 96
@@ -94,6 +153,15 @@ class AppConfig(BaseModel):
     limits: LimitSettings = Field(default_factory=LimitSettings)
     defaults: GeometryDefaults = Field(default_factory=GeometryDefaults)
     ai: AISettings = Field(default_factory=AISettings)
+    roi_detection: ROIDetectionSettings = Field(default_factory=ROIDetectionSettings)
+    preprocessing: PreprocessingSettings = Field(default_factory=PreprocessingSettings)
+    wall_bands: WallBandSettings = Field(default_factory=WallBandSettings)
+    ocr: OCRSettings = Field(default_factory=OCRSettings)
+    scale_solver: ScaleSolverSettings = Field(default_factory=ScaleSolverSettings)
+    snapping: SnappingSettings = Field(default_factory=SnappingSettings)
+    opening_detection: OpeningDetectionSettings = Field(default_factory=OpeningDetectionSettings)
+    overlay: OverlaySettings = Field(default_factory=OverlaySettings)
+    reconstruction_quality: ReconstructionQualitySettings = Field(default_factory=ReconstructionQualitySettings)
     render: RenderSettings = Field(default_factory=RenderSettings)
     textures: TextureSettings = Field(default_factory=TextureSettings)
     assets: AssetSettings = Field(default_factory=AssetSettings)

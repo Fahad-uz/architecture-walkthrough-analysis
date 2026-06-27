@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveFloat, field_validator
 
@@ -22,6 +22,7 @@ class Point2D(BaseModel):
 
 
 class WallSegment(BaseModel):
+    id: str | None = None
     start: Point2D
     end: Point2D
     thickness_m: PositiveFloat = 0.12
@@ -30,9 +31,13 @@ class WallSegment(BaseModel):
     wall_type: str = "internal"
     material_preset: str | None = None
     room_side: str | None = None
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    evidence_source: str = "unknown"
+    source_band_id: str | None = None
 
 
 class DoorOpening(BaseModel):
+    id: str | None = None
     center: Point2D
     width_m: PositiveFloat = 0.90
     height_m: PositiveFloat = 2.10
@@ -40,9 +45,13 @@ class DoorOpening(BaseModel):
     offset_m: float | None = None
     opening_type: str = "single_leaf"
     asset_preset: str | None = None
+    opening_direction: str | None = None
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    evidence_source: str = "unknown"
 
 
 class WindowOpening(BaseModel):
+    id: str | None = None
     center: Point2D
     width_m: PositiveFloat = 1.20
     height_m: PositiveFloat = 1.20
@@ -51,11 +60,17 @@ class WindowOpening(BaseModel):
     offset_m: float | None = None
     opening_type: str = "fixed"
     asset_preset: str | None = None
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    evidence_source: str = "unknown"
 
 
 class RoomPolygon(BaseModel):
+    id: str | None = None
     name: str | None = None
     points: list[Point2D]
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    evidence_source: str = "unknown"
+    dimension_m: tuple[float, float] | None = None
 
     @field_validator("points")
     @classmethod
@@ -87,6 +102,65 @@ class AssetPlacement(BaseModel):
     height_m: PositiveFloat | None = None
     rotation_deg: float = 0.0
     asset_preset: str | None = None
+
+
+class BoundingBox(BaseModel):
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+class PlanROI(BaseModel):
+    rect: BoundingBox
+    confidence: float = Field(ge=0.0, le=1.0)
+    source: str = "auto"
+    padding_px: int = 0
+    full_image_width_px: int | None = None
+    full_image_height_px: int | None = None
+
+
+class ScaleConstraintRecord(BaseModel):
+    id: str
+    source: str
+    label: str | None = None
+    measured_px: tuple[float, float]
+    expected_m: tuple[float, float]
+    pixels_per_metre: float
+    residual: float = 0.0
+    weight: float = 1.0
+    accepted: bool = True
+    reason: str | None = None
+
+
+class ValidationIssue(BaseModel):
+    code: str
+    severity: Literal["info", "warning", "error", "severe"] = "warning"
+    message: str
+    element_id: str | None = None
+
+
+class ReconstructionMetadata(BaseModel):
+    schema_version: str = "2.0"
+    quality_state: Literal["high", "review_required", "failed"] = "review_required"
+    quality_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    stages: list[dict[str, Any]] = Field(default_factory=list)
+    ai_geometry_originated: bool = False
+    semantic_hints_used: list[str] = Field(default_factory=list)
+    semantic_hints_rejected: list[str] = Field(default_factory=list)
+
+
+class ArchitecturalElement(BaseModel):
+    id: str
+    kind: str
+    polygon: list[Point2D] = Field(default_factory=list)
+    center: Point2D | None = None
+    width_m: PositiveFloat | None = None
+    depth_m: PositiveFloat | None = None
+    rotation_deg: float = 0.0
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    evidence_source: str = "unknown"
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class CeilingSettings(BaseModel):
@@ -123,13 +197,16 @@ class FloorPlanModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     coordinate_system: CoordinateSystem = CoordinateSystem.METRES
+    schema_version: str = "2.0"
     pixels_per_metre: PositiveFloat | None = None
+    plan_roi: PlanROI | None = None
     walls: list[WallSegment] = Field(default_factory=list)
     doors: list[DoorOpening] = Field(default_factory=list)
     windows: list[WindowOpening] = Field(default_factory=list)
     rooms: list[RoomPolygon] = Field(default_factory=list)
     balconies: list[BalconyPolygon] = Field(default_factory=list)
     slabs: list[SlabPolygon] = Field(default_factory=list)
+    special_elements: list[ArchitecturalElement] = Field(default_factory=list)
     furniture: list[FurniturePlacement] = Field(default_factory=list)
     asset_placements: list[AssetPlacement] = Field(default_factory=list)
     material_assignments: list[MaterialAssignment] = Field(default_factory=list)
@@ -137,6 +214,9 @@ class FloorPlanModel(BaseModel):
     style: SceneStyleSettings = Field(default_factory=SceneStyleSettings)
     entrance: Point2D | None = None
     camera_waypoints: list[CameraWaypoint] = Field(default_factory=list)
+    scale_constraints: list[ScaleConstraintRecord] = Field(default_factory=list)
+    validation_issues: list[ValidationIssue] = Field(default_factory=list)
+    reconstruction: ReconstructionMetadata = Field(default_factory=ReconstructionMetadata)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     def save_json(self, path: Path) -> None:
