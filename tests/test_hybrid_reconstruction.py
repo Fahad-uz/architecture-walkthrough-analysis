@@ -6,7 +6,15 @@ import cv2
 import numpy as np
 import pytest
 
-from architecture_walkthrough.geometry.models import DoorOpening, Point2D, WallSegment, WindowOpening
+from architecture_walkthrough.geometry.furniture_layout import fit_furniture_to_rooms
+from architecture_walkthrough.geometry.models import (
+    DoorOpening,
+    FurniturePlacement,
+    Point2D,
+    RoomPolygon,
+    WallSegment,
+    WindowOpening,
+)
 from architecture_walkthrough.geometry.reconstruction import reconstruct_walls
 from architecture_walkthrough.geometry.room_extraction import extract_rooms_from_walls
 from architecture_walkthrough.geometry.scale_solver import ScaleConstraint, solve_scale
@@ -106,3 +114,23 @@ def test_openings_project_to_nearest_wall() -> None:
     assert result.doors[0].wall_id == "w0"
     assert result.doors[0].center.y == 0
     assert result.windows[0].wall_id == "w0"
+
+
+def test_furniture_is_fit_inside_room_bounds() -> None:
+    room = RoomPolygon(
+        points=[
+            Point2D(x=0, y=0),
+            Point2D(x=2, y=0),
+            Point2D(x=2, y=2),
+            Point2D(x=0, y=2),
+        ]
+    )
+    fitted = fit_furniture_to_rooms(
+        [FurniturePlacement(category="bed", center=Point2D(x=4, y=4), width_m=3, depth_m=3)],
+        [room],
+    )
+    assert len(fitted) == 1
+    assert 0 <= fitted[0].center.x <= 2
+    assert 0 <= fitted[0].center.y <= 2
+    assert fitted[0].width_m <= 1.8
+    assert fitted[0].depth_m <= 1.8
