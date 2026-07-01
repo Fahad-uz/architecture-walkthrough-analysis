@@ -35,6 +35,47 @@ ai:
   gemini_enabled: true
   gemini_model: gemini-2.5-flash
   gemini_min_confidence: 0.55
+roi_detection:
+  enabled: true
+  padding_ratio: 0.02
+  min_confidence: 0.35
+preprocessing:
+  max_side_px: 1800
+  adaptive_block_ratio: 0.018
+  dark_threshold: 95
+  min_symbol_area_ratio: 0.000002
+  max_text_component_area_ratio: 0.0007
+wall_bands:
+  min_length_ratio: 0.035
+  merge_gap_ratio: 0.012
+  coordinate_tolerance_ratio: 0.006
+  min_thickness_px: 3
+  max_thickness_ratio: 0.04
+ocr:
+  backend: auto
+  enabled: true
+  min_confidence: 0.35
+scale_solver:
+  min_pixels_per_metre: 10.0
+  max_pixels_per_metre: 1000.0
+  outlier_mad_factor: 2.8
+  min_confidence: 0.35
+snapping:
+  angle_tolerance_deg: 7.0
+  gap_tolerance_thickness_factor: 2.5
+  merge_overlap_tolerance_factor: 1.5
+  min_wall_length_m: 0.20
+opening_detection:
+  enabled: true
+  projection_tolerance_m: 0.35
+  default_door_width_m: 0.90
+  default_window_width_m: 1.20
+overlay:
+  enabled: true
+  severe_error_blocks_glb: true
+reconstruction_quality:
+  min_glb_quality_score: 0.25
+  allow_debug_fallback_rectangle: false
 render:
   preview_samples: 16
   final_samples: 96

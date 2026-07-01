@@ -5,7 +5,12 @@ from pathlib import Path
 
 from architecture_walkthrough.config import load_config
 from architecture_walkthrough.logging_config import configure_logging
-from architecture_walkthrough.pipeline import analyze_image, build_model, convert_image_to_glb, render_walkthrough
+from architecture_walkthrough.image_to_glb import (
+    analyze_floorplan_image,
+    build_glb_model,
+    convert_image_to_glb,
+)
+from architecture_walkthrough.pipeline import render_walkthrough
 from architecture_walkthrough.scene.glb_validator import validate_glb
 
 
@@ -19,6 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--output", required=True)
     analyze.add_argument("--manual-scale", type=float, default=None, help="metres per pixel")
     analyze.add_argument("--require-gemini", action="store_true", help="Fail if Gemini vision hints cannot be generated")
+    analyze.add_argument("--crop", nargs=4, type=int, metavar=("X", "Y", "W", "H"), help="optional manual crop rectangle in source pixels")
 
     build = sub.add_parser("build-model")
     build.add_argument("--floorplan", required=True)
@@ -31,6 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     image_to_glb.add_argument("--output", required=True)
     image_to_glb.add_argument("--work-dir", default=None)
     image_to_glb.add_argument("--manual-scale", type=float, default=None, help="metres per pixel")
+    image_to_glb.add_argument("--crop", nargs=4, type=int, metavar=("X", "Y", "W", "H"), help="optional manual crop rectangle in source pixels")
     image_to_glb.add_argument("--use-blender", action="store_true", help="Use Blender instead of the default pure-Python GLB exporter")
     image_to_glb.add_argument("--use-gemini", action="store_true", help="Use Gemini vision hints when GEMINI_API_KEY is configured")
     image_to_glb.add_argument("--require-gemini", action="store_true", help="Fail if Gemini vision hints cannot be generated")
@@ -48,6 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_all.add_argument("--input", required=True)
     run_all.add_argument("--output", required=True)
     run_all.add_argument("--manual-scale", type=float, default=None)
+    run_all.add_argument("--crop", nargs=4, type=int, metavar=("X", "Y", "W", "H"), help="optional manual crop rectangle in source pixels")
     run_all.add_argument("--use-blender", action="store_true", help="Use Blender instead of the default pure-Python GLB exporter")
     run_all.add_argument("--use-gemini", action="store_true", help="Use Gemini vision hints when GEMINI_API_KEY is configured")
     run_all.add_argument("--require-gemini", action="store_true", help="Fail if Gemini vision hints cannot be generated")
@@ -60,10 +68,17 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = load_config(args.config)
     if args.command == "analyze":
-        analyze_image(Path(args.input), Path(args.output), config, args.manual_scale, require_ai_success=args.require_gemini)
+        analyze_floorplan_image(
+            Path(args.input),
+            Path(args.output),
+            config,
+            args.manual_scale,
+            require_ai_success=args.require_gemini,
+            crop_rect=tuple(args.crop) if args.crop else None,
+        )
         return 0
     if args.command == "build-model":
-        build_model(Path(args.floorplan), Path(args.output), config, run_blender=args.use_blender)
+        build_glb_model(Path(args.floorplan), Path(args.output), config, run_blender=args.use_blender)
         return 0
     if args.command == "image-to-glb":
         if args.use_gemini:
@@ -76,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
             work_dir=Path(args.work_dir) if args.work_dir else None,
             run_blender=args.use_blender,
             require_ai_success=args.require_gemini,
+            crop_rect=tuple(args.crop) if args.crop else None,
         )
         return 0
     if args.command == "walkthrough":
@@ -90,8 +106,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.use_gemini:
             config.ai.gemini_enabled = True
         out = Path(args.output)
-        analyze_image(Path(args.input), out / "debug", config, args.manual_scale, require_ai_success=args.require_gemini)
-        build_model(out / "debug" / "floorplan.json", out / "models" / "building.glb", config, run_blender=args.use_blender)
+        analyze_floorplan_image(
+            Path(args.input),
+            out,
+            config,
+            args.manual_scale,
+            require_ai_success=args.require_gemini,
+            crop_rect=tuple(args.crop) if args.crop else None,
+        )
+        build_glb_model(out, out / "models" / "building.glb", config, run_blender=args.use_blender)
         return 0
     return 2
 

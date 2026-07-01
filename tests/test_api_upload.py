@@ -31,7 +31,11 @@ def test_app_exposes_upload_and_download_routes() -> None:
     routes = {getattr(route, "path", "") for route in app.routes}
     assert "/" in routes
     assert "/jobs" in routes
+    assert "/jobs/{job_id}/edit" in routes
+    assert "/jobs/{job_id}/edit-data" in routes
+    assert "/jobs/{job_id}/source-image" in routes
     assert "/jobs/{job_id}/artifacts/{artifact_name}" in routes
     assert "/gemini-status" in routes
     assert "Create GLB" in UPLOAD_PAGE
+    assert "Open correction editor" in UPLOAD_PAGE
     assert "Use Gemini vision assist" in UPLOAD_PAGE

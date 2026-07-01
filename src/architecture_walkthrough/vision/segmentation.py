@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
-import numpy as np
 
 from architecture_walkthrough.config import AISettings
 from architecture_walkthrough.geometry.models import Point2D
