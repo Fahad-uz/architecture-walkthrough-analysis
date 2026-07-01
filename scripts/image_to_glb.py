@@ -5,7 +5,7 @@ from pathlib import Path
 
 from architecture_walkthrough.config import load_config
 from architecture_walkthrough.logging_config import configure_logging
-from architecture_walkthrough.pipeline import convert_image_to_glb
+from architecture_walkthrough.image_to_glb import convert_image_to_glb
 
 
 def build_parser() -> argparse.ArgumentParser:

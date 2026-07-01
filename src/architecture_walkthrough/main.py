@@ -5,7 +5,12 @@ from pathlib import Path
 
 from architecture_walkthrough.config import load_config
 from architecture_walkthrough.logging_config import configure_logging
-from architecture_walkthrough.pipeline import analyze_image, build_model, convert_image_to_glb, render_walkthrough
+from architecture_walkthrough.image_to_glb import (
+    analyze_floorplan_image,
+    build_glb_model,
+    convert_image_to_glb,
+)
+from architecture_walkthrough.pipeline import render_walkthrough
 from architecture_walkthrough.scene.glb_validator import validate_glb
 
 
@@ -63,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = load_config(args.config)
     if args.command == "analyze":
-        analyze_image(
+        analyze_floorplan_image(
             Path(args.input),
             Path(args.output),
             config,
@@ -73,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if args.command == "build-model":
-        build_model(Path(args.floorplan), Path(args.output), config, run_blender=args.use_blender)
+        build_glb_model(Path(args.floorplan), Path(args.output), config, run_blender=args.use_blender)
         return 0
     if args.command == "image-to-glb":
         if args.use_gemini:
@@ -101,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.use_gemini:
             config.ai.gemini_enabled = True
         out = Path(args.output)
-        analyze_image(
+        analyze_floorplan_image(
             Path(args.input),
             out,
             config,
@@ -109,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
             require_ai_success=args.require_gemini,
             crop_rect=tuple(args.crop) if args.crop else None,
         )
-        build_model(out, out / "models" / "building.glb", config, run_blender=args.use_blender)
+        build_glb_model(out, out / "models" / "building.glb", config, run_blender=args.use_blender)
         return 0
     return 2
 

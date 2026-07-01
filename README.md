@@ -1,8 +1,24 @@
 # Architecture Walkthrough Analysis
 
-Accuracy-first floor-plan reconstruction for clean architectural PNGs.
+Accuracy-first floor-plan reconstruction for turning architectural plan images into editable analysis artifacts and GLB building models.
 
-The project now uses a deterministic hybrid pipeline:
+The current product is organized around three public modules:
+
+```text
+src/architecture_walkthrough/
+  ui/             Browser upload and correction experience
+  image_to_glb/   Image analysis plus GLB generation entry points
+  walkthrough/    Camera/path planning and future walkthrough rendering
+
+  ai/             Gemini semantic hints, never authoritative geometry
+  api/            FastAPI routes used by the UI
+  geometry/       Floor-plan models, validation, scale, rooms, topology
+  scene/          GLB and Blender scene builders
+  security/       Upload validation and subprocess safety
+  vision/         ROI detection, preprocessing, OCR, walls, overlays
+```
+
+The automatic pipeline is deterministic where structure matters:
 
 ```text
 image -> ROI extraction -> layer preprocessing -> wall-band detection
@@ -11,65 +27,62 @@ image -> ROI extraction -> layer preprocessing -> wall-band detection
       -> parametric GLB generation
 ```
 
-Gemini is semantic-only. It may suggest labels and likely doors/windows, but it is never the source of final wall coordinates or room polygons. Structural geometry comes from local image evidence and geometric constraints.
+Gemini is semantic-only. It can suggest labels, furniture, doors, and windows, but final wall coordinates and room polygons come from local image evidence and geometric constraints.
 
-## Supported Inputs
+## Setup
 
-Best results come from clean black-and-white floor plans with thick dark walls, clear room labels, dimension text, and minimal skew. The ROI detector excludes title blocks, legends, compass marks, room schedules, and large page borders from structural wall detection where possible.
-
-## Outputs
-
-Each analysis job writes:
-
-- `floorplan.raw.json`: raw ROI pixel-space wall-band detections.
-- `floorplan.optimized.json`: authoritative optimized model for GLB generation.
-- `floorplan.corrected.json`: optional human-edited model.
-- `floorplan.json`: compatibility alias for optimized JSON.
-- `validation_report.json`: quality score, scale constraints, and issues.
-- `analysis_overlay.svg` and `analysis_overlay.png`: source-aligned reconstruction overlays.
-- `building.glb`: generated model, when validation quality allows export.
-
-The GLB builder chooses `floorplan.corrected.json`, then `floorplan.optimized.json`, then `floorplan.json`.
-
-## Scale
-
-Automatic scale is solved from multiple constraints: room polygon dimensions, OCR dimensions, and low-weight wall-thickness evidence. Manual scale overrides automatic solving:
+Use Python 3.11 or newer.
 
 ```powershell
-architecture-walkthrough --config configs/default.yaml analyze --input assets/input/plan.png --output outputs/job --manual-scale 0.01
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -U pip
+.\.venv\Scripts\python -m pip install -e ".[dev]"
 ```
 
-`--manual-scale` is metres per pixel.
+For optional Gemini assistance, set `GEMINI_API_KEY` in your environment. Do not commit `.env` files or keys.
 
-## Running
+## Quick Start
 
-Analyze only:
+Analyze a floor plan:
 
 ```powershell
-architecture-walkthrough --config configs/default.yaml analyze --input assets/input/third_floor.png --output outputs/third_floor --crop X Y W H
+architecture-walkthrough --config configs/default.yaml analyze --input assets/input/plan.png --output outputs/plan
 ```
 
 Generate a GLB from optimized or corrected JSON:
 
 ```powershell
-architecture-walkthrough --config configs/default.yaml build-model --floorplan outputs/third_floor --output outputs/third_floor/building.glb
+architecture-walkthrough --config configs/default.yaml build-model --floorplan outputs/plan --output outputs/plan/building.glb
 ```
 
-One-step image to GLB:
+Run the complete image-to-GLB flow:
 
 ```powershell
-python scripts/image_to_glb.py --input assets/input/third_floor.png --output outputs/third_floor/building.glb --work-dir outputs/third_floor --manual-scale 0.01
+architecture-walkthrough --config configs/default.yaml image-to-glb --input assets/input/plan.png --output outputs/plan/building.glb --work-dir outputs/plan --manual-scale 0.01
 ```
 
-API:
+You can also use the script wrapper:
 
 ```powershell
-uvicorn architecture_walkthrough.api.app:create_app --factory --reload
+python scripts/image_to_glb.py --input assets/input/plan.png --output outputs/plan/building.glb --work-dir outputs/plan --manual-scale 0.01
 ```
 
-Useful endpoints:
+`--manual-scale` is metres per pixel and overrides automatic scale solving.
 
-- `POST /jobs`: upload and analyze.
+## UI
+
+Start the browser UI:
+
+```powershell
+uvicorn architecture_walkthrough.ui:create_app --factory --reload
+```
+
+Open `http://127.0.0.1:8000`, upload a plan image, inspect the generated artifacts, then open the correction editor. The editor lets you adjust walls, rooms, doors, windows, and scale before regenerating the GLB.
+
+Useful API endpoints:
+
+- `POST /jobs`
+- `GET /jobs/{job_id}/edit`
 - `GET /jobs/{job_id}/raw-plan`
 - `GET /jobs/{job_id}/optimized-plan`
 - `GET /jobs/{job_id}/validation-report`
@@ -78,35 +91,40 @@ Useful endpoints:
 - `POST /jobs/{job_id}/validate-corrections`
 - `POST /jobs/{job_id}/generate-model`
 
-## Correction Workflow
+## Outputs
 
-Open `/jobs/{job_id}/edit` after upload. The browser editor shows the plan image under an SVG overlay and lets you:
+Each analysis job writes:
 
-- drag wall endpoints
-- add and delete walls
-- mark walls as external/internal
-- add room rectangles and edit room names
-- add doors and windows projected to the nearest wall
-- correct pixels-per-metre scale
-- save `floorplan.corrected.json`
-- validate the corrected model
-- generate `building.glb` from the corrected model
+- `floorplan.raw.json`: raw ROI pixel-space wall detections.
+- `floorplan.optimized.json`: authoritative optimized model for GLB generation.
+- `floorplan.corrected.json`: optional human-edited model.
+- `floorplan.json`: compatibility alias for optimized JSON.
+- `validation_report.json`: quality score, scale constraints, and issues.
+- `analysis_overlay.svg` and `analysis_overlay.png`: source-aligned reconstruction overlays.
+- `building.glb`: generated model when quality gates allow export.
 
-The API also accepts corrected `FloorPlanModel` JSON at `/jobs/{job_id}/corrections`. Saving a correction refreshes `validation_report.json`, regenerates the overlay when the ROI image is available, and makes future GLB generation prefer `floorplan.corrected.json`.
+GLB generation prefers `floorplan.corrected.json`, then `floorplan.optimized.json`, then `floorplan.json`.
 
-For near-human precision, use this order:
+## Walkthrough Status
+
+The `walkthrough` module already contains path planning, collision checks, camera waypoint helpers, and FFmpeg encoding helpers. Full end-to-end walkthrough rendering is still early and should be treated as the next module to finish after the image-to-GLB and correction loop are stable.
+
+## Repository Layout
 
 ```text
-upload -> inspect overlay -> correct 2D geometry -> save -> validate -> generate GLB
+assets/
+  input/       Local floor-plan images, ignored except .gitkeep
+  models/      Optional local model assets, ignored except .gitkeep
+  textures/    Optional material textures, ignored except .gitkeep
+  hdri/        Optional lighting assets, ignored except .gitkeep
+configs/       Runtime configuration
+outputs/       Generated jobs and renders, ignored except .gitkeep
+scripts/       Thin command-line wrappers
+src/           Application package
+tests/         Unit and focused integration tests
 ```
 
-The automatic result is a starting point, not the final authority.
-
-## Configuration
-
-`configs/default.yaml` includes sections for ROI detection, preprocessing, wall-band extraction, OCR, scale solving, snapping, opening detection, overlay generation, quality thresholds, Gemini semantic assistance, and GLB generation.
-
-Keep API keys in the environment. Never commit `.env` files or Gemini keys.
+Generated artifacts, caches, virtual environments, and local tool downloads are intentionally ignored so the repository stays readable.
 
 ## Testing
 
@@ -118,12 +136,6 @@ python -m mypy src
 
 Tests do not require Gemini or Blender. Gemini responses should be mocked in tests.
 
-## Migration Notes
+## Notes
 
-The old pipeline used Canny/Hough lines, assumed the image long side represented a configured number of metres, allowed Gemini wall coordinates to replace local geometry, and added fallback perimeter walls when detection failed.
-
-The new pipeline detects the plan ROI, separates image layers, extracts thick wall regions, derives wall centrelines, solves scale from constraints, optimizes topology, extracts room polygons from wall topology, projects openings onto real walls, writes required audit artifacts, and blocks GLB generation for severe validation failures.
-
-## Limitations
-
-OCR quality depends on local Tesseract availability unless another backend is plugged in. Room extraction works best when walls form closed topology after snapping. The current correction UI is API-first rather than a full browser editor. Non-Manhattan plans have limited support; the supplied clean plan is treated as Manhattan-world.
+Best results come from clean black-and-white floor plans with thick dark walls, clear room labels, dimension text, and minimal skew. Non-Manhattan plans have limited support.
