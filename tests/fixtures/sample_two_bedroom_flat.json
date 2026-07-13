@@ -1,0 +1,47 @@
+{
+  "coordinate_system": "metres",
+  "schema_version": "3.0",
+  "pixels_per_metre": 100.0,
+  "walls": [
+    {"id": "w000", "start": {"x": 0.0, "y": 0.0}, "end": {"x": 9.6, "y": 0.0}, "thickness_m": 0.2, "height_m": 2.8, "external": true, "wall_type": "external", "confidence": 1.0, "evidence_source": "fixture"},
+    {"id": "w001", "start": {"x": 9.6, "y": 0.0}, "end": {"x": 9.6, "y": 7.2}, "thickness_m": 0.2, "height_m": 2.8, "external": true, "wall_type": "external", "confidence": 1.0, "evidence_source": "fixture"},
+    {"id": "w002", "start": {"x": 9.6, "y": 7.2}, "end": {"x": 0.0, "y": 7.2}, "thickness_m": 0.2, "height_m": 2.8, "external": true, "wall_type": "external", "confidence": 1.0, "evidence_source": "fixture"},
+    {"id": "w003", "start": {"x": 0.0, "y": 7.2}, "end": {"x": 0.0, "y": 0.0}, "thickness_m": 0.2, "height_m": 2.8, "external": true, "wall_type": "external", "confidence": 1.0, "evidence_source": "fixture"},
+    {"id": "w004", "start": {"x": 5.4, "y": 0.0}, "end": {"x": 5.4, "y": 4.4}, "thickness_m": 0.12, "height_m": 2.8, "external": false, "wall_type": "internal", "confidence": 1.0, "evidence_source": "fixture"},
+    {"id": "w005", "start": {"x": 0.0, "y": 4.4}, "end": {"x": 9.6, "y": 4.4}, "thickness_m": 0.12, "height_m": 2.8, "external": false, "wall_type": "internal", "confidence": 1.0, "evidence_source": "fixture"},
+    {"id": "w006", "start": {"x": 3.4, "y": 4.4}, "end": {"x": 3.4, "y": 7.2}, "thickness_m": 0.12, "height_m": 2.8, "external": false, "wall_type": "internal", "confidence": 1.0, "evidence_source": "fixture"},
+    {"id": "w007", "start": {"x": 6.6, "y": 4.4}, "end": {"x": 6.6, "y": 7.2}, "thickness_m": 0.12, "height_m": 2.8, "external": false, "wall_type": "internal", "confidence": 1.0, "evidence_source": "fixture"}
+  ],
+  "doors": [
+    {"id": "door_entry", "center": {"x": 2.4, "y": 0.0}, "wall_id": "w000", "start_offset_m": 1.95, "end_offset_m": 2.85, "width_m": 0.9, "height_m": 2.1, "opening_type": "single_leaf", "hinge_side": "start", "swing_side": "left", "confidence": 1.0, "evidence_source": "fixture"},
+    {"id": "door_bedroom_1", "center": {"x": 3.4, "y": 5.1}, "wall_id": "w006", "start_offset_m": 0.25, "end_offset_m": 1.05, "width_m": 0.8, "height_m": 2.1, "opening_type": "single_leaf", "hinge_side": "start", "swing_side": "right", "confidence": 1.0, "evidence_source": "fixture"},
+    {"id": "door_bedroom_2", "center": {"x": 6.6, "y": 5.1}, "wall_id": "w007", "start_offset_m": 0.25, "end_offset_m": 1.05, "width_m": 0.8, "height_m": 2.1, "opening_type": "single_leaf", "hinge_side": "start", "swing_side": "left", "confidence": 1.0, "evidence_source": "fixture"},
+    {"id": "door_bath", "center": {"x": 5.4, "y": 1.2}, "wall_id": "w004", "start_offset_m": 0.8, "end_offset_m": 1.5, "width_m": 0.7, "height_m": 2.1, "opening_type": "single_leaf", "hinge_side": "end", "swing_side": "right", "confidence": 1.0, "evidence_source": "fixture"},
+    {"id": "door_hall_living", "center": {"x": 4.4, "y": 4.4}, "wall_id": "w005", "start_offset_m": 3.9, "end_offset_m": 4.9, "width_m": 1.0, "height_m": 2.1, "opening_type": "single_leaf", "hinge_side": "start", "swing_side": "left", "confidence": 1.0, "evidence_source": "fixture"}
+  ],
+  "windows": [
+    {"id": "window_living", "center": {"x": 2.4, "y": 7.2}, "wall_id": "w002", "start_offset_m": 6.3, "end_offset_m": 8.1, "width_m": 1.8, "height_m": 1.3, "sill_height_m": 0.9, "opening_type": "sliding", "confidence": 1.0, "evidence_source": "fixture"},
+    {"id": "window_bedroom_1", "center": {"x": 5.0, "y": 7.2}, "wall_id": "w002", "start_offset_m": 3.9, "end_offset_m": 5.3, "width_m": 1.4, "height_m": 1.3, "sill_height_m": 0.9, "opening_type": "casement", "confidence": 1.0, "evidence_source": "fixture"},
+    {"id": "window_bedroom_2", "center": {"x": 8.2, "y": 7.2}, "wall_id": "w002", "start_offset_m": 0.7, "end_offset_m": 2.1, "width_m": 1.4, "height_m": 1.3, "sill_height_m": 0.9, "opening_type": "casement", "confidence": 1.0, "evidence_source": "fixture"},
+    {"id": "window_kitchen", "center": {"x": 9.6, "y": 2.2}, "wall_id": "w001", "start_offset_m": 1.5, "end_offset_m": 2.9, "width_m": 1.4, "height_m": 1.2, "sill_height_m": 1.0, "opening_type": "casement", "confidence": 1.0, "evidence_source": "fixture"},
+    {"id": "window_bath", "center": {"x": 0.0, "y": 2.2}, "wall_id": "w003", "start_offset_m": 4.7, "end_offset_m": 5.3, "width_m": 0.6, "height_m": 0.6, "sill_height_m": 1.5, "opening_type": "fixed", "confidence": 1.0, "evidence_source": "fixture"}
+  ],
+  "rooms": [
+    {"id": "room_living", "face_id": "face_living", "name": "Living Room", "points": [{"x": 0.1, "y": 4.46}, {"x": 3.34, "y": 4.46}, {"x": 3.34, "y": 7.1}, {"x": 0.1, "y": 7.1}], "confidence": 1.0, "evidence_source": "fixture"},
+    {"id": "room_bedroom_1", "face_id": "face_bedroom_1", "name": "Bedroom 1", "points": [{"x": 3.46, "y": 4.46}, {"x": 6.54, "y": 4.46}, {"x": 6.54, "y": 7.1}, {"x": 3.46, "y": 7.1}], "confidence": 1.0, "evidence_source": "fixture"},
+    {"id": "room_bedroom_2", "face_id": "face_bedroom_2", "name": "Bedroom 2", "points": [{"x": 6.66, "y": 4.46}, {"x": 9.5, "y": 4.46}, {"x": 9.5, "y": 7.1}, {"x": 6.66, "y": 7.1}], "confidence": 1.0, "evidence_source": "fixture"},
+    {"id": "room_hall", "face_id": "face_hall", "name": "Hallway", "points": [{"x": 0.1, "y": 0.1}, {"x": 5.34, "y": 0.1}, {"x": 5.34, "y": 4.34}, {"x": 0.1, "y": 4.34}], "confidence": 1.0, "evidence_source": "fixture"},
+    {"id": "room_kitchen", "face_id": "face_kitchen", "name": "Kitchen", "points": [{"x": 5.46, "y": 0.1}, {"x": 9.5, "y": 0.1}, {"x": 9.5, "y": 4.34}, {"x": 5.46, "y": 4.34}], "confidence": 1.0, "evidence_source": "fixture"}
+  ],
+  "furniture": [],
+  "entrance": {"x": 2.4, "y": 0.4},
+  "camera_waypoints": [
+    {"position": {"x": 2.4, "y": 0.6}, "look_at": {"x": 2.4, "y": 3.0}, "pause_seconds": 0.5},
+    {"position": {"x": 2.4, "y": 3.5}, "look_at": {"x": 1.7, "y": 5.8}, "pause_seconds": 0.5},
+    {"position": {"x": 1.7, "y": 5.8}, "look_at": {"x": 5.0, "y": 5.8}, "pause_seconds": 1.0},
+    {"position": {"x": 5.0, "y": 5.8}, "look_at": {"x": 8.1, "y": 5.8}, "pause_seconds": 1.0},
+    {"position": {"x": 8.1, "y": 5.8}, "look_at": {"x": 7.5, "y": 2.2}, "pause_seconds": 0.5},
+    {"position": {"x": 7.5, "y": 2.2}, "look_at": {"x": 2.4, "y": 0.6}, "pause_seconds": 1.0}
+  ],
+  "metadata": {"fixture": true, "description": "Two-bedroom flat demo scene for Blender/viewer development without the ML pipeline"}
+}

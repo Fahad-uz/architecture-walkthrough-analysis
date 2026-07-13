@@ -52,9 +52,15 @@ def point_offset_on_wall(wall: WallSegment, point: Point2D) -> float:
 
 
 def opening_from_door(wall: WallSegment, door: DoorOpening) -> WallOpening:
+    interval = door.interval(door.width_m)
+    if interval is not None:
+        start, end = interval
+        offset, width = (start + end) / 2, end - start
+    else:
+        offset, width = point_offset_on_wall(wall, door.center), door.width_m
     return WallOpening(
-        offset_m=door.offset_m if door.offset_m is not None else point_offset_on_wall(wall, door.center),
-        width_m=door.width_m,
+        offset_m=offset,
+        width_m=width,
         bottom_m=0.0,
         height_m=door.height_m,
         kind="door",
@@ -62,9 +68,15 @@ def opening_from_door(wall: WallSegment, door: DoorOpening) -> WallOpening:
 
 
 def opening_from_window(wall: WallSegment, window: WindowOpening) -> WallOpening:
+    interval = window.interval(window.width_m)
+    if interval is not None:
+        start, end = interval
+        offset, width = (start + end) / 2, end - start
+    else:
+        offset, width = point_offset_on_wall(wall, window.center), window.width_m
     return WallOpening(
-        offset_m=window.offset_m if window.offset_m is not None else point_offset_on_wall(wall, window.center),
-        width_m=window.width_m,
+        offset_m=offset,
+        width_m=width,
         bottom_m=window.sill_height_m,
         height_m=window.height_m,
         kind="window",
