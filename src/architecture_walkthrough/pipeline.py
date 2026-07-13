@@ -35,10 +35,7 @@ from architecture_walkthrough.scene.scene_builder import build_blender_script
 from architecture_walkthrough.security.file_validation import validate_image_file
 from architecture_walkthrough.vision.ocr import OCRText, parse_dimension_pair, run_ocr
 from architecture_walkthrough.vision.furniture_detection import detect_furniture_from_image
-from architecture_walkthrough.vision.opening_detection import (
-    attach_openings_to_walls,
-    openings_from_semantic_hints,
-)
+from architecture_walkthrough.vision.local_openings import build_thin_line_mask, detect_local_openings
 from architecture_walkthrough.vision.overlay import write_analysis_overlay
 from architecture_walkthrough.vision.plan_roi import detect_plan_roi
 from architecture_walkthrough.vision.preprocessing import load_image, preprocess_array
@@ -424,31 +421,37 @@ def analyze_image(
     stages.record("optimize_wall_topology", started, optimized_wall_count=len(reconstruction.walls))
 
     started = time.perf_counter()
-    doors, windows, rejected_opening_hints = openings_from_semantic_hints(
-        ai_hints,
-        resized_width,
-        resized_height,
-        pixels_per_metre,
-        config.opening_detection.default_door_width_m,
-        config.opening_detection.default_window_width_m,
-        config.ai.gemini_min_confidence,
-    )
-    opening_result = attach_openings_to_walls(
+    dark_mask = cv2.imread(str(preprocessing.layers["dark_structural_stroke"]), cv2.IMREAD_GRAYSCALE)
+    adaptive_mask = cv2.imread(str(preprocessing.layers["adaptive_binary"]), cv2.IMREAD_GRAYSCALE)
+    colored_mask = cv2.imread(str(preprocessing.layers["furniture_fixture_mask"]), cv2.IMREAD_GRAYSCALE)
+    thin_mask = build_thin_line_mask(adaptive_mask, dark_mask, colored_mask)
+    local_openings = detect_local_openings(
         reconstruction.walls,
-        doors,
-        windows,
-        tolerance_m=config.opening_detection.projection_tolerance_m,
+        dark_mask,
+        thin_mask,
+        pixels_per_metre,
+        resized_height,
+        config.opening_detection,
+        config.defaults,
     )
-    stages.record("detect_attach_openings", started, doors=len(opening_result.doors), windows=len(opening_result.windows), rejected=len(opening_result.rejected))
+    final_walls = local_openings.walls
+    stages.record(
+        "detect_local_openings",
+        started,
+        doors=len(local_openings.doors),
+        windows=len(local_openings.windows),
+        ambiguous=len(local_openings.ambiguous),
+        walls_merged_across_openings=len(reconstruction.walls) - len(final_walls),
+    )
 
     started = time.perf_counter()
     room_result = extract_rooms_from_walls(
-        reconstruction.walls,
+        final_walls,
         all_room_labels,
         pixels_per_metre=pixels_per_metre,
         image_height_px=resized_height,
-        doors=opening_result.doors,
-        windows=opening_result.windows,
+        doors=local_openings.doors,
+        windows=local_openings.windows,
     )
     final_rooms = room_result.rooms
     unclosed_gap_reports = room_result.rejected
@@ -492,15 +495,18 @@ def analyze_image(
     )
     raw_model.save_json(output_dir / "floorplan.raw.json")
 
-    semantic_used = [f"opening:{door.id}" for door in opening_result.doors] + [f"opening:{window.id}" for window in opening_result.windows]
-    semantic_rejected = rejected_opening_hints + opening_result.rejected
+    semantic_used = [f"room_label:{label.normalized_text}" for label in semantic_room_labels]
+    ambiguous_openings = [
+        f"{candidate.kind} on {candidate.wall_id} at {candidate.start_offset_m:.2f}-{candidate.end_offset_m:.2f} m (width heuristic only)"
+        for candidate in local_openings.ambiguous
+    ]
     model = FloorPlanModel(
         coordinate_system=CoordinateSystem.METRES,
         pixels_per_metre=pixels_per_metre,
         plan_roi=roi_result.roi,
-        walls=reconstruction.walls,
-        doors=opening_result.doors,
-        windows=opening_result.windows,
+        walls=final_walls,
+        doors=local_openings.doors,
+        windows=local_openings.windows,
         rooms=final_rooms,
         special_elements=special_elements,
         furniture=furniture,
@@ -526,19 +532,20 @@ def analyze_image(
             "accepted_furniture_count": len(furniture),
             "raw_wall_count": len(wall_detection.walls),
             "wall_band_count": len(wall_detection.bands),
-            "opening_hints_rejected": semantic_rejected,
-            "room_extraction_source": "wall_topology",
+            "opening_detection_source": "local_evidence",
+            "ambiguous_openings": ambiguous_openings,
+            "room_extraction_source": "wall_graph_faces",
         },
         reconstruction=ReconstructionMetadata(
             ai_geometry_originated=False,
             stages=[*stages.stages, *reconstruction.audit_trail],
             semantic_hints_used=semantic_used,
-            semantic_hints_rejected=semantic_rejected,
+            semantic_hints_rejected=[],
         ),
     )
     issues = validate_reconstruction(model)
-    for issue in semantic_rejected:
-        issues.append(ValidationIssue(code="semantic_hint_rejected", severity="info", message=issue))
+    for report in ambiguous_openings:
+        issues.append(ValidationIssue(code="ambiguous_opening", severity="warning", message=report))
     for gap_report in unclosed_gap_reports:
         issues.append(ValidationIssue(code="unclosed_wall_gap", severity="warning", message=gap_report))
     score, state = score_quality(model.model_copy(update={"validation_issues": issues}))

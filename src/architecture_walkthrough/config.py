@@ -101,6 +101,14 @@ class OpeningDetectionSettings(BaseModel):
     projection_tolerance_m: PositiveFloat = 0.35
     default_door_width_m: PositiveFloat = 0.90
     default_window_width_m: PositiveFloat = 1.20
+    min_door_width_m: PositiveFloat = 0.55
+    max_door_width_m: PositiveFloat = 1.40
+    min_window_width_m: PositiveFloat = 0.45
+    max_window_width_m: PositiveFloat = 3.20
+    arc_coverage_threshold: float = Field(default=0.30, ge=0.0, le=1.0)
+    leaf_coverage_threshold: float = Field(default=0.50, ge=0.0, le=1.0)
+    window_line_coverage_threshold: float = Field(default=0.45, ge=0.0, le=1.0)
+    min_flank_m: PositiveFloat = 0.25
 
 
 class OverlaySettings(BaseModel):
