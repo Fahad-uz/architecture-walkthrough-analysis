@@ -9,6 +9,7 @@ from typing import Any
 import cv2
 
 from architecture_walkthrough.ai.floorplan_vision import GeminiFloorPlanVisionAnalyzer
+from architecture_walkthrough.ai.sanity_check import GeminiLayoutSanityChecker
 from architecture_walkthrough.config import AppConfig
 from architecture_walkthrough.geometry.models import (
     ArchitecturalElement,
@@ -17,7 +18,6 @@ from architecture_walkthrough.geometry.models import (
     FurniturePlacement,
     Point2D,
     ReconstructionMetadata,
-    RoomPolygon,
     ValidationIssue,
     WallSegment,
 )
@@ -29,21 +29,24 @@ from architecture_walkthrough.geometry.room_extraction import (
 )
 from architecture_walkthrough.geometry.scale import ScaleConverter
 from architecture_walkthrough.geometry.scale_solver import ScaleConstraint, solve_scale
-from architecture_walkthrough.geometry.validation import score_quality, validate_reconstruction
+from architecture_walkthrough.geometry.wall_graph import collinear_gaps
+from architecture_walkthrough.geometry.validation import (
+    SourceEvidence,
+    evaluate_quality,
+    validate_reconstruction,
+)
 from architecture_walkthrough.scene.export_glb import export_floorplan_glb
+from architecture_walkthrough.scene.glb_optimizer import optimize_glb
 from architecture_walkthrough.scene.blender_runner import run_blender_script
 from architecture_walkthrough.scene.scene_builder import build_blender_script
 from architecture_walkthrough.security.file_validation import validate_image_file
 from architecture_walkthrough.vision.ocr import OCRText, parse_dimension_pair, run_ocr
 from architecture_walkthrough.vision.furniture_detection import detect_furniture_from_image
-from architecture_walkthrough.vision.opening_detection import (
-    attach_openings_to_walls,
-    openings_from_semantic_hints,
-)
+from architecture_walkthrough.vision.local_openings import build_thin_line_mask, detect_local_openings
 from architecture_walkthrough.vision.overlay import write_analysis_overlay
 from architecture_walkthrough.vision.plan_roi import detect_plan_roi
 from architecture_walkthrough.vision.preprocessing import load_image, preprocess_array
-from architecture_walkthrough.vision.wall_detection import detect_wall_bands
+from architecture_walkthrough.vision.providers import build_geometry_provider
 from architecture_walkthrough.vision.wall_detection import WallBand
 from architecture_walkthrough.walkthrough.camera_animation import waypoints_from_points
 from architecture_walkthrough.walkthrough.path_planner import manual_or_auto_waypoints
@@ -150,7 +153,44 @@ def _semantic_labels_from_gemini(ai_hints, image_width_px: int, image_height_px:
     return room_labels, special_labels
 
 
-def _scale_constraints_from_rooms(preliminary_rooms, ocr_results: list[OCRText]) -> list[ScaleConstraint]:
+def _dimension_labels_from_gemini(ai_hints, image_width_px: int, image_height_px: int) -> list[OCRText]:
+    """Dimension annotations transcribed by Gemini become dimension labels.
+
+    Gemini reads the text; the geometry the dimension applies to still comes
+    from locally detected room polygons that the label falls inside.
+    """
+    if ai_hints is None:
+        return []
+    labels: list[OCRText] = []
+    for item in getattr(ai_hints, "dimension_texts", []):
+        if item.confidence < 0.35:
+            continue
+        try:
+            parsed = parse_dimension_pair(item.text)
+        except ValueError:
+            continue
+        if parsed is None:
+            continue
+        cx = item.center.x * image_width_px
+        cy = item.center.y * image_height_px
+        labels.append(
+            OCRText(
+                text=item.text,
+                polygon=[(cx - 5, cy - 5), (cx + 5, cy - 5), (cx + 5, cy + 5), (cx - 5, cy + 5)],
+                confidence=item.confidence,
+                normalized_text=item.text,
+                semantic_type="dimension",
+            )
+        )
+    return labels
+
+
+def _scale_constraints_from_rooms(preliminary_rooms) -> list[ScaleConstraint]:
+    """Dimension labels matched to detected room polygons.
+
+    Text-box-size guessing is intentionally not a scale source: a dimension
+    only counts once it is associated with real geometry.
+    """
     constraints: list[ScaleConstraint] = []
     for room in preliminary_rooms:
         if room.dimension_m is None:
@@ -160,39 +200,45 @@ def _scale_constraints_from_rooms(preliminary_rooms, ocr_results: list[OCRText])
         constraints.append(
             ScaleConstraint(
                 id=f"room_dim_{len(constraints):03d}",
-                source="ocr_room_polygon",
+                source="dimension_label_in_room_polygon",
                 label=room.name,
                 measured_px=(max(xs) - min(xs), max(ys) - min(ys)),
                 expected_m=room.dimension_m,
                 weight=1.0,
+                tier="room_dimension",
             )
         )
-    for item in ocr_results:
-        if item.semantic_type != "dimension":
+    return constraints
+
+
+STANDARD_DOOR_WIDTH_M = 0.85
+
+
+def _scale_constraints_from_door_gaps(walls_px: list[WallSegment]) -> list[ScaleConstraint]:
+    """Collinear wall gaps of door-like proportion, assuming a ~0.85 m leaf.
+
+    A deliberate low-confidence fallback for undimensioned plans; the tiered
+    solver only consults it when no real dimension source exists.
+    """
+    identified = [wall for wall in walls_px if wall.id]
+    if len(identified) < 2:
+        return []
+    gaps = collinear_gaps(identified, coord_tol=6.0)
+    constraints: list[ScaleConstraint] = []
+    for gap in gaps:
+        gap_px = float(gap["length_m"])  # pixel units here: walls are in px
+        if gap_px <= 2:
             continue
-        try:
-            parsed = parse_dimension_pair(item.normalized_text)
-        except ValueError:
-            continue
-        if parsed is None:
-            continue
-        xs = [point[0] for point in item.polygon]
-        ys = [point[1] for point in item.polygon]
-        text_width_px = max(xs) - min(xs)
-        text_height_px = max(ys) - min(ys)
-        if text_width_px > 0 and text_height_px > 0:
-            # Text boxes are low-weight hints only; exact scale should come from
-            # associated room geometry or manual scale.
-            constraints.append(
-                ScaleConstraint(
-                    id=f"text_dim_hint_{len(constraints):03d}",
-                    source="ocr_text_low_weight",
-                    label=item.normalized_text,
-                    measured_px=(text_width_px * 8.0, max(text_height_px * 8.0, text_width_px * 0.35)),
-                    expected_m=(parsed.width_m, parsed.height_m),
-                    weight=0.15,
-                )
+        constraints.append(
+            ScaleConstraint(
+                id=f"door_gap_{len(constraints):03d}",
+                source=f"gap_{gap['wall_a']}_{gap['wall_b']}",
+                measured_px=(gap_px, gap_px),
+                expected_m=(STANDARD_DOOR_WIDTH_M, STANDARD_DOOR_WIDTH_M),
+                weight=1.0,
+                tier="door_width",
             )
+        )
     return constraints
 
 
@@ -207,11 +253,12 @@ def _scale_constraints_from_wall_bands(
         constraints.append(
             ScaleConstraint(
                 id=f"wall_thickness_{len(constraints):03d}",
-                source="wall_band_thickness_low_weight",
+                source="assumed_band_thickness",
                 label=band.id,
                 measured_px=(band.thickness_px, band.thickness_px),
                 expected_m=(expected, expected),
                 weight=0.25 if band.external else 0.18,
+                tier="wall_thickness",
             )
         )
     return constraints
@@ -286,77 +333,6 @@ def _furniture_from_gemini(
     return placements
 
 
-def _project_semantic_rooms(
-    ai_hints,
-    existing_rooms,
-    walls: list[WallSegment],
-    image_width_px: int,
-    image_height_px: int,
-    pixels_per_metre: float,
-    min_confidence: float,
-):
-    if ai_hints is None:
-        return []
-    verticals = sorted({(wall.start.x + wall.end.x) / 2 for wall in walls if abs(wall.start.x - wall.end.x) < abs(wall.start.y - wall.end.y)})
-    horizontals = sorted({(wall.start.y + wall.end.y) / 2 for wall in walls if abs(wall.start.y - wall.end.y) <= abs(wall.start.x - wall.end.x)})
-    projected = []
-    existing_names = {room.name.lower() for room in existing_rooms if room.name}
-    tolerance_m = 0.75
-
-    def snap(value: float, candidates: list[float]) -> tuple[float, bool]:
-        if not candidates:
-            return value, False
-        best = min(candidates, key=lambda item: abs(item - value))
-        return (best, True) if abs(best - value) <= tolerance_m else (value, False)
-
-    for hint in ai_hints.rooms:
-        if not hint.name or hint.confidence < min_confidence * 0.65:
-            continue
-        normalized_name = hint.name.lower()
-        if any(token in normalized_name for token in ("lift", "stair", "entrance", "shelf", "counter")):
-            continue
-        if normalized_name in existing_names:
-            continue
-        xs = [point.x * image_width_px / pixels_per_metre for point in hint.points]
-        ys = [(1.0 - point.y) * image_height_px / pixels_per_metre for point in hint.points]
-        x0, x1 = min(xs), max(xs)
-        y0, y1 = min(ys), max(ys)
-        x0, sx0 = snap(x0, verticals)
-        x1, sx1 = snap(x1, verticals)
-        y0, sy0 = snap(y0, horizontals)
-        y1, sy1 = snap(y1, horizontals)
-        support = sum((sx0, sx1, sy0, sy1))
-        if support < 2 or x1 - x0 < 0.4 or y1 - y0 < 0.4:
-            continue
-        projected.append(
-            {
-                "name": hint.name,
-                "points": [
-                    Point2D(x=x0, y=y0),
-                    Point2D(x=x1, y=y0),
-                    Point2D(x=x1, y=y1),
-                    Point2D(x=x0, y=y1),
-                ],
-                "confidence": min(0.72, hint.confidence * (0.35 + support * 0.12)),
-            }
-        )
-        existing_names.add(normalized_name)
-    return projected
-
-
-def _bbox_overlap_ratio(points_a: list[Point2D], points_b: list[Point2D]) -> float:
-    ax0, ax1 = min(point.x for point in points_a), max(point.x for point in points_a)
-    ay0, ay1 = min(point.y for point in points_a), max(point.y for point in points_a)
-    bx0, bx1 = min(point.x for point in points_b), max(point.x for point in points_b)
-    by0, by1 = min(point.y for point in points_b), max(point.y for point in points_b)
-    ix = max(0.0, min(ax1, bx1) - max(ax0, bx0))
-    iy = max(0.0, min(ay1, by1) - max(ay0, by0))
-    intersection = ix * iy
-    area_a = max((ax1 - ax0) * (ay1 - ay0), 1e-6)
-    area_b = max((bx1 - bx0) * (by1 - by0), 1e-6)
-    return intersection / min(area_a, area_b)
-
-
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -425,33 +401,38 @@ def analyze_image(
     stages.record("gemini_semantic_hints", started, attempted=ai_analysis.attempted, succeeded=ai_analysis.succeeded)
 
     started = time.perf_counter()
-    wall_detection = detect_wall_bands(
-        preprocessing.layers["horizontal_wall_band"],
-        preprocessing.layers["vertical_wall_band"],
-        debug_dir=debug_dir,
-        min_length_ratio=config.wall_bands.min_length_ratio,
-        merge_gap_ratio=config.wall_bands.merge_gap_ratio,
-        coordinate_tolerance_ratio=config.wall_bands.coordinate_tolerance_ratio,
-        min_thickness_px=config.wall_bands.min_thickness_px,
-        max_thickness_ratio=config.wall_bands.max_thickness_ratio,
-        internal_thickness_m=config.defaults.internal_wall_thickness_m,
-        external_thickness_m=config.defaults.external_wall_thickness_m,
-        wall_height_m=config.defaults.wall_height_m,
-    )
+    geometry_provider = build_geometry_provider(config)
+    wall_detection = geometry_provider.detect(preprocessing.layers, debug_dir, config)
     if not wall_detection.walls:
         raise ValueError("no structural walls were found in the plan ROI")
-    stages.record("detect_raw_wall_bands", started, raw_wall_count=len(wall_detection.walls), band_count=len(wall_detection.bands))
+    stages.record(
+        "detect_raw_walls",
+        started,
+        provider=geometry_provider.name,
+        accuracy_tier=geometry_provider.accuracy_tier,
+        raw_wall_count=len(wall_detection.walls),
+        band_count=len(wall_detection.bands),
+    )
 
     started = time.perf_counter()
     semantic_room_labels, semantic_special_labels = _semantic_labels_from_gemini(ai_hints, resized_width, resized_height)
-    all_room_labels = [*_ocr_labels(ocr_results), *semantic_room_labels]
+    gemini_dimension_labels = _dimension_labels_from_gemini(ai_hints, resized_width, resized_height)
+    all_room_labels = [*_ocr_labels(ocr_results), *semantic_room_labels, *gemini_dimension_labels]
 
-    preliminary_rooms = extract_rooms_from_walls(wall_detection.walls, all_room_labels, pixels_per_metre=1.0).rooms
+    # Raw wall bands are still in pixel units here, so disable metric junction
+    # snapping; bands cross each other, which polygonize nodes on its own.
+    preliminary_rooms = extract_rooms_from_walls(
+        wall_detection.walls,
+        all_room_labels,
+        pixels_per_metre=1.0,
+        junction_snap_m=0.0,
+    ).rooms
     stages.record("estimate_preliminary_rooms", started, room_count=len(preliminary_rooms))
 
     started = time.perf_counter()
     constraints = [
-        *_scale_constraints_from_rooms(preliminary_rooms, ocr_results),
+        *_scale_constraints_from_rooms(preliminary_rooms),
+        *_scale_constraints_from_door_gaps(wall_detection.walls),
         *_scale_constraints_from_wall_bands(
             wall_detection.bands,
             config.defaults.internal_wall_thickness_m,
@@ -489,30 +470,40 @@ def analyze_image(
     stages.record("optimize_wall_topology", started, optimized_wall_count=len(reconstruction.walls))
 
     started = time.perf_counter()
-    doors, windows, rejected_opening_hints = openings_from_semantic_hints(
-        ai_hints,
-        resized_width,
-        resized_height,
-        pixels_per_metre,
-        config.opening_detection.default_door_width_m,
-        config.opening_detection.default_window_width_m,
-        config.ai.gemini_min_confidence,
-    )
-    opening_result = attach_openings_to_walls(
+    dark_mask = cv2.imread(str(preprocessing.layers["dark_structural_stroke"]), cv2.IMREAD_GRAYSCALE)
+    adaptive_mask = cv2.imread(str(preprocessing.layers["adaptive_binary"]), cv2.IMREAD_GRAYSCALE)
+    colored_mask = cv2.imread(str(preprocessing.layers["furniture_fixture_mask"]), cv2.IMREAD_GRAYSCALE)
+    thin_mask = build_thin_line_mask(adaptive_mask, dark_mask, colored_mask)
+    local_openings = detect_local_openings(
         reconstruction.walls,
-        doors,
-        windows,
-        tolerance_m=config.opening_detection.projection_tolerance_m,
+        dark_mask,
+        thin_mask,
+        pixels_per_metre,
+        resized_height,
+        config.opening_detection,
+        config.defaults,
     )
-    stages.record("detect_attach_openings", started, doors=len(opening_result.doors), windows=len(opening_result.windows), rejected=len(opening_result.rejected))
+    final_walls = local_openings.walls
+    stages.record(
+        "detect_local_openings",
+        started,
+        doors=len(local_openings.doors),
+        windows=len(local_openings.windows),
+        ambiguous=len(local_openings.ambiguous),
+        walls_merged_across_openings=len(reconstruction.walls) - len(final_walls),
+    )
 
     started = time.perf_counter()
-    final_rooms = extract_rooms_from_walls(
-        reconstruction.walls,
+    room_result = extract_rooms_from_walls(
+        final_walls,
         all_room_labels,
         pixels_per_metre=pixels_per_metre,
         image_height_px=resized_height,
-    ).rooms
+        doors=local_openings.doors,
+        windows=local_openings.windows,
+    )
+    final_rooms = room_result.rooms
+    unclosed_gap_reports = room_result.rejected
     if not final_rooms:
         final_rooms = extract_rooms_from_geometry_mask(
             preprocessing.layers["cleaned_geometry_only"],
@@ -520,46 +511,7 @@ def analyze_image(
             pixels_per_metre=pixels_per_metre,
             image_height_px=resized_height,
         ).rooms
-    semantic_room_additions = _project_semantic_rooms(
-        ai_hints,
-        final_rooms,
-        reconstruction.walls,
-        resized_width,
-        resized_height,
-        pixels_per_metre,
-        config.ai.gemini_min_confidence,
-    )
-    for room_hint in semantic_room_additions:
-        best_index = None
-        best_overlap = 0.0
-        for index, room in enumerate(final_rooms):
-            if room.name:
-                continue
-            overlap = _bbox_overlap_ratio(room.points, room_hint["points"])
-            if overlap > best_overlap:
-                best_overlap = overlap
-                best_index = index
-        if best_index is not None and best_overlap >= 0.25:
-            final_rooms[best_index] = final_rooms[best_index].model_copy(
-                update={
-                    "name": room_hint["name"],
-                    "confidence": max(final_rooms[best_index].confidence, room_hint["confidence"]),
-                    "evidence_source": f"{final_rooms[best_index].evidence_source}+gemini_semantic_label",
-                }
-            )
-            continue
-        if any(_bbox_overlap_ratio(room.points, room_hint["points"]) > 0.85 for room in final_rooms):
-            continue
-        final_rooms.append(
-            RoomPolygon(
-                id=f"room_{len(final_rooms):03d}",
-                name=room_hint["name"],
-                points=room_hint["points"],
-                confidence=room_hint["confidence"],
-                evidence_source="gemini_semantic_projected_to_walls",
-            )
-        )
-    stages.record("extract_final_rooms", started, room_count=len(final_rooms))
+    stages.record("extract_final_rooms", started, room_count=len(final_rooms), unclosed_gaps=len(unclosed_gap_reports))
 
     started = time.perf_counter()
     special_elements = _classify_special_elements([*ocr_results, *semantic_special_labels], pixels_per_metre, resized_height)
@@ -592,15 +544,18 @@ def analyze_image(
     )
     raw_model.save_json(output_dir / "floorplan.raw.json")
 
-    semantic_used = [f"opening:{door.id}" for door in opening_result.doors] + [f"opening:{window.id}" for window in opening_result.windows]
-    semantic_rejected = rejected_opening_hints + opening_result.rejected
+    semantic_used = [f"room_label:{label.normalized_text}" for label in semantic_room_labels]
+    ambiguous_openings = [
+        f"{candidate.kind} on {candidate.wall_id} at {candidate.start_offset_m:.2f}-{candidate.end_offset_m:.2f} m (width heuristic only)"
+        for candidate in local_openings.ambiguous
+    ]
     model = FloorPlanModel(
         coordinate_system=CoordinateSystem.METRES,
         pixels_per_metre=pixels_per_metre,
         plan_roi=roi_result.roi,
-        walls=reconstruction.walls,
-        doors=opening_result.doors,
-        windows=opening_result.windows,
+        walls=final_walls,
+        doors=local_openings.doors,
+        windows=local_openings.windows,
         rooms=final_rooms,
         special_elements=special_elements,
         furniture=furniture,
@@ -620,30 +575,60 @@ def analyze_image(
             "geometry_originated_only_from_ai": False,
             "ocr_text_count": len(ocr_results),
             "gemini_semantic_label_count": len(semantic_room_labels) + len(semantic_special_labels),
-            "gemini_projected_room_count": len(semantic_room_additions),
+            "unclosed_wall_gaps": unclosed_gap_reports,
             "local_furniture_count": len(local_furniture),
             "gemini_furniture_count": len(gemini_furniture),
             "accepted_furniture_count": len(furniture),
             "raw_wall_count": len(wall_detection.walls),
             "wall_band_count": len(wall_detection.bands),
-            "opening_hints_rejected": semantic_rejected,
-            "room_extraction_source": "wall_topology",
+            "opening_detection_source": "local_evidence",
+            "ambiguous_openings": ambiguous_openings,
+            "room_extraction_source": "wall_graph_faces",
         },
         reconstruction=ReconstructionMetadata(
             ai_geometry_originated=False,
             stages=[*stages.stages, *reconstruction.audit_trail],
             semantic_hints_used=semantic_used,
-            semantic_hints_rejected=semantic_rejected,
+            semantic_hints_rejected=[],
         ),
     )
     issues = validate_reconstruction(model)
-    for issue in semantic_rejected:
-        issues.append(ValidationIssue(code="semantic_hint_rejected", severity="info", message=issue))
-    score, state = score_quality(model.model_copy(update={"validation_issues": issues}))
+    for report in ambiguous_openings:
+        issues.append(ValidationIssue(code="ambiguous_opening", severity="warning", message=report))
+    for gap_report in unclosed_gap_reports:
+        issues.append(ValidationIssue(code="unclosed_wall_gap", severity="warning", message=gap_report))
+
+    started = time.perf_counter()
+    sanity = GeminiLayoutSanityChecker(config.ai).check(analysis_image_path, model, resized_width, resized_height)
+    for warning in sanity.warnings:
+        issues.append(
+            ValidationIssue(
+                code=f"gemini_{warning.kind}",
+                severity="warning",
+                message=f"{warning.description} (at {warning.x:.2f}, {warning.y:.2f} normalized)",
+            )
+        )
+    model = model.model_copy(
+        update={
+            "metadata": {
+                **model.metadata,
+                "sanity_check_attempted": sanity.attempted,
+                "sanity_check_succeeded": sanity.succeeded,
+                "sanity_check_error": sanity.error,
+                "sanity_warnings": [warning.model_dump() for warning in sanity.warnings],
+            }
+        }
+    )
+    stages.record("gemini_sanity_check", started, attempted=sanity.attempted, warnings=len(sanity.warnings))
+    evidence = SourceEvidence(dark_mask=dark_mask, pixels_per_metre=pixels_per_metre, image_height_px=resized_height)
+    quality = evaluate_quality(model.model_copy(update={"validation_issues": issues}), evidence)
     model = model.model_copy(
         update={
             "validation_issues": issues,
-            "reconstruction": model.reconstruction.model_copy(update={"quality_score": score, "quality_state": state}),
+            "reconstruction": model.reconstruction.model_copy(
+                update={"quality_score": quality.score, "quality_state": quality.state}
+            ),
+            "metadata": {**model.metadata, "quality_components": quality.components},
         }
     )
     model.save_json(output_dir / "floorplan.optimized.json")
@@ -669,15 +654,47 @@ def _select_floorplan_for_build(path: Path) -> Path:
     return path
 
 
-def build_model(floorplan_path: Path, output_glb: Path, config: AppConfig, run_blender: bool = False) -> Path:
+def build_model(
+    floorplan_path: Path,
+    output_glb: Path,
+    config: AppConfig,
+    run_blender: bool = False,
+    force: bool = False,
+    bake_mode: str | None = None,
+) -> Path:
+    """Export a GLB, gated on reconstruction quality.
+
+    Low-quality scenes are blocked so silently-bad exports never happen;
+    `force=True` is the explicit user override.
+    """
     selected = _select_floorplan_for_build(floorplan_path)
     model = FloorPlanModel.load_json(selected)
-    severe = [issue for issue in model.validation_issues if issue.severity == "severe"]
-    if severe and config.overlay.severe_error_blocks_glb:
-        raise ValueError(f"cannot generate GLB with severe validation errors: {', '.join(issue.code for issue in severe)}")
-    if model.reconstruction.quality_state == "failed" and model.reconstruction.quality_score < config.reconstruction_quality.min_glb_quality_score:
-        raise ValueError("cannot generate GLB: reconstruction quality is failed")
-    return export_floorplan_glb(model, output_glb, config, run_blender=run_blender)
+    if not force:
+        score = model.reconstruction.quality_score
+        state = model.reconstruction.quality_state
+        issues = model.validation_issues
+        if not issues and score == 0.0:
+            # Hand-authored or corrected JSON that never went through scoring:
+            # assess it now instead of trusting (or zero-blocking) stale metadata.
+            report = evaluate_quality(model)
+            score, state, issues = report.score, report.state, report.issues
+        severe = [issue for issue in issues if issue.severity == "severe"]
+        if severe and config.overlay.severe_error_blocks_glb:
+            raise ValueError(f"cannot generate GLB with severe validation errors: {', '.join(issue.code for issue in severe)}")
+        if state == "failed":
+            raise ValueError("cannot generate GLB: reconstruction quality is 'failed'; fix the issues in the correction editor or pass force=True to override")
+        if score < config.reconstruction_quality.min_glb_quality_score:
+            raise ValueError(
+                f"cannot generate GLB: quality score {score:.2f} is below the "
+                f"export threshold {config.reconstruction_quality.min_glb_quality_score:.2f}; review the validation "
+                "report in the correction editor or pass force=True to override"
+            )
+    exported = export_floorplan_glb(model, output_glb, config, run_blender=run_blender, bake_mode=bake_mode)
+    if run_blender and config.optimize.enabled:
+        optimized = optimize_glb(exported, exported.with_suffix(".opt.glb"), config, texture_size=config.optimize.texture_size)
+        if optimized != exported and optimized.exists():
+            optimized.replace(exported)
+    return exported
 
 
 def convert_image_to_glb(

@@ -21,6 +21,10 @@ def run_subprocess(args: list[str], timeout_seconds: int, cwd: Path | None = Non
         timeout=timeout_seconds,
         check=True,
         text=True,
+        # Tool output (Blender, gltf-transform) is UTF-8; Windows would
+        # otherwise decode with cp1252 and crash on multibyte characters.
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         shell=False,
     )

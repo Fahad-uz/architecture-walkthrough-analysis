@@ -1,33 +1,44 @@
 # Architecture Walkthrough Analysis
 
-Accuracy-first floor-plan reconstruction for turning architectural plan images into editable analysis artifacts and GLB building models.
+Turns a 2D floor-plan PNG into an accurate, well-lit 3D building (GLB) with an
+interactive first-person browser walkthrough.
 
-The current product is organized around three public modules:
+```text
+image -> ROI extraction -> layer preprocessing -> wall detection (local CV,
+      swappable for CubiCasa5k) -> local opening detection (gap + swing-arc +
+      leaf + glazing-line evidence) -> tiered scale calibration -> wall-graph
+      vectorization (rooms = graph faces) -> evidence-based validation gate
+      -> correction editor (React/Konva) -> Blender generation + Cycles
+      lightmap baking -> gltf-transform optimization -> R3F walkthrough
+```
+
+Design rules:
+
+- Gemini is semantic-only (room labels, dimension text transcription, layout
+  sanity-check warnings). Geometry always comes from local image evidence.
+- Rooms are faces of the planar wall graph and regenerate on every edit;
+  doorway gaps close during face enumeration only when a confirmed opening
+  spans them — nothing is auto-invented.
+- Openings are intervals along their wall (schema v3) with hinge/swing sides.
+- Scale sources are strictly tiered (manual → dimension text → room dims →
+  door width → assumed thickness) and never averaged across tiers.
+- Validation is a gate: missing evidence lowers confidence, and low-quality
+  scenes cannot export a GLB without an explicit override.
 
 ```text
 src/architecture_walkthrough/
-  ui/             Browser upload and correction experience
+  ui/             FastAPI app factory (serves the built React frontend)
   image_to_glb/   Image analysis plus GLB generation entry points
-  walkthrough/    Camera/path planning and future walkthrough rendering
-
-  ai/             Gemini semantic hints, never authoritative geometry
-  api/            FastAPI routes used by the UI
-  geometry/       Floor-plan models, validation, scale, rooms, topology
-  scene/          GLB and Blender scene builders
+  walkthrough/    Path planning helpers (browser walkthrough lives in frontend/)
+  ai/             Gemini semantic roles, never authoritative geometry
+  api/            FastAPI routes + background job runner
+  geometry/       Schema, wall graph, rooms, scale tiers, validation gate
+  scene/          Blender generator (bake modes), trimesh preview, optimizer
   security/       Upload validation and subprocess safety
-  vision/         ROI detection, preprocessing, OCR, walls, overlays
+  vision/         Preprocessing, wall bands, local opening detection, OCR
+frontend/         React app: upload, Konva editor, preview, R3F walkthrough
+tools/glb/        gltf-transform CLI for Draco/WebP GLB optimization
 ```
-
-The automatic pipeline is deterministic where structure matters:
-
-```text
-image -> ROI extraction -> layer preprocessing -> wall-band detection
-      -> OCR + optional Gemini semantic hints -> scale solving
-      -> vector reconstruction -> validation/overlay -> correction
-      -> parametric GLB generation
-```
-
-Gemini is semantic-only. It can suggest labels, furniture, doors, and windows, but final wall coordinates and room polygons come from local image evidence and geometric constraints.
 
 ## Setup
 
@@ -69,27 +80,31 @@ python scripts/image_to_glb.py --input assets/input/plan.png --output outputs/pl
 
 `--manual-scale` is metres per pixel and overrides automatic scale solving.
 
-## UI
+## Web app
 
-Start the browser UI:
+Build the frontend once, then start the server:
 
 ```powershell
-uvicorn architecture_walkthrough.ui:create_app --factory --reload
+cd frontend; npm install; npm run build; cd ..
+.venv\Scripts\uvicorn architecture_walkthrough.ui:create_app --factory --reload
 ```
 
-Open `http://127.0.0.1:8000`, upload a plan image, inspect the generated artifacts, then open the correction editor. The editor lets you adjust walls, rooms, doors, windows, and scale before regenerating the GLB.
+Open `http://127.0.0.1:8000`: upload a plan → review/fix walls, openings and
+scale in the correction editor (Gemini sanity warnings appear as markers; the
+two-point scale tool sets a manual reference) → **Generate 3D** (bake mode
+final/draft/none, quality-gate override checkbox) → preview with orbit/zoom
+and GLB download → **Enter walkthrough** for first-person WASD exploration
+with wall collision and an optional guided tour.
 
 Useful API endpoints:
 
-- `POST /jobs`
-- `GET /jobs/{job_id}/edit`
-- `GET /jobs/{job_id}/raw-plan`
-- `GET /jobs/{job_id}/optimized-plan`
-- `GET /jobs/{job_id}/validation-report`
-- `GET /jobs/{job_id}/overlay`
-- `POST /jobs/{job_id}/corrections`
+- `POST /jobs` (multipart upload; analysis runs in the background)
+- `GET /jobs/{job_id}` (poll status/quality)
+- `GET /jobs/{job_id}/edit-data`
+- `POST /jobs/{job_id}/corrections` (regenerates rooms from the wall graph)
 - `POST /jobs/{job_id}/validate-corrections`
-- `POST /jobs/{job_id}/generate-model`
+- `POST /jobs/{job_id}/generate-model?force=&bake_mode=` (Blender build)
+- `GET /jobs/{job_id}/artifacts/building.glb` and other artifacts
 
 ## Outputs
 

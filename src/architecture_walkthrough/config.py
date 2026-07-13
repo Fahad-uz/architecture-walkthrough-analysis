@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field, PositiveFloat, PositiveInt
 
 
@@ -51,6 +52,7 @@ class AISettings(BaseModel):
     gemini_enabled: bool = True
     gemini_model: str = "gemini-2.5-flash"
     gemini_min_confidence: float = Field(default=0.55, ge=0.0, le=1.0)
+    gemini_sanity_check_enabled: bool = True
 
 
 class ROIDetectionSettings(BaseModel):
@@ -100,6 +102,14 @@ class OpeningDetectionSettings(BaseModel):
     projection_tolerance_m: PositiveFloat = 0.35
     default_door_width_m: PositiveFloat = 0.90
     default_window_width_m: PositiveFloat = 1.20
+    min_door_width_m: PositiveFloat = 0.55
+    max_door_width_m: PositiveFloat = 1.40
+    min_window_width_m: PositiveFloat = 0.45
+    max_window_width_m: PositiveFloat = 3.20
+    arc_coverage_threshold: float = Field(default=0.30, ge=0.0, le=1.0)
+    leaf_coverage_threshold: float = Field(default=0.50, ge=0.0, le=1.0)
+    window_line_coverage_threshold: float = Field(default=0.45, ge=0.0, le=1.0)
+    min_flank_m: PositiveFloat = 0.25
 
 
 class OverlaySettings(BaseModel):
@@ -108,7 +118,7 @@ class OverlaySettings(BaseModel):
 
 
 class ReconstructionQualitySettings(BaseModel):
-    min_glb_quality_score: float = Field(default=0.25, ge=0.0, le=1.0)
+    min_glb_quality_score: float = Field(default=0.45, ge=0.0, le=1.0)
     allow_debug_fallback_rectangle: bool = False
 
 
@@ -117,6 +127,18 @@ class RenderSettings(BaseModel):
     final_samples: PositiveInt = 96
     preview_fps: PositiveInt = 24
     camera_speed_mps: PositiveFloat = 1.0
+
+
+class BakeSettings(BaseModel):
+    # "final" (no compromises), "draft" (fast iteration), "none" (skip baking,
+    # export KHR_lights_punctual so the viewer lights in real time).
+    mode: str = "final"
+    final_samples: PositiveInt = 256
+    draft_samples: PositiveInt = 16
+    final_lightmap_px: PositiveInt = 2048
+    draft_lightmap_px: PositiveInt = 512
+    denoise: bool = True
+    timeout_seconds: PositiveInt = 7200
 
 
 class TextureSettings(BaseModel):
@@ -129,6 +151,12 @@ class TextureSettings(BaseModel):
 class AssetSettings(BaseModel):
     registry_path: Path = Path("assets/models/asset_registry.yaml")
     allow_placeholder_fallback: bool = True
+
+
+class OptimizeSettings(BaseModel):
+    enabled: bool = True
+    texture_size: PositiveInt = 2048
+    target_max_mb: PositiveInt = 25
 
 
 class ExportSettings(BaseModel):
@@ -163,13 +191,17 @@ class AppConfig(BaseModel):
     overlay: OverlaySettings = Field(default_factory=OverlaySettings)
     reconstruction_quality: ReconstructionQualitySettings = Field(default_factory=ReconstructionQualitySettings)
     render: RenderSettings = Field(default_factory=RenderSettings)
+    bake: BakeSettings = Field(default_factory=BakeSettings)
     textures: TextureSettings = Field(default_factory=TextureSettings)
     assets: AssetSettings = Field(default_factory=AssetSettings)
     export: ExportSettings = Field(default_factory=ExportSettings)
+    optimize: OptimizeSettings = Field(default_factory=OptimizeSettings)
     quality: QualitySettings = Field(default_factory=QualitySettings)
 
 
 def load_config(path: Path | str = Path("configs/default.yaml")) -> AppConfig:
+    # Pick up GEMINI_API_KEY and friends from a local .env; OS environment wins.
+    load_dotenv(override=False)
     config_path = Path(path)
     if not config_path.exists():
         return AppConfig()

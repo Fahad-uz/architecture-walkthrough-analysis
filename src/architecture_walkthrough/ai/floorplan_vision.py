@@ -65,11 +65,18 @@ class AIFurnitureHint(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
 
 
+class AIDimensionText(BaseModel):
+    text: str
+    center: NormalizedPoint
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
 class FloorPlanVisionHints(BaseModel):
     walls: list[AIWallHint] = Field(default_factory=list)
     rooms: list[AIRoomHint] = Field(default_factory=list)
     openings: list[AIOpeningHint] = Field(default_factory=list)
     furniture: list[AIFurnitureHint] = Field(default_factory=list)
+    dimension_texts: list[AIDimensionText] = Field(default_factory=list)
     notes: str = ""
 
 
@@ -145,6 +152,18 @@ def _strict_schema() -> dict:
                     },
                 },
             },
+            "dimension_texts": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["text", "center", "confidence"],
+                    "properties": {
+                        "text": {"type": "string"},
+                        "center": point_schema,
+                        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                    },
+                },
+            },
             "notes": {"type": "string"},
         },
     }
@@ -171,8 +190,11 @@ class GeminiFloorPlanVisionAnalyzer:
         try:
             hints = self._request_hints(image_path)
             return FloorPlanVisionAnalysis(attempted=True, succeeded=True, hints=hints)
-        except GeminiFloorPlanVisionError:
-            raise
+        except GeminiFloorPlanVisionError as exc:
+            LOGGER.warning("%s", exc)
+            if require_success:
+                raise
+            return FloorPlanVisionAnalysis(attempted=True, error=str(exc))
         except (json.JSONDecodeError, ValidationError, Exception) as exc:
             error = f"Gemini floor-plan analysis failed: {exc}"
             LOGGER.warning("%s", error)
@@ -198,6 +220,8 @@ class GeminiFloorPlanVisionAnalyzer:
             "Identify straight wall centerlines as one segment per wall, not both wall edges. "
             "Identify room polygons, door/window openings, and furniture footprints separately. "
             "Furniture includes beds, sofas, chairs, tables, kitchen counters, wardrobes, fixtures, and plants. "
+            "Also transcribe any printed dimension annotations (e.g. '3.2m x 4.0m', '300X420') "
+            "into dimension_texts with the text exactly as written and its center position. "
             "Do not classify furniture outlines, labels, tiles, stairs, or shadows as walls. "
             "Prefer fewer high-confidence segments over noisy guesses. "
             "Do not invent hidden geometry. "

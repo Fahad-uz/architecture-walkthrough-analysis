@@ -44,3 +44,6 @@ assets/hdri/**
 .idea/
 .vscode/
 *.log
+
+# Node
+node_modules/

@@ -5,7 +5,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PositiveFloat, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PositiveFloat, field_validator, model_validator
+
+SCHEMA_VERSION = "3.0"
 
 
 class CoordinateSystem(str, Enum):
@@ -36,28 +38,56 @@ class WallSegment(BaseModel):
     source_band_id: str | None = None
 
 
-class DoorOpening(BaseModel):
+class _OpeningIntervalMixin(BaseModel):
+    """Openings are canonically intervals along their wall's centerline.
+
+    `start_offset_m`/`end_offset_m` are distances from the wall's start point.
+    Legacy (schema 2.x) payloads carry only `offset_m` (interval midpoint) and
+    `width_m`; `interval()` resolves either representation.
+    """
+
+    wall_id: str | None = None
+    offset_m: float | None = None
+    start_offset_m: float | None = None
+    end_offset_m: float | None = None
+
+    @model_validator(mode="after")
+    def _check_interval(self) -> "_OpeningIntervalMixin":
+        explicit = (self.start_offset_m is not None, self.end_offset_m is not None)
+        if any(explicit) and not all(explicit):
+            raise ValueError("opening interval requires both start_offset_m and end_offset_m")
+        if all(explicit) and self.end_offset_m <= self.start_offset_m:  # type: ignore[operator]
+            raise ValueError("opening end_offset_m must be greater than start_offset_m")
+        return self
+
+    def interval(self, width_m: float) -> tuple[float, float] | None:
+        if self.start_offset_m is not None and self.end_offset_m is not None:
+            return self.start_offset_m, self.end_offset_m
+        if self.offset_m is not None:
+            return self.offset_m - width_m / 2, self.offset_m + width_m / 2
+        return None
+
+
+class DoorOpening(_OpeningIntervalMixin):
     id: str | None = None
     center: Point2D
     width_m: PositiveFloat = 0.90
     height_m: PositiveFloat = 2.10
-    wall_id: str | None = None
-    offset_m: float | None = None
     opening_type: str = "single_leaf"
     asset_preset: str | None = None
     opening_direction: str | None = None
+    hinge_side: Literal["start", "end"] | None = None
+    swing_side: Literal["left", "right"] | None = None
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     evidence_source: str = "unknown"
 
 
-class WindowOpening(BaseModel):
+class WindowOpening(_OpeningIntervalMixin):
     id: str | None = None
     center: Point2D
     width_m: PositiveFloat = 1.20
     height_m: PositiveFloat = 1.20
     sill_height_m: PositiveFloat = 0.90
-    wall_id: str | None = None
-    offset_m: float | None = None
     opening_type: str = "fixed"
     asset_preset: str | None = None
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
@@ -66,6 +96,7 @@ class WindowOpening(BaseModel):
 
 class RoomPolygon(BaseModel):
     id: str | None = None
+    face_id: str | None = None
     name: str | None = None
     points: list[Point2D]
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
@@ -141,7 +172,7 @@ class ValidationIssue(BaseModel):
 
 
 class ReconstructionMetadata(BaseModel):
-    schema_version: str = "2.0"
+    schema_version: str = SCHEMA_VERSION
     quality_state: Literal["high", "review_required", "failed"] = "review_required"
     quality_score: float = Field(default=0.0, ge=0.0, le=1.0)
     stages: list[dict[str, Any]] = Field(default_factory=list)
@@ -197,7 +228,7 @@ class FloorPlanModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     coordinate_system: CoordinateSystem = CoordinateSystem.METRES
-    schema_version: str = "2.0"
+    schema_version: str = SCHEMA_VERSION
     pixels_per_metre: PositiveFloat | None = None
     plan_roi: PlanROI | None = None
     walls: list[WallSegment] = Field(default_factory=list)
@@ -225,4 +256,6 @@ class FloorPlanModel(BaseModel):
 
     @classmethod
     def load_json(cls, path: Path) -> "FloorPlanModel":
-        return cls.model_validate(json.loads(path.read_text(encoding="utf-8")))
+        from architecture_walkthrough.geometry.migration import migrate_floorplan_payload
+
+        return cls.model_validate(migrate_floorplan_payload(json.loads(path.read_text(encoding="utf-8"))))
