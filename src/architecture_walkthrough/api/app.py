@@ -12,12 +12,9 @@ from pydantic import BaseModel
 from architecture_walkthrough.ai.floorplan_vision import GeminiFloorPlanVisionError
 from architecture_walkthrough.config import AppConfig, load_config
 from architecture_walkthrough.geometry.floorplan import load_corrected_floorplan
-from architecture_walkthrough.geometry.furniture_layout import deduplicate_furniture, fit_furniture_to_rooms
 from architecture_walkthrough.geometry.validation import score_quality, validate_reconstruction
 from architecture_walkthrough.pipeline import analyze_image, build_model, prepare_walkthrough_floorplan
 from architecture_walkthrough.vision.overlay import write_analysis_overlay
-from architecture_walkthrough.vision.furniture_detection import detect_furniture_from_image
-from architecture_walkthrough.vision.preprocessing import load_image, resize_preserving_aspect
 from architecture_walkthrough.security.file_validation import create_job_dir, ensure_within_directory, validate_image_file
 
 
@@ -555,19 +552,22 @@ def create_app() -> FastAPI:
             validated = validate_image_file(upload_path, config.limits, file.content_type)
             safe_path = job_dir / validated.safe_filename
             upload_path.replace(safe_path)
-            config.ai.gemini_enabled = use_gemini
+            # Copy per request: mutating the shared config would leak this
+            # request's Gemini toggle into concurrent jobs.
+            job_config = config.model_copy(deep=True)
+            job_config.ai.gemini_enabled = use_gemini
             crop_rect = None
             if crop_x is not None and crop_y is not None and crop_width is not None and crop_height is not None:
                 crop_rect = (crop_x, crop_y, crop_width, crop_height)
             model = analyze_image(
                 safe_path,
                 job_dir,
-                config,
+                job_config,
                 manual_scale=manual_scale,
-                require_ai_success=use_gemini,
+                require_ai_success=False,
                 crop_rect=crop_rect,
             )
-            build_model(job_dir, job_dir / "building.glb", config, run_blender=False)
+            build_model(job_dir, job_dir / "building.glb", job_config, run_blender=False)
             metadata = model.metadata
             record.ai_assist_attempted = bool(metadata.get("ai_assist_attempted"))
             record.ai_assist_succeeded = bool(metadata.get("ai_assist_succeeded"))
@@ -661,19 +661,6 @@ def create_app() -> FastAPI:
         path = config.paths.work_root / job_id / "floorplan.corrected.json"
         path.write_text(json.dumps(correction, indent=2), encoding="utf-8")
         model = load_corrected_floorplan(path)
-        source_image = source_image_path(job_dir)
-        source_height = resize_preserving_aspect(
-            load_image(source_image),
-            max_side=config.preprocessing.max_side_px,
-        ).shape[0]
-        local_furniture = detect_furniture_from_image(
-            source_image,
-            model.pixels_per_metre or 1.0,
-            source_height,
-            max_side=config.preprocessing.max_side_px,
-        )
-        furniture = fit_furniture_to_rooms(deduplicate_furniture([*model.furniture, *local_furniture]), model.rooms)
-        model = model.model_copy(update={"furniture": furniture})
         issues = validate_reconstruction(model)
         score, state = score_quality(model.model_copy(update={"validation_issues": issues}))
         model = model.model_copy(
@@ -683,9 +670,6 @@ def create_app() -> FastAPI:
                 "metadata": {
                     **model.metadata,
                     "correction_source": model.metadata.get("correction_source", "browser_editor"),
-                    "furniture_rechecked_on_save": True,
-                    "local_furniture_rechecked_count": len(local_furniture),
-                    "accepted_furniture_count": len(furniture),
                 },
             }
         )
@@ -696,9 +680,10 @@ def create_app() -> FastAPI:
             "issues": [issue.model_dump() for issue in issues],
         }
         (job_dir / "validation_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        source_image = source_image_path(job_dir)
         if source_image.exists():
             write_analysis_overlay(source_image, model, job_dir / "analysis_overlay.svg", job_dir / "analysis_overlay.png")
-        return {"status": "accepted", "furniture": str(len(furniture))}
+        return {"status": "accepted"}
 
     @app.post("/jobs/{job_id}/validate-corrections")
     def validate_corrections(job_id: str) -> dict[str, object]:

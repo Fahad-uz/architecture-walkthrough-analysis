@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field, PositiveFloat, PositiveInt
 
 
@@ -170,6 +171,8 @@ class AppConfig(BaseModel):
 
 
 def load_config(path: Path | str = Path("configs/default.yaml")) -> AppConfig:
+    # Pick up GEMINI_API_KEY and friends from a local .env; OS environment wins.
+    load_dotenv(override=False)
     config_path = Path(path)
     if not config_path.exists():
         return AppConfig()

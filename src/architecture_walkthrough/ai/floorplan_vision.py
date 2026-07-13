@@ -171,8 +171,11 @@ class GeminiFloorPlanVisionAnalyzer:
         try:
             hints = self._request_hints(image_path)
             return FloorPlanVisionAnalysis(attempted=True, succeeded=True, hints=hints)
-        except GeminiFloorPlanVisionError:
-            raise
+        except GeminiFloorPlanVisionError as exc:
+            LOGGER.warning("%s", exc)
+            if require_success:
+                raise
+            return FloorPlanVisionAnalysis(attempted=True, error=str(exc))
         except (json.JSONDecodeError, ValidationError, Exception) as exc:
             error = f"Gemini floor-plan analysis failed: {exc}"
             LOGGER.warning("%s", error)
