@@ -5,10 +5,10 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from shapely.geometry import LineString, Point, Polygon
-from shapely.ops import polygonize, unary_union
+from shapely.geometry import Point, Polygon
 
-from architecture_walkthrough.geometry.models import Point2D, RoomPolygon, WallSegment
+from architecture_walkthrough.geometry.models import DoorOpening, Point2D, RoomPolygon, WallSegment, WindowOpening
+from architecture_walkthrough.geometry.wall_graph import DEFAULT_JUNCTION_SNAP_M, enumerate_faces
 from architecture_walkthrough.vision.ocr import OCRText, parse_dimension_pair
 
 
@@ -70,72 +70,40 @@ def _to_room_polygon(
     )
 
 
-def _close_collinear_gaps(lines: list[LineString], max_gap: float, coord_tol: float) -> list[LineString]:
-    endpoints: list[tuple[float, float, str]] = []
-    for line in lines:
-        coords = list(line.coords)
-        if len(coords) < 2:
-            continue
-        (x1, y1), (x2, y2) = coords[0], coords[-1]
-        if abs(y1 - y2) <= coord_tol:
-            y = (y1 + y2) / 2
-            endpoints.append((x1, y, "h"))
-            endpoints.append((x2, y, "h"))
-        elif abs(x1 - x2) <= coord_tol:
-            x = (x1 + x2) / 2
-            endpoints.append((x, y1, "v"))
-            endpoints.append((x, y2, "v"))
-    closures: list[LineString] = []
-    for orientation in ("h", "v"):
-        oriented = [item for item in endpoints if item[2] == orientation]
-        if orientation == "h":
-            oriented.sort(key=lambda item: (round(item[1] / coord_tol), item[0]))
-        else:
-            oriented.sort(key=lambda item: (round(item[0] / coord_tol), item[1]))
-        for first, second in zip(oriented, oriented[1:]):
-            if orientation == "h":
-                same_line = abs(first[1] - second[1]) <= coord_tol
-                gap = second[0] - first[0]
-                if same_line and 0.03 < gap <= max_gap:
-                    closures.append(LineString([(first[0], first[1]), (second[0], first[1])]))
-            else:
-                same_line = abs(first[0] - second[0]) <= coord_tol
-                gap = second[1] - first[1]
-                if same_line and 0.03 < gap <= max_gap:
-                    closures.append(LineString([(first[0], first[1]), (first[0], second[1])]))
-    return closures
-
-
 def extract_rooms_from_walls(
     walls: list[WallSegment],
     labels: list[OCRText],
     pixels_per_metre: float,
     min_area_m2: float = 0.45,
-    close_gap_m: float = 2.4,
     image_height_px: int | None = None,
+    doors: list[DoorOpening] | None = None,
+    windows: list[WindowOpening] | None = None,
+    junction_snap_m: float = DEFAULT_JUNCTION_SNAP_M,
 ) -> RoomExtractionResult:
-    lines = [LineString([(wall.start.x, wall.start.y), (wall.end.x, wall.end.y)]) for wall in walls if wall.start.distance_to(wall.end) > 0]
-    if not lines:
+    """Rooms are faces of the planar wall graph.
+
+    Doorway gaps close during face enumeration only when a confirmed opening
+    spans them; unexplained gaps are reported, never auto-closed.
+    """
+    if not any(wall.start.distance_to(wall.end) > 0 for wall in walls):
         return RoomExtractionResult(rooms=[], rejected=["no wall lines available for room extraction"])
-    coord_tol = max(0.04, min((wall.thickness_m for wall in walls), default=0.12) * 0.75)
-    merged = unary_union([*lines, *_close_collinear_gaps(lines, close_gap_m, coord_tol)])
-    polygons = list(polygonize(merged))
-    if not polygons:
+    result = enumerate_faces(
+        walls,
+        doors,
+        windows,
+        junction_snap_m=junction_snap_m,
+        min_room_area_m2=min_area_m2,
+    )
+    if not result.faces:
         return RoomExtractionResult(rooms=[], rejected=["wall topology did not close any room polygons"])
-    max_area = max(polygon.area for polygon in polygons)
     rooms: list[RoomPolygon] = []
-    rejected: list[str] = []
-    for polygon in sorted(polygons, key=lambda item: item.area, reverse=True):
-        if polygon.area < min_area_m2:
-            rejected.append("polygon area below room threshold")
-            continue
-        if polygon.area == max_area and len(polygons) > 1 and not any(
-            polygon.contains(_label_point(label, pixels_per_metre, image_height_px))
-            for label in labels
-        ):
-            rejected.append("discarded likely exterior polygon")
-            continue
-        rooms.append(_to_room_polygon(len(rooms), polygon, labels, pixels_per_metre, image_height_px))
+    for face in result.faces:
+        room = _to_room_polygon(len(rooms), face.polygon, labels, pixels_per_metre, image_height_px)
+        rooms.append(room.model_copy(update={"face_id": face.face_id}))
+    rejected = [
+        f"unclosed gap of {gap['length_m']:.2f} m between walls {gap['wall_a']} and {gap['wall_b']}"
+        for gap in result.unclosed_gaps
+    ]
     return RoomExtractionResult(rooms=rooms, rejected=rejected)
 
 

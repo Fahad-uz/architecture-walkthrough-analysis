@@ -13,6 +13,7 @@ from architecture_walkthrough.ai.floorplan_vision import GeminiFloorPlanVisionEr
 from architecture_walkthrough.config import AppConfig, load_config
 from architecture_walkthrough.geometry.floorplan import load_corrected_floorplan
 from architecture_walkthrough.geometry.validation import score_quality, validate_reconstruction
+from architecture_walkthrough.geometry.wall_graph import enumerate_faces, match_faces_to_rooms
 from architecture_walkthrough.pipeline import analyze_image, build_model, prepare_walkthrough_floorplan
 from architecture_walkthrough.vision.overlay import write_analysis_overlay
 from architecture_walkthrough.security.file_validation import create_job_dir, ensure_within_directory, validate_image_file
@@ -661,6 +662,14 @@ def create_app() -> FastAPI:
         path = config.paths.work_root / job_id / "floorplan.corrected.json"
         path.write_text(json.dumps(correction, indent=2), encoding="utf-8")
         model = load_corrected_floorplan(path)
+        # Rooms are faces of the wall graph: regenerate from the edited walls
+        # and openings so polygons never go stale. Semantics (name, face_id)
+        # carry over to the faces they overlap; edited rooms that no longer
+        # match an enclosed face are dropped.
+        face_result = enumerate_faces(model.walls, model.doors, model.windows)
+        if face_result.faces:
+            regenerated = match_faces_to_rooms(face_result.faces, model.rooms)
+            model = model.model_copy(update={"rooms": regenerated})
         issues = validate_reconstruction(model)
         score, state = score_quality(model.model_copy(update={"validation_issues": issues}))
         model = model.model_copy(

@@ -17,7 +17,6 @@ from architecture_walkthrough.geometry.models import (
     FurniturePlacement,
     Point2D,
     ReconstructionMetadata,
-    RoomPolygon,
     ValidationIssue,
     WallSegment,
 )
@@ -286,77 +285,6 @@ def _furniture_from_gemini(
     return placements
 
 
-def _project_semantic_rooms(
-    ai_hints,
-    existing_rooms,
-    walls: list[WallSegment],
-    image_width_px: int,
-    image_height_px: int,
-    pixels_per_metre: float,
-    min_confidence: float,
-):
-    if ai_hints is None:
-        return []
-    verticals = sorted({(wall.start.x + wall.end.x) / 2 for wall in walls if abs(wall.start.x - wall.end.x) < abs(wall.start.y - wall.end.y)})
-    horizontals = sorted({(wall.start.y + wall.end.y) / 2 for wall in walls if abs(wall.start.y - wall.end.y) <= abs(wall.start.x - wall.end.x)})
-    projected = []
-    existing_names = {room.name.lower() for room in existing_rooms if room.name}
-    tolerance_m = 0.75
-
-    def snap(value: float, candidates: list[float]) -> tuple[float, bool]:
-        if not candidates:
-            return value, False
-        best = min(candidates, key=lambda item: abs(item - value))
-        return (best, True) if abs(best - value) <= tolerance_m else (value, False)
-
-    for hint in ai_hints.rooms:
-        if not hint.name or hint.confidence < min_confidence * 0.65:
-            continue
-        normalized_name = hint.name.lower()
-        if any(token in normalized_name for token in ("lift", "stair", "entrance", "shelf", "counter")):
-            continue
-        if normalized_name in existing_names:
-            continue
-        xs = [point.x * image_width_px / pixels_per_metre for point in hint.points]
-        ys = [(1.0 - point.y) * image_height_px / pixels_per_metre for point in hint.points]
-        x0, x1 = min(xs), max(xs)
-        y0, y1 = min(ys), max(ys)
-        x0, sx0 = snap(x0, verticals)
-        x1, sx1 = snap(x1, verticals)
-        y0, sy0 = snap(y0, horizontals)
-        y1, sy1 = snap(y1, horizontals)
-        support = sum((sx0, sx1, sy0, sy1))
-        if support < 2 or x1 - x0 < 0.4 or y1 - y0 < 0.4:
-            continue
-        projected.append(
-            {
-                "name": hint.name,
-                "points": [
-                    Point2D(x=x0, y=y0),
-                    Point2D(x=x1, y=y0),
-                    Point2D(x=x1, y=y1),
-                    Point2D(x=x0, y=y1),
-                ],
-                "confidence": min(0.72, hint.confidence * (0.35 + support * 0.12)),
-            }
-        )
-        existing_names.add(normalized_name)
-    return projected
-
-
-def _bbox_overlap_ratio(points_a: list[Point2D], points_b: list[Point2D]) -> float:
-    ax0, ax1 = min(point.x for point in points_a), max(point.x for point in points_a)
-    ay0, ay1 = min(point.y for point in points_a), max(point.y for point in points_a)
-    bx0, bx1 = min(point.x for point in points_b), max(point.x for point in points_b)
-    by0, by1 = min(point.y for point in points_b), max(point.y for point in points_b)
-    ix = max(0.0, min(ax1, bx1) - max(ax0, bx0))
-    iy = max(0.0, min(ay1, by1) - max(ay0, by0))
-    intersection = ix * iy
-    area_a = max((ax1 - ax0) * (ay1 - ay0), 1e-6)
-    area_b = max((bx1 - bx0) * (by1 - by0), 1e-6)
-    return intersection / min(area_a, area_b)
-
-
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -446,7 +374,14 @@ def analyze_image(
     semantic_room_labels, semantic_special_labels = _semantic_labels_from_gemini(ai_hints, resized_width, resized_height)
     all_room_labels = [*_ocr_labels(ocr_results), *semantic_room_labels]
 
-    preliminary_rooms = extract_rooms_from_walls(wall_detection.walls, all_room_labels, pixels_per_metre=1.0).rooms
+    # Raw wall bands are still in pixel units here, so disable metric junction
+    # snapping; bands cross each other, which polygonize nodes on its own.
+    preliminary_rooms = extract_rooms_from_walls(
+        wall_detection.walls,
+        all_room_labels,
+        pixels_per_metre=1.0,
+        junction_snap_m=0.0,
+    ).rooms
     stages.record("estimate_preliminary_rooms", started, room_count=len(preliminary_rooms))
 
     started = time.perf_counter()
@@ -507,12 +442,16 @@ def analyze_image(
     stages.record("detect_attach_openings", started, doors=len(opening_result.doors), windows=len(opening_result.windows), rejected=len(opening_result.rejected))
 
     started = time.perf_counter()
-    final_rooms = extract_rooms_from_walls(
+    room_result = extract_rooms_from_walls(
         reconstruction.walls,
         all_room_labels,
         pixels_per_metre=pixels_per_metre,
         image_height_px=resized_height,
-    ).rooms
+        doors=opening_result.doors,
+        windows=opening_result.windows,
+    )
+    final_rooms = room_result.rooms
+    unclosed_gap_reports = room_result.rejected
     if not final_rooms:
         final_rooms = extract_rooms_from_geometry_mask(
             preprocessing.layers["cleaned_geometry_only"],
@@ -520,46 +459,7 @@ def analyze_image(
             pixels_per_metre=pixels_per_metre,
             image_height_px=resized_height,
         ).rooms
-    semantic_room_additions = _project_semantic_rooms(
-        ai_hints,
-        final_rooms,
-        reconstruction.walls,
-        resized_width,
-        resized_height,
-        pixels_per_metre,
-        config.ai.gemini_min_confidence,
-    )
-    for room_hint in semantic_room_additions:
-        best_index = None
-        best_overlap = 0.0
-        for index, room in enumerate(final_rooms):
-            if room.name:
-                continue
-            overlap = _bbox_overlap_ratio(room.points, room_hint["points"])
-            if overlap > best_overlap:
-                best_overlap = overlap
-                best_index = index
-        if best_index is not None and best_overlap >= 0.25:
-            final_rooms[best_index] = final_rooms[best_index].model_copy(
-                update={
-                    "name": room_hint["name"],
-                    "confidence": max(final_rooms[best_index].confidence, room_hint["confidence"]),
-                    "evidence_source": f"{final_rooms[best_index].evidence_source}+gemini_semantic_label",
-                }
-            )
-            continue
-        if any(_bbox_overlap_ratio(room.points, room_hint["points"]) > 0.85 for room in final_rooms):
-            continue
-        final_rooms.append(
-            RoomPolygon(
-                id=f"room_{len(final_rooms):03d}",
-                name=room_hint["name"],
-                points=room_hint["points"],
-                confidence=room_hint["confidence"],
-                evidence_source="gemini_semantic_projected_to_walls",
-            )
-        )
-    stages.record("extract_final_rooms", started, room_count=len(final_rooms))
+    stages.record("extract_final_rooms", started, room_count=len(final_rooms), unclosed_gaps=len(unclosed_gap_reports))
 
     started = time.perf_counter()
     special_elements = _classify_special_elements([*ocr_results, *semantic_special_labels], pixels_per_metre, resized_height)
@@ -620,7 +520,7 @@ def analyze_image(
             "geometry_originated_only_from_ai": False,
             "ocr_text_count": len(ocr_results),
             "gemini_semantic_label_count": len(semantic_room_labels) + len(semantic_special_labels),
-            "gemini_projected_room_count": len(semantic_room_additions),
+            "unclosed_wall_gaps": unclosed_gap_reports,
             "local_furniture_count": len(local_furniture),
             "gemini_furniture_count": len(gemini_furniture),
             "accepted_furniture_count": len(furniture),
@@ -639,6 +539,8 @@ def analyze_image(
     issues = validate_reconstruction(model)
     for issue in semantic_rejected:
         issues.append(ValidationIssue(code="semantic_hint_rejected", severity="info", message=issue))
+    for gap_report in unclosed_gap_reports:
+        issues.append(ValidationIssue(code="unclosed_wall_gap", severity="warning", message=gap_report))
     score, state = score_quality(model.model_copy(update={"validation_issues": issues}))
     model = model.model_copy(
         update={
