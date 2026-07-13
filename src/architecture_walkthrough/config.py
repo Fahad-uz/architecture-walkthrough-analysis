@@ -129,6 +129,18 @@ class RenderSettings(BaseModel):
     camera_speed_mps: PositiveFloat = 1.0
 
 
+class BakeSettings(BaseModel):
+    # "final" (no compromises), "draft" (fast iteration), "none" (skip baking,
+    # export KHR_lights_punctual so the viewer lights in real time).
+    mode: str = "final"
+    final_samples: PositiveInt = 256
+    draft_samples: PositiveInt = 16
+    final_lightmap_px: PositiveInt = 2048
+    draft_lightmap_px: PositiveInt = 512
+    denoise: bool = True
+    timeout_seconds: PositiveInt = 7200
+
+
 class TextureSettings(BaseModel):
     default_resolution: PositiveInt = 2048
     allow_4k: bool = False
@@ -173,6 +185,7 @@ class AppConfig(BaseModel):
     overlay: OverlaySettings = Field(default_factory=OverlaySettings)
     reconstruction_quality: ReconstructionQualitySettings = Field(default_factory=ReconstructionQualitySettings)
     render: RenderSettings = Field(default_factory=RenderSettings)
+    bake: BakeSettings = Field(default_factory=BakeSettings)
     textures: TextureSettings = Field(default_factory=TextureSettings)
     assets: AssetSettings = Field(default_factory=AssetSettings)
     export: ExportSettings = Field(default_factory=ExportSettings)

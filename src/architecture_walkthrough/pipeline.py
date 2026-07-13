@@ -659,6 +659,7 @@ def build_model(
     config: AppConfig,
     run_blender: bool = False,
     force: bool = False,
+    bake_mode: str | None = None,
 ) -> Path:
     """Export a GLB, gated on reconstruction quality.
 
@@ -687,7 +688,7 @@ def build_model(
                 f"export threshold {config.reconstruction_quality.min_glb_quality_score:.2f}; review the validation "
                 "report in the correction editor or pass force=True to override"
             )
-    return export_floorplan_glb(model, output_glb, config, run_blender=run_blender)
+    return export_floorplan_glb(model, output_glb, config, run_blender=run_blender, bake_mode=bake_mode)
 
 
 def convert_image_to_glb(

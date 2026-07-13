@@ -33,9 +33,12 @@ def build_glb_model(
     config: AppConfig,
     run_blender: bool = False,
     force: bool = False,
+    bake_mode: str | None = None,
 ) -> Path:
     """Build a GLB from a corrected, optimized, or compatibility floorplan JSON."""
-    return build_model(floorplan_path, output_glb, config, run_blender=run_blender, force=force)
+    return build_model(
+        floorplan_path, output_glb, config, run_blender=run_blender, force=force, bake_mode=bake_mode
+    )
 
 
 def convert_image_to_glb(

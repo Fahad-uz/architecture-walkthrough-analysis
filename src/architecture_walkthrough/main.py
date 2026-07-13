@@ -32,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--use-blender", action="store_true", help="Use Blender instead of the default pure-Python GLB exporter")
     build.add_argument("--no-run-blender", action="store_true")
     build.add_argument("--force", action="store_true", help="Export even when reconstruction quality is below the gate")
+    build.add_argument("--bake-mode", choices=["final", "draft", "none"], default=None, help="Blender lighting bake: final (default), draft, or none (real-time lights)")
 
     image_to_glb = sub.add_parser("image-to-glb")
     image_to_glb.add_argument("--input", required=True)
@@ -79,7 +80,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if args.command == "build-model":
-        build_glb_model(Path(args.floorplan), Path(args.output), config, run_blender=args.use_blender, force=args.force)
+        build_glb_model(
+            Path(args.floorplan),
+            Path(args.output),
+            config,
+            run_blender=args.use_blender,
+            force=args.force,
+            bake_mode=args.bake_mode,
+        )
         return 0
     if args.command == "image-to-glb":
         if args.use_gemini:
