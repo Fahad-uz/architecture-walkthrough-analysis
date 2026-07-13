@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from architecture_walkthrough.api.app import UPLOAD_PAGE, create_app
+from architecture_walkthrough.api.app import create_app
 from architecture_walkthrough.config import AISettings, AppConfig
 from architecture_walkthrough.pipeline import convert_image_to_glb
 
@@ -29,13 +29,9 @@ def test_image_upload_pipeline_generates_glb_artifact(tmp_path: Path) -> None:
 def test_app_exposes_upload_and_download_routes() -> None:
     app = create_app()
     routes = {getattr(route, "path", "") for route in app.routes}
-    assert "/" in routes
     assert "/jobs" in routes
-    assert "/jobs/{job_id}/edit" in routes
     assert "/jobs/{job_id}/edit-data" in routes
     assert "/jobs/{job_id}/source-image" in routes
     assert "/jobs/{job_id}/artifacts/{artifact_name}" in routes
+    assert "/jobs/{job_id}/generate-model" in routes
     assert "/gemini-status" in routes
-    assert "Create GLB" in UPLOAD_PAGE
-    assert "Open correction editor" in UPLOAD_PAGE
-    assert "Use Gemini vision assist" in UPLOAD_PAGE
