@@ -26,6 +26,9 @@ class SourceEvidence:
     dark_mask: np.ndarray
     pixels_per_metre: float
     image_height_px: int
+    # Long straight structural runs (wall-band union). Preferred recall target:
+    # raw ink also contains fixtures, stairs, and arcs that are not walls.
+    band_mask: np.ndarray | None = None
 
 
 def load_source_evidence(job_dir: Path, model: FloorPlanModel) -> SourceEvidence | None:
@@ -35,10 +38,16 @@ def load_source_evidence(job_dir: Path, model: FloorPlanModel) -> SourceEvidence
     mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
     if mask is None:
         return None
+    band_mask = None
+    horizontal = cv2.imread(str(job_dir / "debug" / "08_horizontal_wall_band.png"), cv2.IMREAD_GRAYSCALE)
+    vertical = cv2.imread(str(job_dir / "debug" / "09_vertical_wall_band.png"), cv2.IMREAD_GRAYSCALE)
+    if horizontal is not None and vertical is not None and horizontal.shape == vertical.shape:
+        band_mask = cv2.bitwise_or(horizontal, vertical)
     return SourceEvidence(
         dark_mask=mask,
         pixels_per_metre=model.pixels_per_metre,
         image_height_px=mask.shape[0],
+        band_mask=band_mask,
     )
 
 
@@ -62,17 +71,25 @@ def _wall_px(model: FloorPlanModel, evidence: SourceEvidence) -> np.ndarray:
 
 
 def wall_mask_overlap_score(model: FloorPlanModel, evidence: SourceEvidence) -> float:
-    """How well do the vectorized walls agree with bold strokes in the image?"""
+    """How well do the vectorized walls agree with structural ink in the image?
+
+    Precision is measured against (slightly dilated) ink; recall against the
+    wall-band evidence when available — raw ink also contains fixtures and
+    furniture linework that walls are not expected to explain.
+    """
     if not model.walls:
         return 0.0
     rendered = _wall_px(model, evidence)
     rendered_on = int((rendered > 0).sum())
-    dark_on = int((evidence.dark_mask > 0).sum())
-    if rendered_on == 0 or dark_on == 0:
+    if rendered_on == 0:
         return 0.0
-    intersection = int(((rendered > 0) & (evidence.dark_mask > 0)).sum())
-    precision = intersection / rendered_on  # walls we drew that are real ink
-    recall = intersection / dark_on  # real ink we explained
+    ink = cv2.dilate(evidence.dark_mask, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)))
+    precision = int(((rendered > 0) & (ink > 0)).sum()) / rendered_on
+    recall_target = evidence.band_mask if evidence.band_mask is not None else evidence.dark_mask
+    target_on = int((recall_target > 0).sum())
+    if target_on == 0:
+        return 0.0
+    recall = int(((rendered > 0) & (recall_target > 0)).sum()) / target_on
     return max(0.0, min(1.0, 0.65 * precision + 0.35 * min(1.0, recall / 0.6)))
 
 

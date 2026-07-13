@@ -41,6 +41,45 @@ def resize_preserving_aspect(image: np.ndarray, max_side: int = 1600) -> np.ndar
     return cv2.resize(image, (int(width * scale), int(height * scale)), interpolation=cv2.INTER_AREA)
 
 
+def strip_border_bars(mask: np.ndarray) -> np.ndarray:
+    """Remove page decorations: long thin bars hugging the image border.
+
+    Screenshots and exports often carry dark frame strips along the canvas
+    edges; left in the structural mask they become phantom walls.
+    """
+    height, width = mask.shape[:2]
+    cleaned = mask.copy()
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    for label in range(1, count):
+        x, y, w, h, _area = stats[label]
+        touches_top = y == 0
+        touches_bottom = y + h >= height
+        touches_left = x == 0
+        touches_right = x + w >= width
+        horizontal_bar = (touches_top or touches_bottom) and w > width * 0.6 and h < height * 0.06
+        vertical_bar = (touches_left or touches_right) and h > height * 0.6 and w < width * 0.06
+        if horizontal_bar or vertical_bar:
+            cleaned[labels == label] = 0
+    return cleaned
+
+
+def structural_ink_mask(
+    image_bgr: np.ndarray,
+    dark_threshold: int,
+    max_saturation: int,
+) -> np.ndarray:
+    """Dark AND desaturated pixels: true black/grey linework.
+
+    Colored dark fills (kitchen counters, brick hatches, furniture) fail the
+    saturation gate, so they never masquerade as walls.
+    """
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    saturation = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)[:, :, 1]
+    dark = cv2.threshold(gray, dark_threshold, 255, cv2.THRESH_BINARY_INV)[1]
+    desaturated = cv2.threshold(saturation, max_saturation, 255, cv2.THRESH_BINARY_INV)[1]
+    return strip_border_bars(cv2.bitwise_and(dark, desaturated))
+
+
 def preprocess_array(image: np.ndarray, debug_dir: Path, max_side: int = 1600, options: dict[str, Any] | None = None) -> PreprocessingResult:
     options = options or {}
     resized = resize_preserving_aspect(image, max_side=max_side)
@@ -63,8 +102,9 @@ def preprocess_array(image: np.ndarray, debug_dir: Path, max_side: int = 1600, o
         9,
     )
     layers["adaptive_binary"] = _write_debug(debug_dir, "04_adaptive_binary.png", adaptive)
-    dark_threshold = int(options.get("dark_threshold", 95))
-    dark_mask = cv2.threshold(gray, dark_threshold, 255, cv2.THRESH_BINARY_INV)[1]
+    dark_threshold = int(options.get("dark_threshold", 170))
+    max_saturation = int(options.get("max_structural_saturation", 80))
+    dark_mask = structural_ink_mask(denoised, dark_threshold, max_saturation)
     layers["dark_structural_stroke"] = _write_debug(debug_dir, "05_dark_structural_stroke.png", dark_mask)
 
     area = resized.shape[0] * resized.shape[1]
@@ -84,11 +124,23 @@ def preprocess_array(image: np.ndarray, debug_dir: Path, max_side: int = 1600, o
     furniture_mask = cv2.morphologyEx(cv2.bitwise_and(adaptive, cv2.bitwise_not(text_mask)), cv2.MORPH_OPEN, furniture_kernel)
     layers["furniture_fixture_mask"] = _write_debug(debug_dir, "07_furniture_fixture_mask.png", furniture_mask)
 
-    h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(15, resized.shape[1] // 18), 3))
-    v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, max(15, resized.shape[0] // 18)))
+    # Single-row/column kernels: the dilation below guarantees stroke width,
+    # and 1 px cross-sections tolerate the stair-step jitter of thin CAD lines.
+    h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(15, resized.shape[1] // 18), 1))
+    v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(15, resized.shape[0] // 18)))
     structural_no_text = cv2.bitwise_and(dark_mask, cv2.bitwise_not(text_mask))
-    horizontal = cv2.morphologyEx(structural_no_text, cv2.MORPH_OPEN, h_kernel)
-    vertical = cv2.morphologyEx(structural_no_text, cv2.MORPH_OPEN, v_kernel)
+    # Fuse hollow (double-line) CAD walls into solid bands so the long-kernel
+    # opening below can see them; bold filled walls pass through unchanged.
+    close_px = max(3, int(max(resized.shape[:2]) * float(options.get("hollow_wall_close_ratio", 0.008))) | 1)
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (close_px, close_px))
+    fused_structural = cv2.morphologyEx(structural_no_text, cv2.MORPH_CLOSE, close_kernel)
+    # Hairline (1 px) wall strokes cannot survive the 3 px band kernels below;
+    # thicken every remaining structural stroke to at least 3 px. Text and
+    # colored furniture are already gone, so this only fattens real linework.
+    fused_structural = cv2.dilate(fused_structural, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations=1)
+    layers["fused_structural"] = _write_debug(debug_dir, "05b_fused_structural.png", fused_structural)
+    horizontal = cv2.morphologyEx(fused_structural, cv2.MORPH_OPEN, h_kernel)
+    vertical = cv2.morphologyEx(fused_structural, cv2.MORPH_OPEN, v_kernel)
     layers["horizontal_wall_band"] = _write_debug(debug_dir, "08_horizontal_wall_band.png", horizontal)
     layers["vertical_wall_band"] = _write_debug(debug_dir, "09_vertical_wall_band.png", vertical)
 

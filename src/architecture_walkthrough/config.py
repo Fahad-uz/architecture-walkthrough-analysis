@@ -64,13 +64,19 @@ class ROIDetectionSettings(BaseModel):
 class PreprocessingSettings(BaseModel):
     max_side_px: PositiveInt = 1800
     adaptive_block_ratio: float = Field(default=0.018, gt=0.0, le=0.10)
-    dark_threshold: PositiveInt = 95
+    dark_threshold: PositiveInt = 170
+    # Structural ink is black/grey; colored dark fills (kitchen counters,
+    # brick hatches) are furniture, not walls.
+    max_structural_saturation: PositiveInt = 80
+    # CAD plans draw walls as two thin parallel lines; closing fuses them
+    # into solid bands the band detector can see. Ratio of the max side.
+    hollow_wall_close_ratio: float = Field(default=0.008, gt=0.0, le=0.05)
     min_symbol_area_ratio: float = Field(default=0.000002, gt=0.0, le=0.01)
     max_text_component_area_ratio: float = Field(default=0.0007, gt=0.0, le=0.05)
 
 
 class WallBandSettings(BaseModel):
-    min_length_ratio: float = Field(default=0.035, gt=0.0, le=0.5)
+    min_length_ratio: float = Field(default=0.02, gt=0.0, le=0.5)
     merge_gap_ratio: float = Field(default=0.012, gt=0.0, le=0.1)
     coordinate_tolerance_ratio: float = Field(default=0.006, gt=0.0, le=0.1)
     min_thickness_px: PositiveInt = 3

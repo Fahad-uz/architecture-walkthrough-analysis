@@ -82,8 +82,11 @@ def detect_plan_roi(
             debug_path=debug_path,
         )
 
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    binary = cv2.threshold(gray, 210, 255, cv2.THRESH_BINARY_INV)[1]
+    from architecture_walkthrough.vision.preprocessing import strip_border_bars, structural_ink_mask
+
+    # Black/grey ink only (colored furniture fills are not structure), page
+    # frame bars stripped, hollow double-line walls fused into bands.
+    binary = structural_ink_mask(image, dark_threshold=210, max_saturation=90)
     min_area = max(25, int(width * height * 0.00002))
     components, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
     mask = np.zeros_like(binary)
@@ -94,11 +97,14 @@ def detect_plan_roi(
         if w > width * 0.95 and h > height * 0.95:
             continue
         mask[labels == label] = 255
+    close_px = max(3, int(max(width, height) * 0.008) | 1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (close_px, close_px)))
 
     horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(25, width // 20), 3))
     vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, max(25, height // 25)))
     structural = cv2.morphologyEx(mask, cv2.MORPH_OPEN, horizontal_kernel)
     structural = cv2.bitwise_or(structural, cv2.morphologyEx(mask, cv2.MORPH_OPEN, vertical_kernel))
+    structural = strip_border_bars(structural)
     structural = cv2.dilate(structural, cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9)), iterations=2)
     contours, _ = cv2.findContours(structural, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
@@ -113,18 +119,17 @@ def detect_plan_roi(
         debug_path = _write_debug_overlay(image, roi, debug_dir)
         return ROIExtractionResult(image=image.copy(), roi=roi, transform=(0, 0), debug_path=debug_path)
 
+    # The plan is the union of all significant structural regions, not just the
+    # single largest blob — thin-walled plans fragment into many components.
     boxes = [cv2.boundingRect(contour) for contour in contours]
-    boxes = sorted(boxes, key=lambda box: box[2] * box[3], reverse=True)
-    x, y, w, h = boxes[0]
-    # Floor plans with a schedule footer typically have the drawing in the upper
-    # part. Avoid swallowing a large lower schedule if the strongest structure is
-    # already above it.
-    if y + h > height * 0.82 and y < height * 0.15:
-        row_density = (structural > 0).sum(axis=1)
-        low_rows = np.where(row_density < max(2, width * 0.01))[0]
-        candidates = low_rows[(low_rows > height * 0.45) & (low_rows < height * 0.86)]
-        if len(candidates):
-            h = max(1, int(candidates[0] - y))
+    significant = [box for box in boxes if box[2] * box[3] >= width * height * 0.005]
+    if not significant:
+        significant = sorted(boxes, key=lambda box: box[2] * box[3], reverse=True)[:1]
+    x0u = min(box[0] for box in significant)
+    y0u = min(box[1] for box in significant)
+    x1u = max(box[0] + box[2] for box in significant)
+    y1u = max(box[1] + box[3] for box in significant)
+    x, y, w, h = x0u, y0u, x1u - x0u, y1u - y0u
 
     x0 = max(0, x - padding_px)
     y0 = max(0, y - padding_px)

@@ -620,7 +620,15 @@ def analyze_image(
         }
     )
     stages.record("gemini_sanity_check", started, attempted=sanity.attempted, warnings=len(sanity.warnings))
-    evidence = SourceEvidence(dark_mask=dark_mask, pixels_per_metre=pixels_per_metre, image_height_px=resized_height)
+    band_h = cv2.imread(str(preprocessing.layers["horizontal_wall_band"]), cv2.IMREAD_GRAYSCALE)
+    band_v = cv2.imread(str(preprocessing.layers["vertical_wall_band"]), cv2.IMREAD_GRAYSCALE)
+    band_mask = cv2.bitwise_or(band_h, band_v) if band_h is not None and band_v is not None else None
+    evidence = SourceEvidence(
+        dark_mask=dark_mask,
+        pixels_per_metre=pixels_per_metre,
+        image_height_px=resized_height,
+        band_mask=band_mask,
+    )
     quality = evaluate_quality(model.model_copy(update={"validation_issues": issues}), evidence)
     model = model.model_copy(
         update={

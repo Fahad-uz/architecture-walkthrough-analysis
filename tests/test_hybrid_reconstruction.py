@@ -24,13 +24,17 @@ from architecture_walkthrough.vision.plan_roi import detect_plan_roi
 from architecture_walkthrough.vision.wall_detection import detect_wall_bands
 
 
-def test_roi_detection_excludes_footer_schedule() -> None:
+def test_roi_detection_unions_all_structural_regions() -> None:
+    # Thin-walled plans fragment into several components; the ROI must cover
+    # the union of drawn structure, never just the largest blob.
     image = np.full((300, 240, 3), 255, dtype=np.uint8)
     cv2.rectangle(image, (20, 20), (220, 150), (0, 0, 0), 6)
     cv2.rectangle(image, (20, 220), (220, 285), (0, 0, 0), 2)
     result = detect_plan_roi(image, padding_ratio=0.0)
     assert result.roi.source == "auto"
-    assert result.roi.rect.y + result.roi.rect.height < 220
+    rect = result.roi.rect
+    assert rect.y <= 20
+    assert rect.y + rect.height >= 280
 
 
 def test_dimension_parser_handles_cm_and_metres() -> None:

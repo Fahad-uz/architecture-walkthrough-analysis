@@ -42,11 +42,11 @@ roi_detection:
 preprocessing:
   max_side_px: 1800
   adaptive_block_ratio: 0.018
-  dark_threshold: 95
+  dark_threshold: 170
   min_symbol_area_ratio: 0.000002
   max_text_component_area_ratio: 0.0007
 wall_bands:
-  min_length_ratio: 0.035
+  min_length_ratio: 0.02
   merge_gap_ratio: 0.012
   coordinate_tolerance_ratio: 0.006
   min_thickness_px: 3
