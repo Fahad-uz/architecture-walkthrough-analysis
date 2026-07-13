@@ -20,7 +20,9 @@ def test_simple_glb_export_writes_loadable_glb(tmp_path: Path) -> None:
 
 
 def test_build_model_defaults_to_pure_python_glb_export(tmp_path: Path) -> None:
-    output = build_model(Path("tests/fixtures/sample_floorplan.json"), tmp_path / "building.glb", AppConfig())
+    # force=True: this test exercises the export path; the quality gate has its
+    # own coverage in test_validation_gate.py (the legacy fixture has no scale).
+    output = build_model(Path("tests/fixtures/sample_floorplan.json"), tmp_path / "building.glb", AppConfig(), force=True)
     assert output.exists()
     assert output.suffix == ".glb"
 

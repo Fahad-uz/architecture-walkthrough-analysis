@@ -74,7 +74,7 @@ overlay:
   enabled: true
   severe_error_blocks_glb: true
 reconstruction_quality:
-  min_glb_quality_score: 0.25
+  min_glb_quality_score: 0.45
   allow_debug_fallback_rectangle: false
 render:
   preview_samples: 16

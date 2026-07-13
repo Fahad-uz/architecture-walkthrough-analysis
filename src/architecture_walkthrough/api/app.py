@@ -12,7 +12,11 @@ from pydantic import BaseModel
 from architecture_walkthrough.ai.floorplan_vision import GeminiFloorPlanVisionError
 from architecture_walkthrough.config import AppConfig, load_config
 from architecture_walkthrough.geometry.floorplan import load_corrected_floorplan
-from architecture_walkthrough.geometry.validation import score_quality, validate_reconstruction
+from architecture_walkthrough.geometry.validation import (
+    evaluate_quality,
+    load_source_evidence,
+    validate_reconstruction,
+)
 from architecture_walkthrough.geometry.wall_graph import enumerate_faces, match_faces_to_rooms
 from architecture_walkthrough.pipeline import analyze_image, build_model, prepare_walkthrough_floorplan
 from architecture_walkthrough.vision.overlay import write_analysis_overlay
@@ -670,22 +674,27 @@ def create_app() -> FastAPI:
         if face_result.faces:
             regenerated = match_faces_to_rooms(face_result.faces, model.rooms)
             model = model.model_copy(update={"rooms": regenerated})
-        issues = validate_reconstruction(model)
-        score, state = score_quality(model.model_copy(update={"validation_issues": issues}))
+        evidence = load_source_evidence(job_dir, model)
+        issues = validate_reconstruction(model, evidence)
+        quality = evaluate_quality(model.model_copy(update={"validation_issues": issues}), evidence)
         model = model.model_copy(
             update={
                 "validation_issues": issues,
-                "reconstruction": model.reconstruction.model_copy(update={"quality_score": score, "quality_state": state}),
+                "reconstruction": model.reconstruction.model_copy(
+                    update={"quality_score": quality.score, "quality_state": quality.state}
+                ),
                 "metadata": {
                     **model.metadata,
                     "correction_source": model.metadata.get("correction_source", "browser_editor"),
+                    "quality_components": quality.components,
                 },
             }
         )
         model.save_json(path)
         report = {
-            "quality_state": state,
-            "quality_score": score,
+            "quality_state": quality.state,
+            "quality_score": quality.score,
+            "components": quality.components,
             "issues": [issue.model_dump() for issue in issues],
         }
         (job_dir / "validation_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
@@ -702,16 +711,25 @@ def create_app() -> FastAPI:
         if not floorplan.exists():
             floorplan = job_dir / "floorplan.optimized.json"
         model = load_corrected_floorplan(floorplan)
-        issues = validate_reconstruction(model)
-        score, state = score_quality(model.model_copy(update={"validation_issues": issues}))
-        return {"quality_state": state, "quality_score": score, "issues": [issue.model_dump() for issue in issues]}
+        evidence = load_source_evidence(job_dir, model)
+        issues = validate_reconstruction(model, evidence)
+        quality = evaluate_quality(model.model_copy(update={"validation_issues": issues}), evidence)
+        return {
+            "quality_state": quality.state,
+            "quality_score": quality.score,
+            "components": quality.components,
+            "issues": [issue.model_dump() for issue in issues],
+        }
 
     @app.post("/jobs/{job_id}/generate-model")
-    def generate_model(job_id: str) -> dict[str, str]:
+    def generate_model(job_id: str, force: bool = False) -> dict[str, str]:
         runner.get(job_id)
         job_dir = config.paths.work_root / job_id
         output = job_dir / "building.glb"
-        build_model(job_dir, output, config, run_blender=False)
+        try:
+            build_model(job_dir, output, config, run_blender=False, force=force)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         record = runner.get(job_id)
         record.status = "model_generated"
         record.glb_url = f"/jobs/{job_id}/artifacts/building.glb"

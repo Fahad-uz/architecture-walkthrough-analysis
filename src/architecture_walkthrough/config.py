@@ -118,7 +118,7 @@ class OverlaySettings(BaseModel):
 
 
 class ReconstructionQualitySettings(BaseModel):
-    min_glb_quality_score: float = Field(default=0.25, ge=0.0, le=1.0)
+    min_glb_quality_score: float = Field(default=0.45, ge=0.0, le=1.0)
     allow_debug_fallback_rectangle: bool = False
 
 

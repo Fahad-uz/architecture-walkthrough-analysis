@@ -30,7 +30,11 @@ from architecture_walkthrough.geometry.room_extraction import (
 from architecture_walkthrough.geometry.scale import ScaleConverter
 from architecture_walkthrough.geometry.scale_solver import ScaleConstraint, solve_scale
 from architecture_walkthrough.geometry.wall_graph import collinear_gaps
-from architecture_walkthrough.geometry.validation import score_quality, validate_reconstruction
+from architecture_walkthrough.geometry.validation import (
+    SourceEvidence,
+    evaluate_quality,
+    validate_reconstruction,
+)
 from architecture_walkthrough.scene.export_glb import export_floorplan_glb
 from architecture_walkthrough.scene.blender_runner import run_blender_script
 from architecture_walkthrough.scene.scene_builder import build_blender_script
@@ -615,11 +619,15 @@ def analyze_image(
         }
     )
     stages.record("gemini_sanity_check", started, attempted=sanity.attempted, warnings=len(sanity.warnings))
-    score, state = score_quality(model.model_copy(update={"validation_issues": issues}))
+    evidence = SourceEvidence(dark_mask=dark_mask, pixels_per_metre=pixels_per_metre, image_height_px=resized_height)
+    quality = evaluate_quality(model.model_copy(update={"validation_issues": issues}), evidence)
     model = model.model_copy(
         update={
             "validation_issues": issues,
-            "reconstruction": model.reconstruction.model_copy(update={"quality_score": score, "quality_state": state}),
+            "reconstruction": model.reconstruction.model_copy(
+                update={"quality_score": quality.score, "quality_state": quality.state}
+            ),
+            "metadata": {**model.metadata, "quality_components": quality.components},
         }
     )
     model.save_json(output_dir / "floorplan.optimized.json")
@@ -645,14 +653,40 @@ def _select_floorplan_for_build(path: Path) -> Path:
     return path
 
 
-def build_model(floorplan_path: Path, output_glb: Path, config: AppConfig, run_blender: bool = False) -> Path:
+def build_model(
+    floorplan_path: Path,
+    output_glb: Path,
+    config: AppConfig,
+    run_blender: bool = False,
+    force: bool = False,
+) -> Path:
+    """Export a GLB, gated on reconstruction quality.
+
+    Low-quality scenes are blocked so silently-bad exports never happen;
+    `force=True` is the explicit user override.
+    """
     selected = _select_floorplan_for_build(floorplan_path)
     model = FloorPlanModel.load_json(selected)
-    severe = [issue for issue in model.validation_issues if issue.severity == "severe"]
-    if severe and config.overlay.severe_error_blocks_glb:
-        raise ValueError(f"cannot generate GLB with severe validation errors: {', '.join(issue.code for issue in severe)}")
-    if model.reconstruction.quality_state == "failed" and model.reconstruction.quality_score < config.reconstruction_quality.min_glb_quality_score:
-        raise ValueError("cannot generate GLB: reconstruction quality is failed")
+    if not force:
+        score = model.reconstruction.quality_score
+        state = model.reconstruction.quality_state
+        issues = model.validation_issues
+        if not issues and score == 0.0:
+            # Hand-authored or corrected JSON that never went through scoring:
+            # assess it now instead of trusting (or zero-blocking) stale metadata.
+            report = evaluate_quality(model)
+            score, state, issues = report.score, report.state, report.issues
+        severe = [issue for issue in issues if issue.severity == "severe"]
+        if severe and config.overlay.severe_error_blocks_glb:
+            raise ValueError(f"cannot generate GLB with severe validation errors: {', '.join(issue.code for issue in severe)}")
+        if state == "failed":
+            raise ValueError("cannot generate GLB: reconstruction quality is 'failed'; fix the issues in the correction editor or pass force=True to override")
+        if score < config.reconstruction_quality.min_glb_quality_score:
+            raise ValueError(
+                f"cannot generate GLB: quality score {score:.2f} is below the "
+                f"export threshold {config.reconstruction_quality.min_glb_quality_score:.2f}; review the validation "
+                "report in the correction editor or pass force=True to override"
+            )
     return export_floorplan_glb(model, output_glb, config, run_blender=run_blender)
 
 
