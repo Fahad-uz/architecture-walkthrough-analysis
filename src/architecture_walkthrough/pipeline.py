@@ -36,6 +36,7 @@ from architecture_walkthrough.geometry.validation import (
     validate_reconstruction,
 )
 from architecture_walkthrough.scene.export_glb import export_floorplan_glb
+from architecture_walkthrough.scene.glb_optimizer import optimize_glb
 from architecture_walkthrough.scene.blender_runner import run_blender_script
 from architecture_walkthrough.scene.scene_builder import build_blender_script
 from architecture_walkthrough.security.file_validation import validate_image_file
@@ -688,7 +689,12 @@ def build_model(
                 f"export threshold {config.reconstruction_quality.min_glb_quality_score:.2f}; review the validation "
                 "report in the correction editor or pass force=True to override"
             )
-    return export_floorplan_glb(model, output_glb, config, run_blender=run_blender, bake_mode=bake_mode)
+    exported = export_floorplan_glb(model, output_glb, config, run_blender=run_blender, bake_mode=bake_mode)
+    if run_blender and config.optimize.enabled:
+        optimized = optimize_glb(exported, exported.with_suffix(".opt.glb"), config, texture_size=config.optimize.texture_size)
+        if optimized != exported and optimized.exists():
+            optimized.replace(exported)
+    return exported
 
 
 def convert_image_to_glb(

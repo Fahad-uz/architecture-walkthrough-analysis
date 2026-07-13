@@ -153,6 +153,12 @@ class AssetSettings(BaseModel):
     allow_placeholder_fallback: bool = True
 
 
+class OptimizeSettings(BaseModel):
+    enabled: bool = True
+    texture_size: PositiveInt = 2048
+    target_max_mb: PositiveInt = 25
+
+
 class ExportSettings(BaseModel):
     include_cameras: bool = False
     include_lights: bool = False
@@ -189,6 +195,7 @@ class AppConfig(BaseModel):
     textures: TextureSettings = Field(default_factory=TextureSettings)
     assets: AssetSettings = Field(default_factory=AssetSettings)
     export: ExportSettings = Field(default_factory=ExportSettings)
+    optimize: OptimizeSettings = Field(default_factory=OptimizeSettings)
     quality: QualitySettings = Field(default_factory=QualitySettings)
 
 
