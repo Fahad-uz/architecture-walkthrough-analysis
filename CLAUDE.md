@@ -87,29 +87,48 @@ Artifacts per job: `floorplan.raw.json` (pixel-space detections),
 Always use the project venv: `.venv\Scripts\python` (Windows).
 
 ```powershell
-# Full image → GLB
+# Full image → GLB (trimesh preview exporter by default)
 .venv\Scripts\python -m architecture_walkthrough.main --config configs/default.yaml `
   image-to-glb --input assets/input/plan.png --output outputs/plan/building.glb `
   --work-dir outputs/plan --manual-scale 0.01   # metres per pixel, optional
 
-# Analysis only
-.venv\Scripts\python -m architecture_walkthrough.main analyze --input plan.png --output outputs/plan
+# Quality build via Blender with lightmap baking (gated on quality score;
+# --force overrides, --bake-mode final|draft|none picks lighting treatment)
+.venv\Scripts\python -m architecture_walkthrough.main build-model `
+  --floorplan outputs/plan --output outputs/plan/building.glb --use-blender --bake-mode draft
 
-# Web UI (upload + correction editor)
+# Web app (upload → editor → preview → walkthrough). Build the frontend once:
+#   cd frontend && npm install && npm run build
 .venv\Scripts\uvicorn architecture_walkthrough.ui:create_app --factory --reload
+# then open http://127.0.0.1:8000 (React app served from frontend/dist)
 
 # Tests / lint / types
-.venv\Scripts\python -m pytest
+.venv\Scripts\python -m pytest            # integration-marked tests need Blender
 .venv\Scripts\python -m ruff check src tests scripts
 .venv\Scripts\python -m mypy src
 ```
+
+## Web flow
+
+Upload (POST /jobs, background analysis, poll GET /jobs/{id}) → correction
+editor (Konva; edits POST /jobs/{id}/corrections which regenerates rooms from
+the wall graph and re-scores quality) → Generate 3D (POST
+/jobs/{id}/generate-model?force=&bake_mode=, Blender runs on a worker thread)
+→ preview page (orbit viewer + GLB download) → first-person walkthrough
+(PointerLock + WASD, three-mesh-bvh capsule collision, N8AO/SMAA, optional
+guided tour). GLBs are Draco/WebP-optimized via tools/glb (gltf-transform).
 
 ## Environment
 
 - Windows 11, Python 3.11 venv at `.venv/`
 - Blender 5.1 on PATH (`blender`) — used headless for 3D generation/baking
-- `GEMINI_API_KEY` from OS env or `.env` (gitignored; never commit keys)
-- Node.js needed for the React frontend and gltf-transform GLB optimization
+  (this machine's NVIDIA driver is too old for OptiX; bakes fall back to CPU)
+- Node.js 24 at `C:\Program Files\nodejs` (may need PATH in fresh shells);
+  frontend in `frontend/`, gltf-transform CLI in `tools/glb/`
+- `GEMINI_API_KEY` from OS env or `.env` (gitignored; never commit keys).
+  NOTE: the key currently in the OS env is an OAuth-style token (`AQ.…`) that
+  Google rejects; a real AI Studio key (`AIza…`) is needed for Gemini roles.
+  The pipeline degrades gracefully without it.
 
 ## Conventions
 
