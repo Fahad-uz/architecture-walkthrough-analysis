@@ -52,6 +52,7 @@ class AISettings(BaseModel):
     gemini_enabled: bool = True
     gemini_model: str = "gemini-2.5-flash"
     gemini_min_confidence: float = Field(default=0.55, ge=0.0, le=1.0)
+    gemini_sanity_check_enabled: bool = True
 
 
 class ROIDetectionSettings(BaseModel):

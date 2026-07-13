@@ -9,6 +9,7 @@ from typing import Any
 import cv2
 
 from architecture_walkthrough.ai.floorplan_vision import GeminiFloorPlanVisionAnalyzer
+from architecture_walkthrough.ai.sanity_check import GeminiLayoutSanityChecker
 from architecture_walkthrough.config import AppConfig
 from architecture_walkthrough.geometry.models import (
     ArchitecturalElement,
@@ -39,7 +40,7 @@ from architecture_walkthrough.vision.local_openings import build_thin_line_mask,
 from architecture_walkthrough.vision.overlay import write_analysis_overlay
 from architecture_walkthrough.vision.plan_roi import detect_plan_roi
 from architecture_walkthrough.vision.preprocessing import load_image, preprocess_array
-from architecture_walkthrough.vision.wall_detection import detect_wall_bands
+from architecture_walkthrough.vision.providers import build_geometry_provider
 from architecture_walkthrough.vision.wall_detection import WallBand
 from architecture_walkthrough.walkthrough.camera_animation import waypoints_from_points
 from architecture_walkthrough.walkthrough.path_planner import manual_or_auto_waypoints
@@ -144,6 +145,38 @@ def _semantic_labels_from_gemini(ai_hints, image_width_px: int, image_height_px:
             )
         )
     return room_labels, special_labels
+
+
+def _dimension_labels_from_gemini(ai_hints, image_width_px: int, image_height_px: int) -> list[OCRText]:
+    """Dimension annotations transcribed by Gemini become dimension labels.
+
+    Gemini reads the text; the geometry the dimension applies to still comes
+    from locally detected room polygons that the label falls inside.
+    """
+    if ai_hints is None:
+        return []
+    labels: list[OCRText] = []
+    for item in getattr(ai_hints, "dimension_texts", []):
+        if item.confidence < 0.35:
+            continue
+        try:
+            parsed = parse_dimension_pair(item.text)
+        except ValueError:
+            continue
+        if parsed is None:
+            continue
+        cx = item.center.x * image_width_px
+        cy = item.center.y * image_height_px
+        labels.append(
+            OCRText(
+                text=item.text,
+                polygon=[(cx - 5, cy - 5), (cx + 5, cy - 5), (cx + 5, cy + 5), (cx - 5, cy + 5)],
+                confidence=item.confidence,
+                normalized_text=item.text,
+                semantic_type="dimension",
+            )
+        )
+    return labels
 
 
 def _scale_constraints_from_rooms(preliminary_rooms, ocr_results: list[OCRText]) -> list[ScaleConstraint]:
@@ -350,26 +383,23 @@ def analyze_image(
     stages.record("gemini_semantic_hints", started, attempted=ai_analysis.attempted, succeeded=ai_analysis.succeeded)
 
     started = time.perf_counter()
-    wall_detection = detect_wall_bands(
-        preprocessing.layers["horizontal_wall_band"],
-        preprocessing.layers["vertical_wall_band"],
-        debug_dir=debug_dir,
-        min_length_ratio=config.wall_bands.min_length_ratio,
-        merge_gap_ratio=config.wall_bands.merge_gap_ratio,
-        coordinate_tolerance_ratio=config.wall_bands.coordinate_tolerance_ratio,
-        min_thickness_px=config.wall_bands.min_thickness_px,
-        max_thickness_ratio=config.wall_bands.max_thickness_ratio,
-        internal_thickness_m=config.defaults.internal_wall_thickness_m,
-        external_thickness_m=config.defaults.external_wall_thickness_m,
-        wall_height_m=config.defaults.wall_height_m,
-    )
+    geometry_provider = build_geometry_provider(config)
+    wall_detection = geometry_provider.detect(preprocessing.layers, debug_dir, config)
     if not wall_detection.walls:
         raise ValueError("no structural walls were found in the plan ROI")
-    stages.record("detect_raw_wall_bands", started, raw_wall_count=len(wall_detection.walls), band_count=len(wall_detection.bands))
+    stages.record(
+        "detect_raw_walls",
+        started,
+        provider=geometry_provider.name,
+        accuracy_tier=geometry_provider.accuracy_tier,
+        raw_wall_count=len(wall_detection.walls),
+        band_count=len(wall_detection.bands),
+    )
 
     started = time.perf_counter()
     semantic_room_labels, semantic_special_labels = _semantic_labels_from_gemini(ai_hints, resized_width, resized_height)
-    all_room_labels = [*_ocr_labels(ocr_results), *semantic_room_labels]
+    gemini_dimension_labels = _dimension_labels_from_gemini(ai_hints, resized_width, resized_height)
+    all_room_labels = [*_ocr_labels(ocr_results), *semantic_room_labels, *gemini_dimension_labels]
 
     # Raw wall bands are still in pixel units here, so disable metric junction
     # snapping; bands cross each other, which polygonize nodes on its own.
@@ -548,6 +578,29 @@ def analyze_image(
         issues.append(ValidationIssue(code="ambiguous_opening", severity="warning", message=report))
     for gap_report in unclosed_gap_reports:
         issues.append(ValidationIssue(code="unclosed_wall_gap", severity="warning", message=gap_report))
+
+    started = time.perf_counter()
+    sanity = GeminiLayoutSanityChecker(config.ai).check(analysis_image_path, model, resized_width, resized_height)
+    for warning in sanity.warnings:
+        issues.append(
+            ValidationIssue(
+                code=f"gemini_{warning.kind}",
+                severity="warning",
+                message=f"{warning.description} (at {warning.x:.2f}, {warning.y:.2f} normalized)",
+            )
+        )
+    model = model.model_copy(
+        update={
+            "metadata": {
+                **model.metadata,
+                "sanity_check_attempted": sanity.attempted,
+                "sanity_check_succeeded": sanity.succeeded,
+                "sanity_check_error": sanity.error,
+                "sanity_warnings": [warning.model_dump() for warning in sanity.warnings],
+            }
+        }
+    )
+    stages.record("gemini_sanity_check", started, attempted=sanity.attempted, warnings=len(sanity.warnings))
     score, state = score_quality(model.model_copy(update={"validation_issues": issues}))
     model = model.model_copy(
         update={
