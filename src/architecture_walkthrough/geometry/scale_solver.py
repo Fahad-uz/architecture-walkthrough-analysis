@@ -1,9 +1,29 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import statistics
+from dataclasses import dataclass
 
 from architecture_walkthrough.geometry.models import ScaleConstraintRecord
+
+# Scale sources are tiered. The solver resolves within the single highest-
+# priority tier that yields usable constraints; tiers are never averaged
+# together, so an assumed wall thickness can never dilute a real dimension.
+TIER_ORDER: tuple[str, ...] = (
+    "manual",
+    "dimension_annotation",  # dimension text associated with detected geometry
+    "room_dimension",  # room-size labels matched to room polygons
+    "door_width",  # standard door width from a detected opening gap
+    "wall_thickness",  # assumed thickness - always low confidence
+)
+
+TIER_BASE_CONFIDENCE: dict[str, tuple[float, float]] = {
+    # (single-constraint confidence, multi-consistent confidence)
+    "manual": (1.0, 1.0),
+    "dimension_annotation": (0.65, 0.9),
+    "room_dimension": (0.6, 0.85),
+    "door_width": (0.3, 0.45),
+    "wall_thickness": (0.15, 0.2),
+}
 
 
 @dataclass(frozen=True)
@@ -14,6 +34,7 @@ class ScaleConstraint:
     expected_m: tuple[float, float]
     label: str | None = None
     weight: float = 1.0
+    tier: str = "room_dimension"
 
 
 @dataclass(frozen=True)
@@ -37,7 +58,7 @@ def _constraint_ppm(constraint: ScaleConstraint) -> tuple[float, float, float]:
 def _record(constraint: ScaleConstraint, ppm: float, residual: float, accepted: bool, reason: str | None = None) -> ScaleConstraintRecord:
     return ScaleConstraintRecord(
         id=constraint.id,
-        source=constraint.source,
+        source=f"{constraint.tier}:{constraint.source}",
         label=constraint.label,
         measured_px=constraint.measured_px,
         expected_m=constraint.expected_m,
@@ -47,6 +68,55 @@ def _record(constraint: ScaleConstraint, ppm: float, residual: float, accepted: 
         accepted=accepted,
         reason=reason,
     )
+
+
+def _resolve_tier(
+    tier: str,
+    constraints: list[ScaleConstraint],
+    min_pixels_per_metre: float,
+    max_pixels_per_metre: float,
+    outlier_mad_factor: float,
+    rejected: list[ScaleConstraintRecord],
+) -> tuple[float, list[ScaleConstraintRecord], float] | None:
+    """Solve within one tier; returns (ppm, used_records, confidence) or None."""
+    candidates: list[tuple[ScaleConstraint, float, float, float]] = []
+    for constraint in constraints:
+        ppm, residual, weight = _constraint_ppm(constraint)
+        if not min_pixels_per_metre <= ppm <= max_pixels_per_metre:
+            rejected.append(_record(constraint, ppm, residual, False, "pixels_per_metre_out_of_range"))
+            continue
+        if residual > 0.35:
+            rejected.append(_record(constraint, ppm, residual, False, "aspect_residual_too_large"))
+            continue
+        candidates.append((constraint, ppm, residual, weight))
+    if not candidates:
+        return None
+
+    ppms = [candidate[1] for candidate in candidates]
+    median = statistics.median(ppms)
+    deviations = [abs(ppm - median) for ppm in ppms]
+    mad = statistics.median(deviations) or max(median * 0.03, 1.0)
+    accepted: list[tuple[ScaleConstraint, float, float, float]] = []
+    for constraint, ppm, residual, weight in candidates:
+        if abs(ppm - median) > mad * outlier_mad_factor:
+            rejected.append(_record(constraint, ppm, residual, False, "median_absolute_deviation_outlier"))
+        else:
+            accepted.append((constraint, ppm, residual, weight))
+    if not accepted:
+        return None
+
+    weighted_sum = sum(ppm * weight for _, ppm, _, weight in accepted)
+    weight_sum = sum(weight for _, _, _, weight in accepted)
+    final_ppm = weighted_sum / weight_sum
+    used = [
+        _record(constraint, ppm, abs(ppm - final_ppm) / max(final_ppm, 1e-6) + residual, True)
+        for constraint, ppm, residual, _ in accepted
+    ]
+    single, multi = TIER_BASE_CONFIDENCE.get(tier, (0.3, 0.5))
+    spread = statistics.mean(record.residual for record in used)
+    base = multi if len(used) >= 2 else single
+    confidence = max(0.05, base * max(0.4, 1.0 - min(0.6, spread)))
+    return final_ppm, used, confidence
 
 
 def solve_scale(
@@ -68,51 +138,36 @@ def solve_scale(
             constraints_used=records,
             rejected_constraints=[],
             confidence=1.0,
-            source="manual" if not constraints else "mixed",
+            source="manual",
         )
 
-    candidates: list[tuple[ScaleConstraint, float, float, float]] = []
-    rejected: list[ScaleConstraintRecord] = []
+    by_tier: dict[str, list[ScaleConstraint]] = {}
     for constraint in constraints:
-        ppm, residual, weight = _constraint_ppm(constraint)
-        if not min_pixels_per_metre <= ppm <= max_pixels_per_metre:
-            rejected.append(_record(constraint, ppm, residual, False, "pixels_per_metre_out_of_range"))
+        by_tier.setdefault(constraint.tier if constraint.tier in TIER_ORDER else "room_dimension", []).append(constraint)
+
+    rejected: list[ScaleConstraintRecord] = []
+    for tier in TIER_ORDER:
+        tier_constraints = by_tier.get(tier)
+        if not tier_constraints:
             continue
-        if residual > 0.35:
-            rejected.append(_record(constraint, ppm, residual, False, "aspect_residual_too_large"))
+        resolved = _resolve_tier(
+            tier, tier_constraints, min_pixels_per_metre, max_pixels_per_metre, outlier_mad_factor, rejected
+        )
+        if resolved is None:
             continue
-        candidates.append((constraint, ppm, residual, weight))
+        final_ppm, used, confidence = resolved
+        # Lower-tier constraints are recorded for the audit trail but play no
+        # part in the estimate.
+        for lower_tier in TIER_ORDER[TIER_ORDER.index(tier) + 1 :]:
+            for constraint in by_tier.get(lower_tier, []):
+                ppm, residual, _ = _constraint_ppm(constraint)
+                rejected.append(_record(constraint, ppm, residual, False, f"superseded_by_{tier}_tier"))
+        return ScaleSolverResult(
+            pixels_per_metre=final_ppm,
+            constraints_used=used,
+            rejected_constraints=rejected,
+            confidence=confidence,
+            source=tier,
+        )
 
-    if not candidates:
-        raise ValueError("scale cannot be established from available constraints")
-
-    ppms = [candidate[1] for candidate in candidates]
-    median = statistics.median(ppms)
-    deviations = [abs(ppm - median) for ppm in ppms]
-    mad = statistics.median(deviations) or max(median * 0.03, 1.0)
-    accepted: list[tuple[ScaleConstraint, float, float, float]] = []
-    for constraint, ppm, residual, weight in candidates:
-        if abs(ppm - median) > mad * outlier_mad_factor:
-            rejected.append(_record(constraint, ppm, residual, False, "median_absolute_deviation_outlier"))
-        else:
-            accepted.append((constraint, ppm, residual, weight))
-
-    if not accepted:
-        raise ValueError("all scale constraints were rejected as outliers")
-
-    weighted_sum = sum(ppm * weight for _, ppm, _, weight in accepted)
-    weight_sum = sum(weight for _, _, _, weight in accepted)
-    final_ppm = weighted_sum / weight_sum
-    used_records = [
-        _record(constraint, ppm, abs(ppm - final_ppm) / max(final_ppm, 1e-6) + residual, True)
-        for constraint, ppm, residual, _ in accepted
-    ]
-    residuals = [record.residual for record in used_records]
-    confidence = max(0.05, min(1.0, len(used_records) / 5.0)) * max(0.0, 1.0 - min(0.8, statistics.mean(residuals)))
-    return ScaleSolverResult(
-        pixels_per_metre=final_ppm,
-        constraints_used=used_records,
-        rejected_constraints=rejected,
-        confidence=confidence,
-        source="automatic",
-    )
+    raise ValueError("scale cannot be established from available constraints")

@@ -8,7 +8,7 @@ import numpy as np
 
 from architecture_walkthrough.config import GeometryDefaults, OpeningDetectionSettings
 from architecture_walkthrough.geometry.models import DoorOpening, Point2D, WallSegment, WindowOpening
-from architecture_walkthrough.geometry.wall_graph import _collinear_gaps
+from architecture_walkthrough.geometry.wall_graph import collinear_gaps
 
 # Openings must come from local image evidence. Gemini may only classify
 # ambiguous candidates (door vs cabinet arc); it never supplies coordinates.
@@ -299,7 +299,7 @@ def detect_local_openings(
     # Pass 1: gaps between collinear wall pairs (the common case for doors).
     thickness = min((wall.thickness_m for wall in walls), default=0.12)
     coord_tol = max(0.04, thickness * 0.75)
-    for gap in _collinear_gaps(list(working.values()), coord_tol):
+    for gap in collinear_gaps(list(working.values()), coord_tol):
         length_m = float(gap["length_m"])  # type: ignore[arg-type]
         if not min_open <= length_m <= max_open:
             continue

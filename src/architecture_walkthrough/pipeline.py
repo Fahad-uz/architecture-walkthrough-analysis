@@ -29,6 +29,7 @@ from architecture_walkthrough.geometry.room_extraction import (
 )
 from architecture_walkthrough.geometry.scale import ScaleConverter
 from architecture_walkthrough.geometry.scale_solver import ScaleConstraint, solve_scale
+from architecture_walkthrough.geometry.wall_graph import collinear_gaps
 from architecture_walkthrough.geometry.validation import score_quality, validate_reconstruction
 from architecture_walkthrough.scene.export_glb import export_floorplan_glb
 from architecture_walkthrough.scene.blender_runner import run_blender_script
@@ -179,7 +180,12 @@ def _dimension_labels_from_gemini(ai_hints, image_width_px: int, image_height_px
     return labels
 
 
-def _scale_constraints_from_rooms(preliminary_rooms, ocr_results: list[OCRText]) -> list[ScaleConstraint]:
+def _scale_constraints_from_rooms(preliminary_rooms) -> list[ScaleConstraint]:
+    """Dimension labels matched to detected room polygons.
+
+    Text-box-size guessing is intentionally not a scale source: a dimension
+    only counts once it is associated with real geometry.
+    """
     constraints: list[ScaleConstraint] = []
     for room in preliminary_rooms:
         if room.dimension_m is None:
@@ -189,39 +195,45 @@ def _scale_constraints_from_rooms(preliminary_rooms, ocr_results: list[OCRText])
         constraints.append(
             ScaleConstraint(
                 id=f"room_dim_{len(constraints):03d}",
-                source="ocr_room_polygon",
+                source="dimension_label_in_room_polygon",
                 label=room.name,
                 measured_px=(max(xs) - min(xs), max(ys) - min(ys)),
                 expected_m=room.dimension_m,
                 weight=1.0,
+                tier="room_dimension",
             )
         )
-    for item in ocr_results:
-        if item.semantic_type != "dimension":
+    return constraints
+
+
+STANDARD_DOOR_WIDTH_M = 0.85
+
+
+def _scale_constraints_from_door_gaps(walls_px: list[WallSegment]) -> list[ScaleConstraint]:
+    """Collinear wall gaps of door-like proportion, assuming a ~0.85 m leaf.
+
+    A deliberate low-confidence fallback for undimensioned plans; the tiered
+    solver only consults it when no real dimension source exists.
+    """
+    identified = [wall for wall in walls_px if wall.id]
+    if len(identified) < 2:
+        return []
+    gaps = collinear_gaps(identified, coord_tol=6.0)
+    constraints: list[ScaleConstraint] = []
+    for gap in gaps:
+        gap_px = float(gap["length_m"])  # pixel units here: walls are in px
+        if gap_px <= 2:
             continue
-        try:
-            parsed = parse_dimension_pair(item.normalized_text)
-        except ValueError:
-            continue
-        if parsed is None:
-            continue
-        xs = [point[0] for point in item.polygon]
-        ys = [point[1] for point in item.polygon]
-        text_width_px = max(xs) - min(xs)
-        text_height_px = max(ys) - min(ys)
-        if text_width_px > 0 and text_height_px > 0:
-            # Text boxes are low-weight hints only; exact scale should come from
-            # associated room geometry or manual scale.
-            constraints.append(
-                ScaleConstraint(
-                    id=f"text_dim_hint_{len(constraints):03d}",
-                    source="ocr_text_low_weight",
-                    label=item.normalized_text,
-                    measured_px=(text_width_px * 8.0, max(text_height_px * 8.0, text_width_px * 0.35)),
-                    expected_m=(parsed.width_m, parsed.height_m),
-                    weight=0.15,
-                )
+        constraints.append(
+            ScaleConstraint(
+                id=f"door_gap_{len(constraints):03d}",
+                source=f"gap_{gap['wall_a']}_{gap['wall_b']}",
+                measured_px=(gap_px, gap_px),
+                expected_m=(STANDARD_DOOR_WIDTH_M, STANDARD_DOOR_WIDTH_M),
+                weight=1.0,
+                tier="door_width",
             )
+        )
     return constraints
 
 
@@ -236,11 +248,12 @@ def _scale_constraints_from_wall_bands(
         constraints.append(
             ScaleConstraint(
                 id=f"wall_thickness_{len(constraints):03d}",
-                source="wall_band_thickness_low_weight",
+                source="assumed_band_thickness",
                 label=band.id,
                 measured_px=(band.thickness_px, band.thickness_px),
                 expected_m=(expected, expected),
                 weight=0.25 if band.external else 0.18,
+                tier="wall_thickness",
             )
         )
     return constraints
@@ -413,7 +426,8 @@ def analyze_image(
 
     started = time.perf_counter()
     constraints = [
-        *_scale_constraints_from_rooms(preliminary_rooms, ocr_results),
+        *_scale_constraints_from_rooms(preliminary_rooms),
+        *_scale_constraints_from_door_gaps(wall_detection.walls),
         *_scale_constraints_from_wall_bands(
             wall_detection.bands,
             config.defaults.internal_wall_thickness_m,

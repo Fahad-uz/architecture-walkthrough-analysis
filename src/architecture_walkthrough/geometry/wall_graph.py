@@ -73,7 +73,7 @@ def snap_endpoints_to_walls(walls: list[WallSegment], tolerance_m: float = DEFAU
     return snapped
 
 
-def _collinear_gaps(walls: list[WallSegment], coord_tol: float) -> list[dict[str, object]]:
+def collinear_gaps(walls: list[WallSegment], coord_tol: float) -> list[dict[str, object]]:
     """Find gaps between successive collinear wall endpoints on the same line."""
     gaps: list[dict[str, object]] = []
     horizontal = [w for w in walls if abs(w.end.x - w.start.x) >= abs(w.end.y - w.start.y)]
@@ -175,7 +175,7 @@ def enumerate_faces(
 
     closures: list[LineString] = []
     unclosed: list[dict[str, object]] = []
-    for gap in _collinear_gaps(snapped, coord_tol):
+    for gap in collinear_gaps(snapped, coord_tol):
         length_m = float(gap["length_m"])  # type: ignore[arg-type]
         if length_m <= junction_snap_m:
             closures.append(gap["line"])  # type: ignore[arg-type]
