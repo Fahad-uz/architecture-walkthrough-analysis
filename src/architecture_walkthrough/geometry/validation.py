@@ -316,7 +316,9 @@ def evaluate_quality(model: FloorPlanModel, evidence: SourceEvidence | None = No
         + components["scale"] * 0.20
         + components["exterior_closure"] * 0.10
     )
-    score = max(0.0, score - errors * 0.08 - warnings * 0.02 - severe * 0.40)
+    # Warnings are review prompts, not defects; cap their combined penalty so
+    # a thorough sanity check can't sink an otherwise sound reconstruction.
+    score = max(0.0, score - errors * 0.08 - min(0.15, warnings * 0.02) - severe * 0.40)
     score = max(0.0, min(1.0, score))
 
     if severe or score < 0.35:
