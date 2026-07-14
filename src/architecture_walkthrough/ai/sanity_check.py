@@ -135,14 +135,18 @@ class GeminiLayoutSanityChecker:
             "correct geometry. Return an empty list if the layout matches.\n\n"
             f"Detected layout JSON:\n{_layout_summary(model, image_width_px, image_height_px)}"
         )
+        from architecture_walkthrough.ai.retry import call_with_backoff
+
         client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-        response = client.models.generate_content(
-            model=self.settings.gemini_model,
-            contents=[prompt, types.Part.from_bytes(data=image_path.read_bytes(), mime_type=mime_type)],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=_warning_schema(),
-            ),
+        response = call_with_backoff(
+            lambda: client.models.generate_content(
+                model=self.settings.gemini_model,
+                contents=[prompt, types.Part.from_bytes(data=image_path.read_bytes(), mime_type=mime_type)],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=_warning_schema(),
+                ),
+            )
         )
         content = getattr(response, "text", None)
         if not content:
