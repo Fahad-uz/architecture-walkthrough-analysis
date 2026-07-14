@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Circle, Group, Image as KonvaImage, Layer, Line, Stage, Text } from "react-konva";
 import { Link, useParams } from "react-router-dom";
 import { generateModel, getEditData, getJob, saveCorrections, validateCorrections } from "../api";
-import type { FloorPlanModel, Opening, Point2D, QualityReport, SanityWarning, WallSegment } from "../types";
+import type { FloorPlanModel, Opening, Point2D, QualityReport, RoomPolygon, SanityWarning, WallSegment } from "../types";
 
 type Tool = "select" | "wall" | "door" | "window" | "scale";
 type Selection = { kind: "walls" | "doors" | "windows" | "rooms"; index: number } | null;
@@ -60,6 +60,21 @@ function nearestWall(walls: WallSegment[], p: Point2D): WallHit | null {
   return best;
 }
 
+function roomStats(room: RoomPolygon): string {
+  const xs = room.points.map((p) => p.x);
+  const ys = room.points.map((p) => p.y);
+  const width = Math.max(...xs) - Math.min(...xs);
+  const depth = Math.max(...ys) - Math.min(...ys);
+  // Shoelace area of the polygon, in m².
+  let area = 0;
+  for (let i = 0; i < room.points.length; i += 1) {
+    const a = room.points[i];
+    const b = room.points[(i + 1) % room.points.length];
+    area += a.x * b.y - b.x * a.y;
+  }
+  return `${width.toFixed(2)} × ${depth.toFixed(2)} m · ${Math.abs(area / 2).toFixed(1)} m²`;
+}
+
 /** Changing pixels_per_metre rescales every metre-quantity derived from pixels. */
 function rescaleModel(model: FloorPlanModel, factor: number): FloorPlanModel {
   const sp = (p: Point2D) => ({ x: p.x * factor, y: p.y * factor });
@@ -89,6 +104,7 @@ export default function EditorPage() {
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [tool, setTool] = useState<Tool>("select");
   const [selection, setSelection] = useState<Selection>(null);
+  const [hover, setHover] = useState<Selection>(null);
   const [pending, setPending] = useState<Point2D | null>(null); // first click of 2-point tools (metres)
   const [status, setStatus] = useState("loading…");
   const [report, setReport] = useState<QualityReport | null>(null);
@@ -295,35 +311,62 @@ export default function EditorPage() {
               <KonvaImage image={image} />
             </Layer>
             <Layer>
-              {model.rooms.map((room, index) => (
-                <Group key={`room-${index}`}>
-                  <Line
-                    points={room.points.flatMap((p) => {
-                      const q = toPx(p);
-                      return [q.x, q.y];
-                    })}
-                    closed
-                    fill="rgba(46,160,67,0.12)"
-                    stroke={selection?.kind === "rooms" && selection.index === index ? "#ff9f1c" : "#2ea043"}
-                    strokeWidth={2}
-                    onMouseDown={(e) => {
-                      if (tool !== "select") return;
-                      e.cancelBubble = true;
-                      setSelection({ kind: "rooms", index });
-                    }}
-                  />
-                  {room.name && (
+              {model.rooms.map((room, index) => {
+                const selected = selection?.kind === "rooms" && selection.index === index;
+                const hovered = hover?.kind === "rooms" && hover.index === index;
+                const centroid = room.points.reduce(
+                  (acc, p) => ({ x: acc.x + p.x / room.points.length, y: acc.y + p.y / room.points.length }),
+                  { x: 0, y: 0 },
+                );
+                const labelAt = toPx(centroid);
+                return (
+                  <Group key={`room-${index}`}>
+                    <Line
+                      points={room.points.flatMap((p) => {
+                        const q = toPx(p);
+                        return [q.x, q.y];
+                      })}
+                      closed
+                      fill={
+                        selected
+                          ? "rgba(255,159,28,0.28)"
+                          : hovered
+                            ? "rgba(46,160,67,0.20)"
+                            : "rgba(46,160,67,0.08)"
+                      }
+                      stroke={selected ? "#ff9f1c" : hovered ? "#1f7a3a" : "#2ea043"}
+                      strokeWidth={selected ? 4 : hovered ? 3 : 2}
+                      onMouseEnter={(e) => {
+                        if (tool !== "select") return;
+                        setHover({ kind: "rooms", index });
+                        const stage = e.target.getStage();
+                        if (stage) stage.container().style.cursor = "pointer";
+                      }}
+                      onMouseLeave={(e) => {
+                        setHover(null);
+                        const stage = e.target.getStage();
+                        if (stage) stage.container().style.cursor = "default";
+                      }}
+                      onMouseDown={(e) => {
+                        if (tool !== "select") return;
+                        e.cancelBubble = true;
+                        setSelection({ kind: "rooms", index });
+                      }}
+                    />
                     <Text
-                      x={toPx(room.points[0]).x + 6}
-                      y={toPx(room.points[0]).y - 18}
-                      text={room.name}
+                      x={labelAt.x - 40}
+                      y={labelAt.y - 8}
+                      width={80}
+                      align="center"
+                      text={room.name ?? "unnamed"}
                       fontSize={13}
-                      fill="#0a5f2c"
+                      fontStyle={room.name ? "bold" : "italic"}
+                      fill={room.name ? "#0a5f2c" : "#8a938c"}
                       listening={false}
                     />
-                  )}
-                </Group>
-              ))}
+                  </Group>
+                );
+              })}
               {model.walls.map((wall, index) => {
                 const a = toPx(wall.start);
                 const b = toPx(wall.end);
@@ -449,18 +492,31 @@ export default function EditorPage() {
               {selection!.kind} {selectedItem.id ?? selection!.index}
             </strong>
             {selection!.kind === "rooms" && (
-              <label>
-                Room name
-                <input
-                  value={selectedItem.name ?? ""}
-                  onChange={(e) =>
-                    update((m) => {
-                      m.rooms[selection!.index].name = e.target.value || null;
-                      return m;
-                    })
-                  }
-                />
-              </label>
+              <>
+                <label>
+                  Room name
+                  <input
+                    value={selectedItem.name ?? ""}
+                    placeholder="e.g. Kitchen"
+                    onChange={(e) =>
+                      update((m) => {
+                        m.rooms[selection!.index].name = e.target.value || null;
+                        return m;
+                      })
+                    }
+                  />
+                </label>
+                <div style={{ fontSize: 12, color: "#667078", display: "grid", gap: 2 }}>
+                  <span>{roomStats(selectedItem)}</span>
+                  {selectedItem.dimension_m && (
+                    <span>
+                      labeled: {Number(selectedItem.dimension_m[0]).toFixed(2)} ×{" "}
+                      {Number(selectedItem.dimension_m[1]).toFixed(2)} m
+                    </span>
+                  )}
+                  <span>face: {selectedItem.face_id ?? "—"} (name survives wall edits via face matching)</span>
+                </div>
+              </>
             )}
             {selection!.kind === "walls" && (
               <>
