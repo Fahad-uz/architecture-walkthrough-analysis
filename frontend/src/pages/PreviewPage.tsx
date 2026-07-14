@@ -4,7 +4,7 @@ import { Suspense, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ACESFilmicToneMapping, Box3, PerspectiveCamera, SRGBColorSpace, Vector3 } from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
-import { getJob, glbUrl } from "../api";
+import { getJob, glbUrl, versionedGlbUrl } from "../api";
 import type { JobRecord } from "../types";
 
 /** Loads the GLB and frames it: orbit target = bounding-box center, camera
@@ -58,7 +58,9 @@ export default function PreviewPage() {
     };
   }, [jobId]);
 
-  const url = job ? glbUrl(jobId) : null; // versioning added with the cache fix (A4)
+  // glb_version changes whenever the server writes a new GLB, so the URL —
+  // and therefore drei's cache key — changes with it.
+  const url = job ? versionedGlbUrl(jobId, job.glb_version) : null;
 
   return (
     <div className="preview-layout">

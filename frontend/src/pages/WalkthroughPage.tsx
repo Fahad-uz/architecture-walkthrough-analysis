@@ -16,8 +16,8 @@ import {
   Vector3,
 } from "three";
 import { MeshBVH, StaticGeometryGenerator } from "three-mesh-bvh";
-import { getEditData, glbUrl } from "../api";
-import type { FloorPlanModel } from "../types";
+import { getEditData, getJob, versionedGlbUrl } from "../api";
+import type { FloorPlanModel, JobRecord } from "../types";
 
 const EYE_HEIGHT = 1.6;
 const WALK_SPEED = 1.4; // m/s
@@ -178,15 +178,23 @@ export default function WalkthroughPage() {
   const { jobId = "" } = useParams();
   const [collider, setCollider] = useState<Mesh | null>(null);
   const [plan, setPlan] = useState<FloorPlanModel | null>(null);
+  const [job, setJob] = useState<JobRecord | null>(null);
   const [tourActive, setTourActive] = useState(false);
   const [locked, setLocked] = useState(false);
   const joystick = useRef({ x: 0, y: 0 });
-  const url = glbUrl(jobId);
+  // Versioned URL: never render a stale cached GLB after a Blender rebuild.
+  const url = job ? versionedGlbUrl(jobId, job.glb_version) : null;
+  // Baked builds carry their lighting in the lightmaps; screen-space AO on
+  // top double-darkens corners, so N8AO only runs for unbaked previews.
+  const baked = job?.glb_source === "blender";
 
   useEffect(() => {
     getEditData(jobId)
       .then((data) => setPlan(data.model))
       .catch(() => setPlan(null));
+    getJob(jobId)
+      .then(setJob)
+      .catch(() => setJob(null));
   }, [jobId]);
 
   useEffect(() => {
@@ -246,7 +254,7 @@ export default function WalkthroughPage() {
         <ambientLight intensity={0.35} />
         <hemisphereLight intensity={0.25} color="#cfe4ff" groundColor="#413a33" />
         <Suspense fallback={null}>
-          <Scene url={url} onCollider={setCollider} />
+          {url && <Scene key={url} url={url} onCollider={setCollider} />}
         </Suspense>
         <Player
           collider={collider}
@@ -257,10 +265,16 @@ export default function WalkthroughPage() {
           onLeaveTour={() => setTourActive(false)}
         />
         {!tourActive && <PointerLockControls onLock={() => setLocked(true)} onUnlock={() => setLocked(false)} />}
-        <EffectComposer>
-          <N8AO aoRadius={0.6} intensity={2.5} distanceFalloff={0.6} />
-          <SMAA />
-        </EffectComposer>
+        {baked ? (
+          <EffectComposer>
+            <SMAA />
+          </EffectComposer>
+        ) : (
+          <EffectComposer>
+            <N8AO aoRadius={0.6} intensity={2.5} distanceFalloff={0.6} />
+            <SMAA />
+          </EffectComposer>
+        )}
       </Canvas>
       <div id="joystick-zone" />
       <LoadingOverlay />

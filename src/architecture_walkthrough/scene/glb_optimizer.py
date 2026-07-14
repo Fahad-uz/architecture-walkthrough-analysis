@@ -12,17 +12,21 @@ LOGGER = logging.getLogger(__name__)
 TOOLS_DIR = Path(__file__).resolve().parents[3].parent / "tools" / "glb"
 
 
-def _cli_path() -> Path | None:
-    """Locate the project-local gltf-transform CLI (Windows .cmd or POSIX bin)."""
+def _tools_dir() -> Path | None:
     root = Path(__file__).resolve()
     for parent in root.parents:
-        candidate_dir = parent / "tools" / "glb" / "node_modules" / ".bin"
-        for name in ("gltf-transform.cmd", "gltf-transform"):
-            candidate = candidate_dir / name
-            if candidate.exists():
-                return candidate
-    which = shutil.which("gltf-transform")
-    return Path(which) if which else None
+        candidate = parent / "tools" / "glb"
+        if (candidate / "optimize.mjs").exists() and (candidate / "node_modules").exists():
+            return candidate
+    return None
+
+
+def _node_path() -> Path | None:
+    which = shutil.which("node")
+    if which:
+        return Path(which)
+    default = Path("C:/Program Files/nodejs/node.exe")
+    return default if default.exists() else None
 
 
 def optimize_glb(
@@ -32,32 +36,32 @@ def optimize_glb(
     texture_size: int = 2048,
     timeout_seconds: int = 600,
 ) -> Path:
-    """Compress a GLB with gltf-transform (Draco meshes + WebP textures).
+    """Compress a GLB (Draco meshes + per-slot WebP textures).
+
+    Baked lightmaps (emissive slot) are compressed losslessly at native
+    resolution — lossy WebP bands their smooth gradients — while all other
+    texture slots are compressed and resized aggressively (tools/glb/optimize.mjs).
 
     Optimization is best-effort: when the Node toolchain is unavailable the
     original GLB is returned untouched with a warning, so the pipeline never
     hard-depends on npm.
     """
     output_glb = output_glb or input_glb.with_suffix(".optimized.glb")
-    cli = _cli_path()
-    if cli is None:
+    tools = _tools_dir()
+    node = _node_path()
+    if tools is None or node is None:
         LOGGER.warning(
-            "gltf-transform CLI not found; skipping GLB optimization. "
-            "Run 'npm install' in tools/glb to enable it."
+            "GLB optimizer unavailable (need Node.js and 'npm install' in tools/glb); "
+            "skipping optimization."
         )
         if output_glb != input_glb:
             shutil.copyfile(input_glb, output_glb)
         return output_glb
     command = [
-        str(cli),
-        "optimize",
+        str(node),
+        str(tools / "optimize.mjs"),
         str(input_glb),
         str(output_glb),
-        "--compress",
-        "draco",
-        "--texture-compress",
-        "webp",
-        "--texture-size",
         str(texture_size),
     ]
     result = run_subprocess(command, timeout_seconds=timeout_seconds)

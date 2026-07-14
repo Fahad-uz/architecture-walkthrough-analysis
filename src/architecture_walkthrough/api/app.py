@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import threading
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -30,6 +31,21 @@ LOGGER = logging.getLogger(__name__)
 
 FRONTEND_DIST = Path(__file__).resolve().parents[3] / "frontend" / "dist"
 
+
+def _bake_summary(report_path: Path) -> str:
+    """One-line human summary of the Blender build report."""
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "GLB ready"
+    if report.get("mode") == "none":
+        return f"GLB ready — no bake (real-time lights), {report.get('duration_seconds', '?')}s"
+    return (
+        f"GLB ready — {report.get('mode')} bake: {report.get('samples')} spp, "
+        f"{report.get('lightmap_px')}px lightmaps on {report.get('device', '?').upper()} "
+        f"in {report.get('duration_seconds', '?')}s"
+    )
+
 ARTIFACT_WHITELIST = {
     "building.glb",
     "floorplan.json",
@@ -48,6 +64,9 @@ class JobRecord(BaseModel):
     message: str = ""
     glb_url: str | None = None
     glb_source: str | None = None  # "preview" (trimesh) | "blender"
+    # Bumped whenever a new GLB is written; viewers append it to the artifact
+    # URL so browser and loader caches can never serve stale model bytes.
+    glb_version: int = 0
     optimized_json_url: str | None = None
     overlay_url: str | None = None
     validation_report_url: str | None = None
@@ -142,6 +161,7 @@ class LocalJobRunner:
             record.message = "analysis complete; review the layout in the editor"
             record.glb_url = f"/jobs/{record.job_id}/artifacts/building.glb"
             record.glb_source = "preview"
+            record.glb_version = int(time.time())
             record.optimized_json_url = f"/jobs/{record.job_id}/artifacts/floorplan.optimized.json"
             record.overlay_url = f"/jobs/{record.job_id}/artifacts/analysis_overlay.svg"
             record.validation_report_url = f"/jobs/{record.job_id}/artifacts/validation_report.json"
@@ -152,8 +172,15 @@ class LocalJobRunner:
         self.save(record)
 
     def start_generation(self, record: JobRecord, force: bool, bake_mode: str | None) -> None:
+        mode = bake_mode or self.config.bake.mode
+        if mode == "none":
+            preset = "no bake, real-time lights"
+        else:
+            samples = self.config.bake.final_samples if mode == "final" else self.config.bake.draft_samples
+            lightmap = self.config.bake.final_lightmap_px if mode == "final" else self.config.bake.draft_lightmap_px
+            preset = f"{samples} spp, {lightmap}px lightmaps"
         record.status = "generating"
-        record.message = f"Blender build running (bake mode: {bake_mode or self.config.bake.mode})"
+        record.message = f"Blender build running — {mode} ({preset})"
         self.save(record)
         thread = threading.Thread(target=self._run_generation, args=(record, force, bake_mode), daemon=True)
         thread.start()
@@ -170,9 +197,10 @@ class LocalJobRunner:
                 bake_mode=bake_mode,
             )
             record.status = "model_generated"
-            record.message = "GLB ready"
+            record.message = _bake_summary(job_dir / "building.bake.json")
             record.glb_url = f"/jobs/{record.job_id}/artifacts/building.glb"
             record.glb_source = "blender"
+            record.glb_version = int(time.time())
         except ValueError as exc:  # quality gate
             record.status = "blocked"
             record.message = str(exc)
@@ -406,7 +434,14 @@ def create_app() -> FastAPI:
             media_type = "image/svg+xml"
         if artifact_path.suffix.lower() == ".png":
             media_type = "image/png"
-        return FileResponse(artifact_path, media_type=media_type, filename=artifact_name)
+        # Artifacts are replaced in place (building.glb); force revalidation so
+        # a regenerated model is never served from the browser cache.
+        return FileResponse(
+            artifact_path,
+            media_type=media_type,
+            filename=artifact_name,
+            headers={"Cache-Control": "no-cache"},
+        )
 
     if FRONTEND_DIST.exists():
         app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")

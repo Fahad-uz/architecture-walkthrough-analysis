@@ -546,6 +546,9 @@ def run_bake() -> None:
 
 
 def main() -> None:
+    import time as _time
+
+    started = _time.time()
     reset_scene()
     device = enable_gpu_if_available()
     print(f"[generate_building] mode={MODE} samples={SAMPLES} lightmap={LIGHTMAP_PX} device={device}")
@@ -596,7 +599,19 @@ def main() -> None:
         "export_lights": MODE == "none",
     }
     bpy.ops.export_scene.gltf(**export_kwargs)
-    print(f"[generate_building] wrote {output}")
+    # Build report: makes the preset that actually ran visible to the app/UI,
+    # so "which bake was this?" is never ambiguous again.
+    report = {
+        "mode": MODE,
+        "samples": SAMPLES if MODE != "none" else 0,
+        "lightmap_px": LIGHTMAP_PX if MODE != "none" else 0,
+        "denoise": DENOISE,
+        "device": bpy.context.scene.cycles.device.lower() if MODE != "none" else "n/a",
+        "device_backend": device,
+        "duration_seconds": round(_time.time() - started, 1),
+    }
+    output.with_suffix(".bake.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(f"[generate_building] wrote {output} ({report})")
 
 
 main()

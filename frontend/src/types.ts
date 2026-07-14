@@ -72,6 +72,7 @@ export interface JobRecord {
   message: string;
   glb_url?: string | null;
   glb_source?: string | null;
+  glb_version?: number;
   quality_state?: string | null;
   quality_score?: number | null;
   ai_assist_error?: string | null;

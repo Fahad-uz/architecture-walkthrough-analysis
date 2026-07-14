@@ -49,3 +49,9 @@ export async function generateModel(jobId: string, force: boolean, bakeMode: str
 export function glbUrl(jobId: string): string {
   return `/jobs/${jobId}/artifacts/building.glb`;
 }
+
+/** Version query defeats both the browser HTTP cache and drei's per-URL
+ *  loader cache when the server rewrites building.glb in place. */
+export function versionedGlbUrl(jobId: string, version?: number): string {
+  return `${glbUrl(jobId)}?v=${version ?? 0}`;
+}
