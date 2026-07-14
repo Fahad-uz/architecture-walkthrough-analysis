@@ -20,7 +20,8 @@ label { display: grid; gap: 4px; font-size: 13px; color: #3c4449; }
 .status-box { white-space: pre-wrap; background: #eef1ee; border-radius: 8px; padding: 12px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; min-height: 40px; }
 
 .editor-layout { display: grid; grid-template-columns: 1fr 330px; height: 100%; }
-.stage-wrap { overflow: auto; background: #191919; }
+.stage-wrap { position: relative; overflow: hidden; background: #191919; }
+.stage-hud { position: absolute; top: 10px; left: 10px; z-index: 4; display: flex; gap: 8px; align-items: center; color: #ddd; font-size: 12px; background: rgba(20,20,20,0.7); padding: 5px 8px; border-radius: 8px; }
 .sidebar { border-left: 1px solid #d8d8d2; background: #fbfbfa; padding: 12px; overflow: auto; display: grid; gap: 12px; align-content: start; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .panel { display: grid; gap: 8px; border-bottom: 1px solid #e4e4de; padding-bottom: 12px; }

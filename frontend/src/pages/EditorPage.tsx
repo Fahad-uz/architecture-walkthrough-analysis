@@ -112,6 +112,11 @@ export default function EditorPage() {
   const [force, setForce] = useState(false);
   const [generating, setGenerating] = useState(false);
   const pollRef = useRef<number | null>(null);
+  const stageWrapRef = useRef<HTMLDivElement | null>(null);
+  const [stageSize, setStageSize] = useState({ width: 800, height: 600 });
+  // Viewport transform: the Stage itself is panned/zoomed; all shapes stay in
+  // plan-pixel coordinates underneath it.
+  const [view, setView] = useState({ x: 0, y: 0, scale: 1 });
 
   useEffect(() => {
     (async () => {
@@ -131,18 +136,69 @@ export default function EditorPage() {
     };
   }, [jobId]);
 
+  useEffect(() => {
+    const element = stageWrapRef.current;
+    if (!element) return;
+    const observer = new ResizeObserver(() => {
+      setStageSize({ width: element.clientWidth, height: element.clientHeight });
+    });
+    observer.observe(element);
+    setStageSize({ width: element.clientWidth, height: element.clientHeight });
+    return () => observer.disconnect();
+  }, []);
+
   const ppm = model?.pixels_per_metre ?? 100;
   const imageHeight = image?.naturalHeight ?? 1000;
   const imageWidth = image?.naturalWidth ?? 1000;
   const { toPx, toM } = useMemo(() => makeTransforms(ppm, imageHeight), [ppm, imageHeight]);
 
+  const fitToPlan = useCallback(() => {
+    const element = stageWrapRef.current;
+    if (!element || !image) return;
+    const cw = element.clientWidth;
+    const ch = element.clientHeight;
+    const scale = Math.min(cw / image.naturalWidth, ch / image.naturalHeight) * 0.97;
+    setView({
+      x: (cw - image.naturalWidth * scale) / 2,
+      y: (ch - image.naturalHeight * scale) / 2,
+      scale,
+    });
+  }, [image]);
+
+  useEffect(() => {
+    fitToPlan(); // frame the whole plan once the image is known
+  }, [fitToPlan]);
+
   const update = useCallback((mutate: (m: FloorPlanModel) => FloorPlanModel) => {
     setModel((current) => (current ? mutate(structuredClone(current)) : current));
   }, []);
 
+  /** Pointer position in plan-pixel space, accounting for the pan/zoom transform. */
+  const pointerPlanPx = (stage: Konva.Stage | null): { x: number; y: number } | null => {
+    const pos = stage?.getPointerPosition();
+    if (!pos || !stage) return null;
+    return { x: (pos.x - stage.x()) / stage.scaleX(), y: (pos.y - stage.y()) / stage.scaleY() };
+  };
+
   const stagePointer = (e: Konva.KonvaEventObject<MouseEvent>): Point2D | null => {
-    const pos = e.target.getStage()?.getPointerPosition();
+    const pos = pointerPlanPx(e.target.getStage());
     return pos ? toM(pos) : null;
+  };
+
+  const handleWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
+    e.evt.preventDefault();
+    const stage = e.target.getStage();
+    const pointer = stage?.getPointerPosition();
+    if (!stage || !pointer) return;
+    const factor = e.evt.deltaY > 0 ? 1 / 1.12 : 1.12;
+    const nextScale = Math.min(8, Math.max(0.1, view.scale * factor));
+    // Keep the plan point under the cursor fixed while zooming.
+    const planPoint = { x: (pointer.x - view.x) / view.scale, y: (pointer.y - view.y) / view.scale };
+    setView({
+      scale: nextScale,
+      x: pointer.x - planPoint.x * nextScale,
+      y: pointer.y - planPoint.y * nextScale,
+    });
   };
 
   const handleStageClick = (e: Konva.KonvaEventObject<MouseEvent>) => {
@@ -304,9 +360,30 @@ export default function EditorPage() {
 
   return (
     <div className="editor-layout">
-      <div className="stage-wrap">
+      <div className="stage-wrap" ref={stageWrapRef}>
+        <div className="stage-hud">
+          <button onClick={fitToPlan}>Fit to plan</button>
+          <span>{Math.round(view.scale * 100)}%</span>
+        </div>
         {model && image && (
-          <Stage width={imageWidth} height={imageHeight} onMouseDown={handleStageClick}>
+          <Stage
+            width={stageSize.width}
+            height={stageSize.height}
+            x={view.x}
+            y={view.y}
+            scaleX={view.scale}
+            scaleY={view.scale}
+            draggable={tool === "select"}
+            onDragEnd={(e) => {
+              // Child shapes bubble drag events; only sync the pan when the
+              // stage itself moved.
+              if (e.target === e.target.getStage()) {
+                setView((v) => ({ ...v, x: e.target.x(), y: e.target.y() }));
+              }
+            }}
+            onWheel={handleWheel}
+            onMouseDown={handleStageClick}
+          >
             <Layer listening={false}>
               <KonvaImage image={image} />
             </Layer>
@@ -436,8 +513,7 @@ export default function EditorPage() {
                         setSelection({ kind, index });
                       }}
                       onDragMove={(e) => {
-                        const stage = e.target.getStage();
-                        const pos = stage?.getPointerPosition();
+                        const pos = pointerPlanPx(e.target.getStage());
                         if (pos) moveOpening(kind, index, pos);
                         e.target.position({ x: 0, y: 0 });
                       }}
