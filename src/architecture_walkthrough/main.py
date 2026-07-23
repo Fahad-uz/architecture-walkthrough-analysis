@@ -16,7 +16,11 @@ from architecture_walkthrough.scene.glb_validator import validate_glb
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="architecture-walkthrough")
-    parser.add_argument("--config", default="configs/default.yaml")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="YAML config path (defaults to ARCH_WALK_CONFIG or configs/default.yaml)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     analyze = sub.add_parser("analyze")
@@ -70,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = load_config(args.config)
     if args.command == "analyze":
+        if args.require_gemini:
+            config.ai.gemini_enabled = True
         analyze_floorplan_image(
             Path(args.input),
             Path(args.output),
@@ -84,13 +90,13 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.floorplan),
             Path(args.output),
             config,
-            run_blender=args.use_blender,
+            run_blender=args.use_blender and not args.no_run_blender,
             force=args.force,
             bake_mode=args.bake_mode,
         )
         return 0
     if args.command == "image-to-glb":
-        if args.use_gemini:
+        if args.use_gemini or args.require_gemini:
             config.ai.gemini_enabled = True
         convert_image_to_glb(
             Path(args.input),
@@ -112,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.report).write_text(__import__("json").dumps(report, indent=2), encoding="utf-8")
         return 0 if report["valid"] else 1
     if args.command == "run-all":
-        if args.use_gemini:
+        if args.use_gemini or args.require_gemini:
             config.ai.gemini_enabled = True
         out = Path(args.output)
         analyze_floorplan_image(
@@ -123,7 +129,12 @@ def main(argv: list[str] | None = None) -> int:
             require_ai_success=args.require_gemini,
             crop_rect=tuple(args.crop) if args.crop else None,
         )
-        build_glb_model(out, out / "models" / "building.glb", config, run_blender=args.use_blender)
+        build_glb_model(
+            out,
+            out / "models" / "building.glb",
+            config,
+            run_blender=args.use_blender and not args.no_run_blender,
+        )
         return 0
     return 2
 

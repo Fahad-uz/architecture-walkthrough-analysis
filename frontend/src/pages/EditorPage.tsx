@@ -2,11 +2,13 @@ import Konva from "konva";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Circle, Group, Image as KonvaImage, Layer, Line, Stage, Text } from "react-konva";
 import { Link, useParams } from "react-router-dom";
-import { generateModel, getEditData, getJob, saveCorrections, validateCorrections } from "../api";
+import { generateModel, getEditData, getJob, saveCorrections } from "../api";
 import type { FloorPlanModel, Opening, Point2D, QualityReport, RoomPolygon, SanityWarning, WallSegment } from "../types";
 
 type Tool = "select" | "wall" | "door" | "window" | "scale";
+type BakeMode = "final" | "draft" | "none";
 type Selection = { kind: "walls" | "doors" | "windows" | "rooms"; index: number } | null;
+type SavedCorrection = QualityReport & { model: FloorPlanModel };
 
 /** Editor works in image-pixel space; the model stores metres with origin at
  *  the image's bottom-left. ppm converts, imageHeight flips y. */
@@ -60,6 +62,69 @@ function nearestWall(walls: WallSegment[], p: Point2D): WallHit | null {
   return best;
 }
 
+const OPENING_EDGE_CLEARANCE_M = 0.05;
+const MIN_OPENING_WIDTH_M = 0.15;
+
+interface OpeningPlacement {
+  center: Point2D;
+  width: number;
+  offset: number;
+  start: number;
+  end: number;
+}
+
+/** Keep an opening wholly inside its host wall, including a small reveal at
+ * both ends. Short walls shrink the opening instead of producing invalid
+ * negative/out-of-range intervals. */
+function openingPlacement(wall: WallSegment, desiredOffset: number, desiredWidth: number): OpeningPlacement | null {
+  const length = wallLength(wall);
+  if (!Number.isFinite(length) || length < 0.05) return null;
+  const edge = Math.min(OPENING_EDGE_CLEARANCE_M, length * 0.1);
+  const maxWidth = length - edge * 2;
+  if (maxWidth <= 0) return null;
+  const minWidth = Math.min(MIN_OPENING_WIDTH_M, maxWidth);
+  const safeDesiredWidth = Number.isFinite(desiredWidth) ? desiredWidth : minWidth;
+  const width = Math.min(maxWidth, Math.max(minWidth, safeDesiredWidth));
+  const minOffset = edge + width / 2;
+  const maxOffset = length - edge - width / 2;
+  const safeDesiredOffset = Number.isFinite(desiredOffset) ? desiredOffset : length / 2;
+  const offset = Math.min(maxOffset, Math.max(minOffset, safeDesiredOffset));
+  return {
+    center: pointOnWall(wall, offset),
+    width,
+    offset,
+    start: offset - width / 2,
+    end: offset + width / 2,
+  };
+}
+
+function applyOpeningPlacement(item: Opening, wall: WallSegment, placement: OpeningPlacement): void {
+  item.center = placement.center;
+  item.width_m = placement.width;
+  item.wall_id = wall.id ?? null;
+  item.offset_m = placement.offset;
+  item.start_offset_m = placement.start;
+  item.end_offset_m = placement.end;
+}
+
+function openingWall(walls: WallSegment[], item: Opening): WallSegment | null {
+  return walls.find((wall) => wall.id === item.wall_id) ?? nearestWall(walls, item.center)?.wall ?? null;
+}
+
+function reclampWallOpenings(model: FloorPlanModel, wall: WallSegment): void {
+  if (!wall.id) return;
+  for (const kind of ["doors", "windows"] as const) {
+    model[kind] = model[kind].filter((item) => {
+      if (item.wall_id !== wall.id) return true;
+      const [start, end] = openingInterval(item);
+      const placement = openingPlacement(wall, item.offset_m ?? (start + end) / 2, item.width_m);
+      if (!placement) return false;
+      applyOpeningPlacement(item, wall, placement);
+      return true;
+    });
+  }
+}
+
 function roomStats(room: RoomPolygon): string {
   const xs = room.points.map((p) => p.x);
   const ys = room.points.map((p) => p.y);
@@ -80,10 +145,42 @@ function rescaleModel(model: FloorPlanModel, factor: number): FloorPlanModel {
   const sp = (p: Point2D) => ({ x: p.x * factor, y: p.y * factor });
   return {
     ...model,
-    walls: model.walls.map((w) => ({ ...w, start: sp(w.start), end: sp(w.end) })),
+    walls: model.walls.map((w) => ({
+      ...w,
+      start: sp(w.start),
+      end: sp(w.end),
+      thickness_m: w.thickness_m * factor,
+    })),
     doors: model.doors.map((o) => scaleOpening(o, factor, sp)),
     windows: model.windows.map((o) => scaleOpening(o, factor, sp)),
     rooms: model.rooms.map((r) => ({ ...r, points: r.points.map(sp) })),
+    balconies: model.balconies?.map((r) => ({ ...r, points: r.points.map(sp) })),
+    slabs: model.slabs?.map((r) => ({ ...r, points: r.points.map(sp) })),
+    special_elements: model.special_elements?.map((element) => ({
+      ...element,
+      polygon: element.polygon?.map(sp),
+      center: element.center ? sp(element.center) : element.center,
+      width_m: element.width_m != null ? element.width_m * factor : element.width_m,
+      depth_m: element.depth_m != null ? element.depth_m * factor : element.depth_m,
+    })),
+    furniture: model.furniture?.map((item) => ({
+      ...item,
+      center: sp(item.center),
+      width_m: item.width_m * factor,
+      depth_m: item.depth_m * factor,
+    })),
+    asset_placements: model.asset_placements?.map((item) => ({
+      ...item,
+      center: sp(item.center),
+      width_m: item.width_m * factor,
+      depth_m: item.depth_m * factor,
+    })),
+    entrance: model.entrance ? sp(model.entrance) : model.entrance,
+    camera_waypoints: model.camera_waypoints?.map((waypoint) => ({
+      ...waypoint,
+      position: sp(waypoint.position),
+      look_at: waypoint.look_at ? sp(waypoint.look_at) : waypoint.look_at,
+    })),
   };
 }
 
@@ -98,6 +195,25 @@ function scaleOpening(o: Opening, factor: number, sp: (p: Point2D) => Point2D): 
   };
 }
 
+function qualityReportFromModel(model: FloorPlanModel): QualityReport | null {
+  const state = model.reconstruction?.quality_state;
+  const score = model.reconstruction?.quality_score;
+  if (state == null || score == null) return null;
+  const rawComponents = model.metadata.quality_components;
+  const components =
+    rawComponents && typeof rawComponents === "object" && !Array.isArray(rawComponents)
+      ? Object.fromEntries(
+          Object.entries(rawComponents).filter((entry): entry is [string, number] => typeof entry[1] === "number"),
+        )
+      : {};
+  return {
+    quality_state: state,
+    quality_score: score,
+    components,
+    issues: model.validation_issues ?? [],
+  };
+}
+
 export default function EditorPage() {
   const { jobId = "" } = useParams();
   const [model, setModel] = useState<FloorPlanModel | null>(null);
@@ -108,11 +224,22 @@ export default function EditorPage() {
   const [pending, setPending] = useState<Point2D | null>(null); // first click of 2-point tools (metres)
   const [status, setStatus] = useState("loading…");
   const [report, setReport] = useState<QualityReport | null>(null);
-  // final is the product default; draft/none are development conveniences.
-  const [bakeMode, setBakeMode] = useState("final");
+  // Iterate quickly while geometry is still under review. A final bake is an
+  // explicit last step because it can take tens of minutes.
+  const [bakeMode, setBakeMode] = useState<BakeMode>("draft");
   const [force, setForce] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
   const [generating, setGenerating] = useState(false);
   const pollRef = useRef<number | null>(null);
+  const revisionRef = useRef(0);
+  const savePromiseRef = useRef<{
+    jobId: string;
+    requestId: symbol;
+    promise: Promise<SavedCorrection | null>;
+  } | null>(null);
+  const currentJobIdRef = useRef(jobId);
+  currentJobIdRef.current = jobId;
   const stageWrapRef = useRef<HTMLDivElement | null>(null);
   const [stageSize, setStageSize] = useState({ width: 800, height: 600 });
   // Viewport transform: the Stage itself is panned/zoomed; all shapes stay in
@@ -120,20 +247,53 @@ export default function EditorPage() {
   const [view, setView] = useState({ x: 0, y: 0, scale: 1 });
 
   useEffect(() => {
-    (async () => {
+    let cancelled = false;
+    let img: HTMLImageElement | null = null;
+    setModel(null);
+    setImage(null);
+    setSelection(null);
+    setHover(null);
+    setPending(null);
+    setReport(null);
+    setDirty(false);
+    setSaving(false);
+    setGenerating(false);
+    revisionRef.current = 0;
+    setStatus("loading…");
+    void (async () => {
       try {
         const data = await getEditData(jobId);
+        if (cancelled) return;
         setModel(data.model);
-        const img = new window.Image();
-        img.onload = () => setImage(img);
+        setReport(qualityReportFromModel(data.model));
+        img = new window.Image();
+        img.onload = () => {
+          if (!cancelled) setImage(img);
+        };
+        img.onerror = () => {
+          if (!cancelled) setStatus("The plan data loaded, but its source image could not be displayed.");
+        };
         img.src = data.image_url;
-        setStatus(`loaded: ${data.model.walls.length} walls, ${data.model.rooms.length} rooms`);
+        const issueCount = data.model.validation_issues?.length ?? 0;
+        setStatus(
+          `loaded: ${data.model.walls.length} walls, ${data.model.rooms.length} rooms${
+            issueCount ? ` · ${issueCount} validation issue${issueCount === 1 ? "" : "s"}` : ""
+          }`,
+        );
       } catch (exc) {
-        setStatus(String(exc));
+        if (!cancelled) setStatus(String(exc));
       }
     })();
     return () => {
-      if (pollRef.current) window.clearInterval(pollRef.current);
+      cancelled = true;
+      if (img) {
+        img.onload = null;
+        img.onerror = null;
+      }
+      if (pollRef.current !== null) {
+        window.clearTimeout(pollRef.current);
+        pollRef.current = null;
+      }
     };
   }, [jobId]);
 
@@ -171,6 +331,9 @@ export default function EditorPage() {
   }, [fitToPlan]);
 
   const update = useCallback((mutate: (m: FloorPlanModel) => FloorPlanModel) => {
+    revisionRef.current += 1;
+    setDirty(true);
+    setReport(null);
     setModel((current) => (current ? mutate(structuredClone(current)) : current));
   }, []);
 
@@ -215,6 +378,11 @@ export default function EditorPage() {
         setPending(p);
         return;
       }
+      if (Math.hypot(p.x - pending.x, p.y - pending.y) < 0.05) {
+        setPending(null);
+        setStatus("wall: the two endpoints must be at least 0.05 m apart");
+        return;
+      }
       update((m) => {
         m.walls.push({
           id: `cw${Date.now()}`,
@@ -242,8 +410,15 @@ export default function EditorPage() {
       const metres = window.prompt("Real-world distance between the two points, in metres:", "1.0");
       setPending(null);
       const value = metres ? parseFloat(metres) : NaN;
-      if (!value || value <= 0) return;
+      if (!Number.isFinite(value) || value <= 0 || distPx <= 0) {
+        setStatus("scale: enter a positive real-world distance");
+        return;
+      }
       const newPpm = distPx / value;
+      if (!Number.isFinite(newPpm) || newPpm <= 0) {
+        setStatus("scale: that reference did not produce a valid scale");
+        return;
+      }
       const factor = ppm / newPpm;
       update((m) => {
         const rescaled = rescaleModel(m, factor);
@@ -258,17 +433,27 @@ export default function EditorPage() {
     if (tool === "door" || tool === "window") {
       const hit = nearestWall(model.walls, p);
       if (!hit) return;
+      const snapDistancePx = hit.dist * ppm * view.scale;
+      if (snapDistancePx > 24) {
+        setStatus(`${tool}: click closer to the wall where the opening belongs`);
+        return;
+      }
       const width = tool === "door" ? 0.9 : 1.2;
+      const placement = openingPlacement(hit.wall, hit.offset, width);
+      if (!placement) {
+        setStatus(`${tool}: selected wall is too short for an opening`);
+        return;
+      }
       const item: Opening = {
         id: `${tool}_manual_${Date.now()}`,
-        center: hit.point,
-        width_m: width,
+        center: placement.center,
+        width_m: placement.width,
         height_m: tool === "door" ? 2.1 : 1.2,
         ...(tool === "window" ? { sill_height_m: 0.9 } : {}),
         wall_id: hit.wall.id ?? null,
-        offset_m: hit.offset,
-        start_offset_m: hit.offset - width / 2,
-        end_offset_m: hit.offset + width / 2,
+        offset_m: placement.offset,
+        start_offset_m: placement.start,
+        end_offset_m: placement.end,
         opening_type: tool === "door" ? "single_leaf" : "fixed",
         confidence: 1,
         evidence_source: "manual_correction",
@@ -279,6 +464,9 @@ export default function EditorPage() {
         return m;
       });
       setSelection({ kind: key as "doors" | "windows", index: (model as any)[key].length });
+      if (placement.width < width) {
+        setStatus(`${tool} width reduced to ${placement.width.toFixed(2)} m to fit the selected wall`);
+      }
       return;
     }
   };
@@ -289,67 +477,148 @@ export default function EditorPage() {
     update((m) => {
       const item = (m as any)[kind][index] as Opening;
       const hit = nearestWall(m.walls, p);
-      if (hit) {
-        item.center = hit.point;
-        item.wall_id = hit.wall.id ?? null;
-        item.offset_m = hit.offset;
-        item.start_offset_m = hit.offset - item.width_m / 2;
-        item.end_offset_m = hit.offset + item.width_m / 2;
+      if (hit && hit.dist * ppm * view.scale <= 24) {
+        const placement = openingPlacement(hit.wall, hit.offset, item.width_m);
+        if (placement) applyOpeningPlacement(item, hit.wall, placement);
       }
       return m;
     });
   };
 
-  const save = async (): Promise<boolean> => {
-    if (!model) return false;
+  const save = async (): Promise<SavedCorrection | null> => {
+    if (!model) return null;
+    if (savePromiseRef.current?.jobId === jobId) return savePromiseRef.current.promise;
+
+    const savedJobId = jobId;
+    const savedRevision = revisionRef.current;
+    const correction = structuredClone(model);
+    correction.walls.forEach((wall) => reclampWallOpenings(correction, wall));
+    const requestId = Symbol(savedJobId);
+    setSaving(true);
     setStatus("saving…");
-    try {
-      const result = await saveCorrections(jobId, model);
-      setModel(result.model);
-      setReport(result);
-      setStatus(`saved — rooms regenerated from wall graph (${result.model.rooms.length} rooms)`);
-      return true;
-    } catch (exc) {
-      setStatus(String(exc));
-      return false;
-    }
+
+    const task: Promise<SavedCorrection | null> = (async () => {
+      try {
+        const result = await saveCorrections(savedJobId, correction);
+        if (currentJobIdRef.current !== savedJobId) return null;
+        if (revisionRef.current !== savedRevision) {
+          setReport(null);
+          setStatus("A snapshot was saved, but newer local edits remain. Save again before generating 3D.");
+          return null;
+        }
+        setModel(result.model);
+        setSelection(null);
+        setHover(null);
+        setPending(null);
+        setReport(result);
+        setDirty(false);
+        setStatus(`saved — rooms regenerated from wall graph (${result.model.rooms.length} rooms)`);
+        return result;
+      } catch (exc) {
+        if (currentJobIdRef.current === savedJobId) setStatus(String(exc));
+        return null;
+      } finally {
+        if (savePromiseRef.current?.requestId === requestId) {
+          savePromiseRef.current = null;
+          if (currentJobIdRef.current === savedJobId) setSaving(false);
+        }
+      }
+    })();
+    savePromiseRef.current = { jobId: savedJobId, requestId, promise: task };
+    return task;
   };
 
   const validate = async () => {
-    if (!(await save())) return;
-    try {
-      setReport(await validateCorrections(jobId));
-    } catch (exc) {
-      setStatus(String(exc));
-    }
+    const result = await save();
+    if (!result) return;
+    const blocking = result.issues.filter((issue) => ["error", "severe"].includes(issue.severity));
+    setStatus(
+      blocking.length
+        ? `validation found ${blocking.length} blocking issue${blocking.length === 1 ? "" : "s"}`
+        : `validation complete — ${(result.quality_score * 100).toFixed(0)}% (${result.quality_state})`,
+    );
   };
 
   const generate = async () => {
-    if (!(await save())) return;
+    if (generating) return;
+    const result = await save();
+    if (!result) return;
+    const blocking = result.issues.filter((issue) => ["error", "severe"].includes(issue.severity));
+    if (blocking.length > 0 && !force) {
+      setStatus(
+        `model build blocked: fix ${blocking.length} validation ${blocking.length === 1 ? "issue" : "issues"}, or explicitly enable the quality-gate override`,
+      );
+      return;
+    }
+    if (
+      blocking.length > 0 &&
+      force &&
+      !window.confirm(
+        `This model has ${blocking.length} blocking validation ${blocking.length === 1 ? "issue" : "issues"}. Generate it anyway?`,
+      )
+    ) {
+      setStatus("model build cancelled — the lightweight preview remains available");
+      return;
+    }
+    if (
+      bakeMode === "final" &&
+      result.quality_state !== "high" &&
+      !window.confirm(
+        `This plan is still ${result.quality_state} at ${(result.quality_score * 100).toFixed(0)}%. A final bake can take tens of minutes. Continue anyway?`,
+      )
+    ) {
+      setStatus("final bake cancelled — continue correcting, or use draft for a fast check");
+      return;
+    }
     try {
-      await generateModel(jobId, force, bakeMode);
+      const generationJobId = jobId;
       setGenerating(true);
+      await generateModel(generationJobId, blocking.length > 0 && force, bakeMode);
+      if (currentJobIdRef.current !== generationJobId) return;
       setStatus(`Blender build started (${bakeMode})…`);
-      pollRef.current = window.setInterval(async () => {
-        const job = await getJob(jobId);
-        if (job.status === "model_generated") {
-          if (pollRef.current) window.clearInterval(pollRef.current);
-          setGenerating(false);
-          setStatus("3D model ready — open the preview page");
-        } else if (["blocked", "generation_failed"].includes(job.status)) {
-          if (pollRef.current) window.clearInterval(pollRef.current);
-          setGenerating(false);
-          setStatus(`${job.status}: ${job.message}`);
+      if (pollRef.current !== null) window.clearTimeout(pollRef.current);
+      const poll = async () => {
+        try {
+          const job = await getJob(generationJobId);
+          if (currentJobIdRef.current !== generationJobId) return;
+          if (job.status === "model_generated") {
+            pollRef.current = null;
+            setGenerating(false);
+            setStatus("3D model ready — open the preview page");
+            return;
+          } else if (["blocked", "generation_failed"].includes(job.status)) {
+            pollRef.current = null;
+            setGenerating(false);
+            setStatus(`${job.status}: ${job.message}`);
+            return;
+          }
+        } catch (exc) {
+          if (currentJobIdRef.current !== generationJobId) return;
+          setStatus(`waiting for model status: ${String(exc)}`);
         }
-      }, 2000);
+        if (currentJobIdRef.current === generationJobId) {
+          pollRef.current = window.setTimeout(() => void poll(), 2000);
+        }
+      };
+      pollRef.current = window.setTimeout(() => void poll(), 500);
     } catch (exc) {
-      setStatus(String(exc));
+      if (currentJobIdRef.current === jobId) {
+        setGenerating(false);
+        setStatus(String(exc));
+      }
     }
   };
 
   const removeSelected = () => {
     if (!selection) return;
     update((m) => {
+      if (selection.kind === "walls") {
+        const wall = m.walls[selection.index];
+        if (wall?.id) {
+          m.doors = m.doors.filter((item) => item.wall_id !== wall.id);
+          m.windows = m.windows.filter((item) => item.wall_id !== wall.id);
+        }
+      }
       (m as any)[selection.kind].splice(selection.index, 1);
       return m;
     });
@@ -358,12 +627,20 @@ export default function EditorPage() {
 
   const selectedItem: any = selection && model ? (model as any)[selection.kind][selection.index] : null;
   const warnings: SanityWarning[] = (model?.metadata?.sanity_warnings as SanityWarning[]) ?? [];
+  const blockingIssueCount = report?.issues.filter((issue) => ["error", "severe"].includes(issue.severity)).length ?? 0;
 
   return (
     <div className="editor-layout">
-      <div className="stage-wrap" ref={stageWrapRef}>
+      <div
+        className="stage-wrap"
+        ref={stageWrapRef}
+        role="region"
+        aria-label="Interactive floor-plan correction canvas"
+      >
         <div className="stage-hud">
-          <button onClick={fitToPlan}>Fit to plan</button>
+          <button type="button" onClick={fitToPlan} disabled={!image}>
+            Fit to plan
+          </button>
           <span>{Math.round(view.scale * 100)}%</span>
         </div>
         {model && image && (
@@ -479,7 +756,9 @@ export default function EditorPage() {
                             onDragMove={(e) => {
                               const q = toM({ x: e.target.x(), y: e.target.y() });
                               update((m) => {
-                                (m.walls[index] as any)[key] = q;
+                                const editedWall = m.walls[index];
+                                (editedWall as any)[key] = q;
+                                reclampWallOpenings(m, editedWall);
                                 return m;
                               });
                             }}
@@ -531,7 +810,7 @@ export default function EditorPage() {
                     strokeWidth={2}
                     onMouseDown={(e) => {
                       e.cancelBubble = true;
-                      setStatus(`Gemini: [${w.kind}] ${w.description}`);
+                      setStatus(`Review note: [${w.kind}] ${w.description}`);
                     }}
                   />
                   <Text text="!" x={-3} y={-7} fontSize={14} fontStyle="bold" fill="#e95420" listening={false} />
@@ -548,13 +827,27 @@ export default function EditorPage() {
         <div className="panel">
           <div className="row">
             {(["select", "wall", "door", "window", "scale"] as Tool[]).map((t) => (
-              <button key={t} className={tool === t ? "active" : ""} onClick={() => { setTool(t); setPending(null); }}>
+              <button
+                key={t}
+                type="button"
+                aria-pressed={tool === t}
+                className={tool === t ? "active" : ""}
+                onClick={() => {
+                  setTool(t);
+                  setPending(null);
+                }}
+              >
                 {t === "scale" ? "scale (2 pts)" : t}
               </button>
             ))}
           </div>
           <div className="row">
-            <button className="danger" onClick={removeSelected} disabled={!selection || selection.kind === "rooms"}>
+            <button
+              type="button"
+              className="danger"
+              onClick={removeSelected}
+              disabled={!selection || selection.kind === "rooms"}
+            >
               Delete selected
             </button>
           </div>
@@ -632,15 +925,25 @@ export default function EditorPage() {
                 Width (m)
                 <input
                   type="number"
+                  min={MIN_OPENING_WIDTH_M}
                   step="0.05"
                   value={selectedItem.width_m}
                   onChange={(e) =>
                     update((m) => {
                       const item = (m as any)[selection!.kind][selection!.index] as Opening;
-                      item.width_m = parseFloat(e.target.value) || item.width_m;
-                      if (item.offset_m != null) {
-                        item.start_offset_m = item.offset_m - item.width_m / 2;
-                        item.end_offset_m = item.offset_m + item.width_m / 2;
+                      const requestedWidth = parseFloat(e.target.value);
+                      if (!Number.isFinite(requestedWidth) || requestedWidth <= 0) return m;
+                      const wall = openingWall(m.walls, item);
+                      if (wall) {
+                        const [start, end] = openingInterval(item);
+                        const placement = openingPlacement(
+                          wall,
+                          item.offset_m ?? (start + end) / 2,
+                          requestedWidth,
+                        );
+                        if (placement) applyOpeningPlacement(item, wall, placement);
+                      } else {
+                        item.width_m = requestedWidth;
                       }
                       return m;
                     })
@@ -652,25 +955,62 @@ export default function EditorPage() {
         )}
         <div className="panel">
           <div className="row">
-            <button className="primary" onClick={save}>Save</button>
-            <button onClick={validate}>Validate</button>
+            <button
+              type="button"
+              className="primary"
+              onClick={() => void save()}
+              disabled={!model || saving || generating}
+            >
+              {saving ? "Saving…" : dirty ? "Save changes" : "Save"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void validate()}
+              disabled={!model || saving || generating}
+            >
+              Validate
+            </button>
+            {dirty && <span className="unsaved-indicator">Unsaved changes</span>}
           </div>
           <label>
             Bake mode for 3D generation
-            <select value={bakeMode} onChange={(e) => setBakeMode(e.target.value)}>
+            <select
+              value={bakeMode}
+              disabled={saving || generating}
+              onChange={(e) => setBakeMode(e.target.value as BakeMode)}
+            >
               <option value="final">final — full-quality bake (slow)</option>
-              <option value="draft">draft — fast bake</option>
+              <option value="draft">draft — fast geometry/material check</option>
               <option value="none">none — real-time lights only</option>
             </select>
           </label>
+          <div style={{ fontSize: 12, color: bakeMode === "final" ? "#8a4d12" : "#667078" }}>
+            {bakeMode === "final"
+              ? blockingIssueCount > 0
+                ? `Final bake is blocked by ${blockingIssueCount} validation issue${blockingIssueCount === 1 ? "" : "s"}.`
+                : "Final can take tens of minutes; use it only after the draft geometry looks correct."
+              : "Draft is recommended after structural validation; the lightweight preview updates on every save."}
+          </div>
           <label className="row" style={{ display: "flex" }}>
-            <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
+            <input
+              type="checkbox"
+              checked={force}
+              disabled={saving || generating}
+              onChange={(e) => setForce(e.target.checked)}
+            />
             Override quality gate (export anyway)
           </label>
-          <button className="primary" onClick={generate} disabled={generating}>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => void generate()}
+            disabled={!model || saving || generating}
+          >
             {generating ? "Generating…" : "Generate 3D"}
           </button>
-          <Link to={`/jobs/${jobId}/preview`}>Model preview →</Link>
+          <Link to={`/jobs/${jobId}/preview`}>
+            Model preview{dirty ? " (last saved)" : ""} →
+          </Link>
         </div>
         {report && (
           <div className="panel">
@@ -684,16 +1024,26 @@ export default function EditorPage() {
                 </div>
               ))}
             </div>
-            <div style={{ fontSize: 12, color: "#7a5a10", maxHeight: 140, overflow: "auto" }}>
+            <div
+              role="list"
+              aria-label="Validation issues"
+              style={{ fontSize: 12, color: "#7a5a10", maxHeight: 140, overflow: "auto" }}
+            >
               {report.issues.map((issue, index) => (
-                <div key={index}>
+                <div
+                  role="listitem"
+                  key={`${issue.code}-${index}`}
+                  style={{ color: ["error", "severe"].includes(issue.severity) ? "#a12622" : undefined }}
+                >
                   [{issue.severity}] {issue.message}
                 </div>
               ))}
             </div>
           </div>
         )}
-        <div className="status-box">{status}</div>
+        <div className="status-box" role="status" aria-live="polite" aria-atomic="true">
+          {status}
+        </div>
       </aside>
     </div>
   );

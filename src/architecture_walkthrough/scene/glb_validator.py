@@ -22,10 +22,14 @@ def validate_glb(path: Path) -> dict[str, Any]:
         report["issues"].append("file is empty")
         return report
     try:
-        scene = trimesh.load(path, force="scene")
+        loaded = trimesh.load(path, force="scene")
     except Exception as exc:
         report["issues"].append(f"trimesh failed to load GLB: {exc}")
         return report
+    if not isinstance(loaded, trimesh.Scene):
+        report["issues"].append("GLB did not load as a scene")
+        return report
+    scene = loaded
     bounds = scene.bounds
     report["mesh_count"] = len(scene.geometry)
     report["node_count"] = len(scene.graph.nodes_geometry)

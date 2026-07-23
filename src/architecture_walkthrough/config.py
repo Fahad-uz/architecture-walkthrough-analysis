@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ class LimitSettings(BaseModel):
     max_image_height: PositiveInt = 6000
     processing_timeout_seconds: PositiveInt = 120
     subprocess_timeout_seconds: PositiveInt = 600
+    max_concurrent_generations: PositiveInt = 1
     max_frames: PositiveInt = 900
     preview_resolution: Resolution = Resolution(width=960, height=540)
     final_resolution: Resolution = Resolution(width=1920, height=1080)
@@ -205,12 +207,46 @@ class AppConfig(BaseModel):
     quality: QualitySettings = Field(default_factory=QualitySettings)
 
 
-def load_config(path: Path | str = Path("configs/default.yaml")) -> AppConfig:
+def _environment_bool(name: str) -> bool | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean value")
+
+
+def _apply_environment_overrides(raw: dict[str, Any]) -> None:
+    paths = raw.setdefault("paths", {})
+    ai = raw.setdefault("ai", {})
+    if not isinstance(paths, dict) or not isinstance(ai, dict):
+        raise ValueError("config sections 'paths' and 'ai' must be mappings")
+
+    if blender_path := os.getenv("ARCH_WALK_BLENDER_PATH"):
+        paths["blender_executable"] = blender_path
+    if ffmpeg_path := os.getenv("ARCH_WALK_FFMPEG_PATH"):
+        paths["ffmpeg_executable"] = ffmpeg_path
+    if checkpoint := os.getenv("ARCH_WALK_AI_CHECKPOINT"):
+        ai["segmentation_checkpoint"] = checkpoint
+    if model := os.getenv("ARCH_WALK_GEMINI_MODEL"):
+        ai["gemini_model"] = model
+    gemini_enabled = _environment_bool("ARCH_WALK_GEMINI_ENABLED")
+    if gemini_enabled is not None:
+        ai["gemini_enabled"] = gemini_enabled
+
+
+def load_config(path: Path | str | None = None) -> AppConfig:
     # Pick up GEMINI_API_KEY and friends from a local .env; OS environment wins.
     load_dotenv(override=False)
-    config_path = Path(path)
+    selected_path: Path | str = path if path is not None else os.getenv("ARCH_WALK_CONFIG") or "configs/default.yaml"
+    config_path = Path(selected_path)
     if not config_path.exists():
-        return AppConfig()
-    with config_path.open("r", encoding="utf-8") as handle:
-        raw: dict[str, Any] = yaml.safe_load(handle) or {}
+        raw: dict[str, Any] = {}
+    else:
+        with config_path.open("r", encoding="utf-8") as handle:
+            raw = yaml.safe_load(handle) or {}
+    _apply_environment_overrides(raw)
     return AppConfig.model_validate(raw)

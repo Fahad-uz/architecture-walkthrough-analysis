@@ -6,7 +6,14 @@ from architecture_walkthrough.security.sandbox import require_executable, run_su
 
 
 def blender_background_command(blender_executable: str, script_path: Path) -> list[str]:
-    return [blender_executable, "--background", "--python", str(script_path)]
+    return [
+        blender_executable,
+        "--background",
+        "--python-exit-code",
+        "1",
+        "--python",
+        str(script_path),
+    ]
 
 
 def run_blender_script(blender_executable: str, script_path: Path, timeout_seconds: int) -> None:

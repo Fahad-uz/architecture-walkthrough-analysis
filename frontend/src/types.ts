@@ -43,6 +43,36 @@ export interface RoomPolygon {
   [key: string]: unknown;
 }
 
+export interface CameraWaypoint {
+  position: Point2D;
+  look_at?: Point2D | null;
+  pause_seconds?: number;
+}
+
+export interface FurniturePlacement {
+  category: string;
+  center: Point2D;
+  width_m: number;
+  depth_m: number;
+  rotation_deg?: number;
+}
+
+export interface AssetPlacement extends FurniturePlacement {
+  height_m?: number | null;
+  asset_preset?: string | null;
+}
+
+export interface ArchitecturalElement {
+  id: string;
+  kind: string;
+  polygon?: Point2D[];
+  center?: Point2D | null;
+  width_m?: number | null;
+  depth_m?: number | null;
+  rotation_deg?: number;
+  [key: string]: unknown;
+}
+
 export interface SanityWarning {
   kind: string;
   description: string;
@@ -59,7 +89,13 @@ export interface FloorPlanModel {
   doors: Opening[];
   windows: Opening[];
   rooms: RoomPolygon[];
-  camera_waypoints?: { position: Point2D; look_at?: Point2D | null; pause_seconds?: number }[];
+  balconies?: RoomPolygon[];
+  slabs?: RoomPolygon[];
+  special_elements?: ArchitecturalElement[];
+  furniture?: FurniturePlacement[];
+  asset_placements?: AssetPlacement[];
+  entrance?: Point2D | null;
+  camera_waypoints?: CameraWaypoint[];
   metadata: Record<string, unknown> & { sanity_warnings?: SanityWarning[] };
   reconstruction?: { quality_state?: string; quality_score?: number };
   validation_issues?: { code: string; severity: string; message: string }[];

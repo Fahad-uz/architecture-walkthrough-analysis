@@ -21,8 +21,14 @@ def estimate_quadrilateral(edge_image: np.ndarray) -> list[Point2D] | None:
 def apply_manual_perspective(image: np.ndarray, corners: list[Point2D], output_size: tuple[int, int]) -> np.ndarray:
     if len(corners) != 4:
         raise ValueError("manual perspective correction requires exactly four corners")
-    src = np.float32([[corner.x, corner.y] for corner in corners])
+    src: np.ndarray = np.asarray(
+        [[corner.x, corner.y] for corner in corners],
+        dtype=np.float32,
+    )
     width, height = output_size
-    dst = np.float32([[0, 0], [width, 0], [width, height], [0, height]])
+    dst: np.ndarray = np.asarray(
+        [[0, 0], [width, 0], [width, height], [0, height]],
+        dtype=np.float32,
+    )
     matrix = cv2.getPerspectiveTransform(src, dst)
     return cv2.warpPerspective(image, matrix, (width, height))

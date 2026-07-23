@@ -1,156 +1,213 @@
 # Architecture Walkthrough Analysis
 
-Turns a 2D floor-plan PNG into an accurate, well-lit 3D building (GLB) with an
-interactive first-person browser walkthrough.
+Convert a 2D architectural floor plan into an evidence-grounded, editable 3D
+building and explore it in a browser. The project combines deterministic
+computer vision, a human correction step, procedural Blender generation, GLB
+optimization, and a first-person React walkthrough.
 
 ```text
-image -> ROI extraction -> layer preprocessing -> wall detection (local CV,
-      swappable for CubiCasa5k) -> local opening detection (gap + swing-arc +
-      leaf + glazing-line evidence) -> tiered scale calibration -> wall-graph
-      vectorization (rooms = graph faces) -> evidence-based validation gate
-      -> correction editor (React/Konva) -> Blender generation + Cycles
-      lightmap baking -> gltf-transform optimization -> R3F walkthrough
+floor-plan image
+  -> plan-region extraction and layered preprocessing
+  -> OCR-backed scale calibration
+  -> wall, opening, room, and furniture reconstruction
+  -> evidence and topology validation
+  -> visual correction editor
+  -> Blender scene generation and optional light baking
+  -> GLB optimization
+  -> orbit preview and collision-aware walkthrough
 ```
 
-Design rules:
+The main design rule is simple: local image evidence owns the geometry.
+Optional Gemini assistance can interpret room labels, dimensions, furniture,
+and suspicious regions, but it cannot silently invent walls or openings.
+Low-confidence results stay reviewable and are blocked from final export unless
+the user explicitly overrides the quality gate.
 
-- Gemini is semantic-only (room labels, dimension text transcription, layout
-  sanity-check warnings). Geometry always comes from local image evidence.
-- Rooms are faces of the planar wall graph and regenerate on every edit;
-  doorway gaps close during face enumeration only when a confirmed opening
-  spans them — nothing is auto-invented.
-- Openings are intervals along their wall (schema v3) with hinge/swing sides.
-- Scale sources are strictly tiered (manual → dimension text → room dims →
-  door width → assumed thickness) and never averaged across tiers.
-- Validation is a gate: missing evidence lowers confidence, and low-quality
-  scenes cannot export a GLB without an explicit override.
+## What is included
+
+- Automatic plan-region detection, deskewing, and text-aware wall filtering.
+- Tiered scale solving from manual measurements, dimension annotations, room
+  dimensions, door widths, or a documented fallback.
+- Wall-graph cleanup, face-based room recovery, local door/window detection,
+  label assignment, and furniture placement constrained to room polygons.
+- A source-aligned SVG/PNG evidence overlay and JSON validation report.
+- A React/Konva editor for correcting walls, openings, scale, and room data.
+- Procedural floors, walls, ceilings, doors, windows, balconies, furniture,
+  lighting, and cameras in both preview and Blender-generated scenes.
+- Atomic model/correction updates that preserve the last good artifacts when a
+  generation step fails.
+- Responsive desktop/mobile walkthrough controls, collision handling, guided
+  waypoints, model download, loading states, and error recovery.
+- A production Docker image containing the frontend, Python service, Blender,
+  FFmpeg, Node 22, and the native GLB optimization toolchain.
+
+## Repository layout
 
 ```text
 src/architecture_walkthrough/
-  ui/             FastAPI app factory (serves the built React frontend)
-  image_to_glb/   Image analysis plus GLB generation entry points
-  walkthrough/    Path planning helpers (browser walkthrough lives in frontend/)
-  ai/             Gemini semantic roles, never authoritative geometry
-  api/            FastAPI routes + background job runner
-  geometry/       Schema, wall graph, rooms, scale tiers, validation gate
-  scene/          Blender generator (bake modes), trimesh preview, optimizer
-  security/       Upload validation and subprocess safety
-  vision/         Preprocessing, wall bands, local opening detection, OCR
-frontend/         React app: upload, Konva editor, preview, R3F walkthrough
-tools/glb/        gltf-transform CLI for Draco/WebP GLB optimization
+  ai/             Optional semantic interpretation and sanity checks
+  api/            FastAPI routes, durable job state, and artifact transactions
+  geometry/       Models, scale, wall graph, rooms, furniture, and validation
+  image_to_glb/   Public image-analysis and model-generation entry points
+  scene/          Preview GLB, Blender scene, materials, baking, and validation
+  security/       Upload, path, and subprocess safety
+  ui/             FastAPI application factory for the built frontend
+  vision/         ROI, preprocessing, OCR, walls, openings, and evidence filters
+  walkthrough/    Route planning, camera animation, collision, and video helpers
+frontend/         React, Three.js/R3F, and Konva browser application
+tools/glb/        glTF Transform, Draco, texture, and WebP optimization
+configs/          Runtime configuration
+scripts/          Thin command-line wrappers
+tests/            Unit, regression, and focused Blender integration tests
 ```
 
-## Setup
+Generated jobs live under `outputs/`; local input plans and optional models,
+textures, and HDRIs live under `assets/`. Those large or private artifacts are
+ignored by Git while their directory placeholders remain tracked.
 
-Use Python 3.11 or newer.
+## Local setup
+
+Requirements:
+
+- Python 3.11+
+- Node.js 22+ for the web frontend and GLB optimizer
+- Blender for production-quality scene generation
+- FFmpeg only for rendered walkthrough videos
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python -m pip install -U pip
+.\.venv\Scripts\python -m pip install --upgrade pip
 .\.venv\Scripts\python -m pip install -e ".[dev]"
+
+cd frontend
+npm ci
+npm run build
+cd ..
+
+cd tools\glb
+npm ci
+cd ..\..
 ```
 
-For optional Gemini assistance, set `GEMINI_API_KEY` in your environment. Do not commit `.env` files or keys.
+Copy `.env.example` to `.env` if you need local overrides. Important variables
+include `ARCH_WALK_CONFIG`, `ARCH_WALK_BLENDER_PATH`,
+`ARCH_WALK_FFMPEG_PATH`, `ARCH_WALK_GEMINI_ENABLED`, and
+`ARCH_WALK_GEMINI_MODEL`. Set `GEMINI_API_KEY` only if optional Gemini analysis
+is enabled. Never commit `.env` files or credentials.
 
-## Quick Start
-
-Analyze a floor plan:
+## Run the web application
 
 ```powershell
-architecture-walkthrough --config configs/default.yaml analyze --input assets/input/plan.png --output outputs/plan
+.\.venv\Scripts\uvicorn architecture_walkthrough.ui:create_app --factory --host 0.0.0.0 --port 8001
+```
+
+Open `http://127.0.0.1:8001`. The workflow is:
+
+1. Upload a PNG or JPEG floor plan and optionally provide a manual scale.
+2. Inspect the source-aligned reconstruction overlay and quality findings.
+3. Correct walls, openings, rooms, or scale in the editor.
+4. Generate the 3D model using `none`, `draft`, or `final` bake quality.
+5. Orbit around the model, download the GLB, or enter the walkthrough.
+
+Useful endpoints include:
+
+- `POST /jobs` — stream and validate a new plan upload.
+- `GET /jobs/{job_id}` — poll analysis or generation status.
+- `GET /jobs/{job_id}/edit-data` — load the current editable model.
+- `POST /jobs/{job_id}/corrections` — validate and atomically save an edit.
+- `POST /jobs/{job_id}/validate-corrections` — rerun the quality gate.
+- `POST /jobs/{job_id}/generate-model?force=&bake_mode=` — build a Blender GLB.
+- `GET /jobs/{job_id}/artifacts/{artifact_name}` — download a safe artifact.
+
+## Command line
+
+Analyze a plan:
+
+```powershell
+architecture-walkthrough --config configs/default.yaml analyze `
+  --input assets/input/plan.png `
+  --output outputs/plan
 ```
 
 Generate a GLB from optimized or corrected JSON:
 
 ```powershell
-architecture-walkthrough --config configs/default.yaml build-model --floorplan outputs/plan --output outputs/plan/building.glb
+architecture-walkthrough --config configs/default.yaml build-model `
+  --floorplan outputs/plan `
+  --output outputs/plan/building.glb `
+  --bake-mode draft
 ```
 
-Run the complete image-to-GLB flow:
+Run image analysis and model generation together:
 
 ```powershell
-architecture-walkthrough --config configs/default.yaml image-to-glb --input assets/input/plan.png --output outputs/plan/building.glb --work-dir outputs/plan --manual-scale 0.01
+architecture-walkthrough --config configs/default.yaml image-to-glb `
+  --input assets/input/plan.png `
+  --output outputs/plan/building.glb `
+  --work-dir outputs/plan `
+  --manual-scale 0.01
 ```
 
-You can also use the script wrapper:
+`--manual-scale` is metres per pixel and has the highest calibration priority.
+Use `--force` only after visually reviewing a reconstruction that did not pass
+the normal quality gate.
+
+## Output artifacts
+
+Each job can contain:
+
+- `floorplan.raw.json` — initial pixel-space detections.
+- `floorplan.optimized.json` — reconstructed metric model.
+- `floorplan.corrected.json` — optional human-reviewed replacement.
+- `floorplan.json` — compatibility copy of the optimized model.
+- `validation_report.json` — quality score, scale evidence, and issues.
+- `analysis_overlay.svg` / `.png` — source-aligned visual reconstruction.
+- `building.glb` — latest successful preview or Blender model.
+
+Generation prefers corrected JSON, then optimized JSON, then the compatibility
+copy. Related artifacts are replaced as a recoverable set, so a failed save or
+Blender run does not overwrite the last good model.
+
+## Docker
+
+Build and run the complete production image:
 
 ```powershell
-python scripts/image_to_glb.py --input assets/input/plan.png --output outputs/plan/building.glb --work-dir outputs/plan --manual-scale 0.01
+docker build -t architecture-walkthrough .
+docker run --rm -p 8001:8000 -v "${PWD}\outputs:/app/outputs" architecture-walkthrough
 ```
 
-`--manual-scale` is metres per pixel and overrides automatic scale solving.
+The container health check calls `/health`. Mount a persistent output directory
+if jobs should survive container replacement.
 
-## Web app
+## Verification
 
-Build the frontend once, then start the server:
+The same core checks run in GitHub Actions:
 
 ```powershell
-cd frontend; npm install; npm run build; cd ..
-.venv\Scripts\uvicorn architecture_walkthrough.ui:create_app --factory --reload
+.\.venv\Scripts\python -m pip check
+.\.venv\Scripts\python -m ruff check src tests scripts
+.\.venv\Scripts\python -m mypy src
+.\.venv\Scripts\python -m pytest
+
+cd frontend
+npm ci
+npm audit --audit-level=high
+npm run typecheck
+npm run build
+
+cd ..\tools\glb
+npm ci
+npm audit --audit-level=high
 ```
 
-Open `http://127.0.0.1:8000`: upload a plan → review/fix walls, openings and
-scale in the correction editor (Gemini sanity warnings appear as markers; the
-two-point scale tool sets a manual reference) → **Generate 3D** (bake mode
-final/draft/none, quality-gate override checkbox) → preview with orbit/zoom
-and GLB download → **Enter walkthrough** for first-person WASD exploration
-with wall collision and an optional guided tour.
+The test suite does not require a Gemini key. Focused Blender integration tests
+skip automatically when Blender is unavailable.
 
-Useful API endpoints:
+## Input guidance
 
-- `POST /jobs` (multipart upload; analysis runs in the background)
-- `GET /jobs/{job_id}` (poll status/quality)
-- `GET /jobs/{job_id}/edit-data`
-- `POST /jobs/{job_id}/corrections` (regenerates rooms from the wall graph)
-- `POST /jobs/{job_id}/validate-corrections`
-- `POST /jobs/{job_id}/generate-model?force=&bake_mode=` (Blender build)
-- `GET /jobs/{job_id}/artifacts/building.glb` and other artifacts
-
-## Outputs
-
-Each analysis job writes:
-
-- `floorplan.raw.json`: raw ROI pixel-space wall detections.
-- `floorplan.optimized.json`: authoritative optimized model for GLB generation.
-- `floorplan.corrected.json`: optional human-edited model.
-- `floorplan.json`: compatibility alias for optimized JSON.
-- `validation_report.json`: quality score, scale constraints, and issues.
-- `analysis_overlay.svg` and `analysis_overlay.png`: source-aligned reconstruction overlays.
-- `building.glb`: generated model when quality gates allow export.
-
-GLB generation prefers `floorplan.corrected.json`, then `floorplan.optimized.json`, then `floorplan.json`.
-
-## Walkthrough Status
-
-The `walkthrough` module already contains path planning, collision checks, camera waypoint helpers, and FFmpeg encoding helpers. Full end-to-end walkthrough rendering is still early and should be treated as the next module to finish after the image-to-GLB and correction loop are stable.
-
-## Repository Layout
-
-```text
-assets/
-  input/       Local floor-plan images, ignored except .gitkeep
-  models/      Optional local model assets, ignored except .gitkeep
-  textures/    Optional material textures, ignored except .gitkeep
-  hdri/        Optional lighting assets, ignored except .gitkeep
-configs/       Runtime configuration
-outputs/       Generated jobs and renders, ignored except .gitkeep
-scripts/       Thin command-line wrappers
-src/           Application package
-tests/         Unit and focused integration tests
-```
-
-Generated artifacts, caches, virtual environments, and local tool downloads are intentionally ignored so the repository stays readable.
-
-## Testing
-
-```powershell
-python -m pytest
-python -m ruff check src tests scripts
-python -m mypy src
-```
-
-Tests do not require Gemini or Blender. Gemini responses should be mocked in tests.
-
-## Notes
-
-Best results come from clean black-and-white floor plans with thick dark walls, clear room labels, dimension text, and minimal skew. Non-Manhattan plans have limited support.
+Clean, high-resolution plans with dark wall lines, readable dimensions, and
+limited skew give the strongest results. Curved, heavily stylized, multi-level,
+or severely occluded drawings may still need manual correction; the overlay and
+quality report are intended to make that uncertainty visible rather than hide
+it.

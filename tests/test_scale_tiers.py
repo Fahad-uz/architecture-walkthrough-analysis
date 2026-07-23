@@ -35,6 +35,16 @@ def _thickness(ppm: float, index: int = 0) -> ScaleConstraint:
     )
 
 
+def _plan_extent(ppm: float) -> ScaleConstraint:
+    return ScaleConstraint(
+        id="extent",
+        source="assumed_residential_long_side",
+        measured_px=(12 * ppm, 12 * ppm),
+        expected_m=(12, 12),
+        tier="plan_extent",
+    )
+
+
 def test_manual_scale_wins_over_everything() -> None:
     result = solve_scale([_room(100)], manual_pixels_per_metre=42.0)
     assert result.pixels_per_metre == 42.0
@@ -64,6 +74,12 @@ def test_door_width_fallback_when_no_dimensions() -> None:
     assert result.source == "door_width"
     assert result.pixels_per_metre == pytest.approx(0.85 * 90 / 0.85)
     assert result.confidence < 0.5
+
+
+def test_plan_extent_beats_unconfirmed_door_gap_population() -> None:
+    result = solve_scale([_plan_extent(80), _door(125, 0), _door(125, 1)])
+    assert result.source == "plan_extent"
+    assert result.pixels_per_metre == pytest.approx(80)
 
 
 def test_wall_thickness_is_last_resort_and_low_confidence() -> None:

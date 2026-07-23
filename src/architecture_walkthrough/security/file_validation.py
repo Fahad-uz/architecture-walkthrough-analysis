@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import imghdr
+import re
 import uuid
 from pathlib import Path
 
@@ -17,6 +17,7 @@ ALLOWED_MIME_BY_EXT = {
     ".jpeg": {"image/jpeg"},
     ".webp": {"image/webp"},
 }
+JOB_ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\Z")
 
 
 class ValidatedImage(BaseModel):
@@ -32,6 +33,14 @@ def safe_job_id() -> str:
     return uuid.uuid4().hex
 
 
+def validate_job_id(job_id: str) -> str:
+    """Accept one canonical ASCII spelling for every on-disk job directory."""
+
+    if not JOB_ID_PATTERN.fullmatch(job_id):
+        raise ValueError("invalid job id")
+    return job_id
+
+
 def ensure_within_directory(base: Path, target: Path) -> Path:
     base_resolved = base.resolve()
     target_resolved = target.resolve()
@@ -43,8 +52,7 @@ def ensure_within_directory(base: Path, target: Path) -> Path:
 def create_job_dir(work_root: Path, job_id: str | None = None) -> Path:
     if job_id is None:
         job_id = safe_job_id()
-    if not job_id.replace("-", "").isalnum():
-        raise ValueError("invalid job id")
+    job_id = validate_job_id(job_id)
     path = ensure_within_directory(work_root, work_root / job_id)
     path.mkdir(parents=True, exist_ok=False)
     return path
@@ -71,9 +79,6 @@ def validate_image_file(path: Path, limits: LimitSettings, declared_mime: str | 
             fmt = (image.format or "").lower()
     except (UnidentifiedImageError, OSError) as exc:
         raise ValueError("image integrity validation failed") from exc
-    detected = imghdr.what(path)
-    if suffix != ".webp" and detected not in {"png", "jpeg"}:
-        raise ValueError("decoded image type is unsupported or suspicious")
     if fmt == "webp":
         mime = "image/webp"
     elif fmt in {"jpeg", "jpg"}:

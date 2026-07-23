@@ -1,6 +1,6 @@
 """Headless Blender generator: floorplan JSON -> lit GLB.
 
-Runs inside Blender (5.x):
+Runs inside Blender 3.4+:
   blender --background --python generate_building.py -- \
       --floorplan plan.json --output building.glb --mode final \
       [--samples N] [--lightmap-px N] [--no-denoise]
@@ -51,6 +51,8 @@ FLOOR_THICKNESS = 0.1
 CEILING_THICKNESS = 0.08
 BASEBOARD_HEIGHT = 0.1
 DOOR_LEAF_OPEN_DEG = 25.0
+MIN_OPENING_WIDTH = 0.18
+MIN_ROOM_FLOOR_COVERAGE = 0.45
 
 # ---------------------------------------------------------------------------
 # Scene reset
@@ -108,13 +110,35 @@ MATERIALS: dict[str, bpy.types.Material] = {}
 
 
 def build_materials() -> None:
-    MATERIALS["wall"] = make_pbr("Wall_Plaster", (0.87, 0.85, 0.80, 1.0), roughness=0.85)
-    MATERIALS["floor"] = make_pbr("Floor_Wood", (0.48, 0.32, 0.19, 1.0), roughness=0.45)
+    style = PLAN.get("style") or {}
+    floor_preset = str(style.get("floor_material") or "wood").lower()
+    if "marble" in floor_preset or "tile" in floor_preset:
+        floor_name = "Floor_Stone"
+        floor_color = (0.72, 0.74, 0.75, 1.0)
+        floor_roughness = 0.32
+    else:
+        floor_name = "Floor_Wood"
+        floor_color = (0.52, 0.34, 0.20, 1.0)
+        floor_roughness = 0.45
+
+    MATERIALS["wall"] = make_pbr("Wall_Plaster", (0.90, 0.89, 0.86, 1.0), roughness=0.82)
+    MATERIALS["floor"] = make_pbr(floor_name, floor_color, roughness=floor_roughness)
     MATERIALS["ceiling"] = make_pbr("Ceiling_Paint", (0.92, 0.92, 0.90, 1.0), roughness=0.9)
     MATERIALS["baseboard"] = make_pbr("Baseboard_Paint", (0.94, 0.93, 0.90, 1.0), roughness=0.5)
     MATERIALS["door"] = make_pbr("Door_Wood", (0.42, 0.26, 0.14, 1.0), roughness=0.4)
     MATERIALS["frame"] = make_pbr("Frame_Paint", (0.93, 0.92, 0.89, 1.0), roughness=0.45)
     MATERIALS["glass"] = make_pbr("Window_Glass", (0.8, 0.9, 0.95, 1.0), roughness=0.05, transmission=1.0)
+    MATERIALS["upholstery"] = make_pbr("Furniture_Upholstery", (0.24, 0.43, 0.55, 1.0), roughness=0.78)
+    MATERIALS["fabric_light"] = make_pbr("Furniture_Fabric_Light", (0.82, 0.78, 0.69, 1.0), roughness=0.86)
+    MATERIALS["wood"] = make_pbr("Furniture_Wood", (0.39, 0.22, 0.11, 1.0), roughness=0.52)
+    MATERIALS["wood_light"] = make_pbr("Furniture_Wood_Light", (0.62, 0.42, 0.23, 1.0), roughness=0.50)
+    MATERIALS["counter"] = make_pbr("Counter_Stone", (0.68, 0.69, 0.66, 1.0), roughness=0.28)
+    MATERIALS["cabinet"] = make_pbr("Cabinet_Wood", (0.34, 0.18, 0.09, 1.0), roughness=0.48)
+    MATERIALS["metal"] = make_pbr("Metal_Dark", (0.12, 0.14, 0.16, 1.0), roughness=0.24, metallic=0.72)
+    MATERIALS["fixture"] = make_pbr("Fixture_Ceramic", (0.92, 0.94, 0.93, 1.0), roughness=0.22)
+    MATERIALS["rug"] = make_pbr("Rug_Fabric", (0.46, 0.20, 0.16, 1.0), roughness=0.92)
+    MATERIALS["plant"] = make_pbr("Plant_Leaves", (0.12, 0.38, 0.17, 1.0), roughness=0.8)
+    MATERIALS["pot"] = make_pbr("Plant_Pot", (0.38, 0.20, 0.12, 1.0), roughness=0.72)
 
 
 # ---------------------------------------------------------------------------
@@ -152,14 +176,26 @@ def wall_vec(wall: dict) -> tuple[Vector, Vector, float, float]:
     return start, end, length, angle
 
 
-def opening_interval(opening: dict) -> tuple[float, float] | None:
+def opening_interval(opening: dict, wall_length: float | None = None) -> tuple[float, float] | None:
     start, end = opening.get("start_offset_m"), opening.get("end_offset_m")
     if start is not None and end is not None:
-        return float(start), float(end)
-    offset, width = opening.get("offset_m"), float(opening.get("width_m") or 0.9)
-    if offset is not None:
-        return float(offset) - width / 2, float(offset) + width / 2
-    return None
+        interval = (float(start), float(end))
+    else:
+        offset, width = opening.get("offset_m"), float(opening.get("width_m") or 0.9)
+        if offset is None:
+            return None
+        interval = (float(offset) - width / 2, float(offset) + width / 2)
+    start_m, end_m = sorted(interval)
+    if wall_length is not None:
+        start_m = max(0.0, start_m)
+        end_m = min(float(wall_length), end_m)
+    if end_m - start_m < MIN_OPENING_WIDTH:
+        print(
+            f"[generate_building] skipping invalid opening {opening.get('id') or '<unnamed>'}: "
+            f"{start_m:.3f}-{end_m:.3f}m"
+        )
+        return None
+    return start_m, end_m
 
 
 def openings_on_wall(wall_id: str) -> tuple[list[dict], list[dict]]:
@@ -183,7 +219,7 @@ def build_wall(wall: dict, index: int) -> bpy.types.Object:
     doors, windows = openings_on_wall(wall.get("id") or "")
     cutters: list[bpy.types.Object] = []
     for opening in doors:
-        interval = opening_interval(opening)
+        interval = opening_interval(opening, length)
         if interval is None:
             continue
         o_start, o_end = interval
@@ -201,7 +237,7 @@ def build_wall(wall: dict, index: int) -> bpy.types.Object:
             )
         )
     for opening in windows:
-        interval = opening_interval(opening)
+        interval = opening_interval(opening, length)
         if interval is None:
             continue
         o_start, o_end = interval
@@ -227,9 +263,14 @@ def build_wall(wall: dict, index: int) -> bpy.types.Object:
         modifier.solver = "EXACT"
         modifier.object = cutter
     if cutters:
-        with bpy.context.temp_override(object=obj, active_object=obj, selected_objects=[obj]):
-            for modifier in list(obj.modifiers):
-                bpy.ops.object.modifier_apply(modifier=modifier.name)
+        # Explicit selection works on both Blender 3.4 (the Debian/Docker
+        # baseline) and current Blender. It avoids relying on newer context
+        # override behavior for operator polling.
+        bpy.ops.object.select_all(action="DESELECT")
+        obj.select_set(True)
+        bpy.context.view_layer.objects.active = obj
+        for modifier in list(obj.modifiers):
+            bpy.ops.object.modifier_apply(modifier=modifier.name)
         for cutter in cutters:
             bpy.data.objects.remove(cutter, do_unlink=True)
     return obj
@@ -261,13 +302,75 @@ def build_polygon_slab(name: str, points: list[dict], z: float, thickness: float
     return link(obj)
 
 
+def polygon_area(points: list[dict]) -> float:
+    if len(points) < 3:
+        return 0.0
+    return abs(
+        sum(
+            float(point["x"]) * float(points[(index + 1) % len(points)]["y"])
+            - float(points[(index + 1) % len(points)]["x"]) * float(point["y"])
+            for index, point in enumerate(points)
+        )
+    ) / 2
+
+
+def room_floor_coverage(rooms: list[dict], walls: list[dict]) -> float:
+    if not rooms or not walls:
+        return 0.0
+    xs = [float(value) for wall in walls for value in (wall["start"]["x"], wall["end"]["x"])]
+    ys = [float(value) for wall in walls for value in (wall["start"]["y"], wall["end"]["y"])]
+    envelope_area = (max(xs) - min(xs)) * (max(ys) - min(ys))
+    if envelope_area <= 0:
+        return 0.0
+    # Valid reconstructed room faces do not overlap. Capping still keeps a
+    # malformed payload from reporting impossible coverage above one.
+    room_area = sum(polygon_area(room.get("points") or []) for room in rooms)
+    return min(1.0, room_area / envelope_area)
+
+
+def build_floors(rooms: list[dict], walls: list[dict]) -> None:
+    slabs = PLAN.get("slabs") or []
+    if slabs:
+        for index, slab in enumerate(slabs):
+            build_polygon_slab(
+                f"Floor_{index:03d}",
+                slab.get("points") or [],
+                0.0,
+                float(slab.get("thickness_m") or FLOOR_THICKNESS),
+                MATERIALS["floor"],
+            )
+        return
+    if rooms and room_floor_coverage(rooms, walls) >= MIN_ROOM_FLOOR_COVERAGE:
+        for index, room in enumerate(rooms):
+            build_polygon_slab(
+                f"Floor_{index:03d}",
+                room.get("points") or [],
+                0.0,
+                FLOOR_THICKNESS,
+                MATERIALS["floor"],
+            )
+        return
+    if not walls:
+        return
+    xs = [float(value) for wall in walls for value in (wall["start"]["x"], wall["end"]["x"])]
+    ys = [float(value) for wall in walls for value in (wall["start"]["y"], wall["end"]["y"])]
+    pad = 0.3
+    envelope = [
+        {"x": min(xs) - pad, "y": min(ys) - pad},
+        {"x": max(xs) + pad, "y": min(ys) - pad},
+        {"x": max(xs) + pad, "y": max(ys) + pad},
+        {"x": min(xs) - pad, "y": max(ys) + pad},
+    ]
+    build_polygon_slab("Floor_000", envelope, 0.0, FLOOR_THICKNESS, MATERIALS["floor"])
+
+
 def build_baseboards(wall: dict, index: int) -> list[bpy.types.Object]:
     start, _end, length, angle = wall_vec(wall)
     thickness = float(wall.get("thickness_m") or 0.12) * 1.15
     doors, _windows = openings_on_wall(wall.get("id") or "")
     blocked: list[tuple[float, float]] = []
     for door in doors:
-        interval = opening_interval(door)
+        interval = opening_interval(door, length)
         if interval:
             blocked.append(interval)
     blocked.sort()
@@ -299,10 +402,12 @@ def build_baseboards(wall: dict, index: int) -> list[bpy.types.Object]:
 
 def build_door_assets(door: dict, walls_by_id: dict, index: int) -> None:
     wall = walls_by_id.get(door.get("wall_id"))
-    interval = opening_interval(door)
-    if wall is None or interval is None:
+    if wall is None:
         return
-    start, _end, _length, angle = wall_vec(wall)
+    start, _end, length, angle = wall_vec(wall)
+    interval = opening_interval(door, length)
+    if interval is None:
+        return
     o_start, o_end = interval
     width = o_end - o_start
     height = float(door.get("height_m") or 2.1)
@@ -345,10 +450,12 @@ def build_door_assets(door: dict, walls_by_id: dict, index: int) -> None:
 
 def build_window_assets(window: dict, walls_by_id: dict, index: int) -> None:
     wall = walls_by_id.get(window.get("wall_id"))
-    interval = opening_interval(window)
-    if wall is None or interval is None:
+    if wall is None:
         return
-    start, _end, _length, angle = wall_vec(wall)
+    start, _end, length, angle = wall_vec(wall)
+    interval = opening_interval(window, length)
+    if interval is None:
+        return
     o_start, o_end = interval
     width = o_end - o_start
     height = float(window.get("height_m") or 1.2)
@@ -388,6 +495,235 @@ def build_window_assets(window: dict, walls_by_id: dict, index: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Procedural furniture and architectural elements
+
+
+def safe_name(value: object) -> str:
+    cleaned = "".join(char if str(char).isalnum() else "_" for char in str(value or "unknown"))
+    return cleaned.strip("_") or "unknown"
+
+
+def oriented_xy(item: dict, local_x: float, local_y: float) -> tuple[float, float]:
+    center = item.get("center") or {}
+    angle = math.radians(float(item.get("rotation_deg") or 0.0))
+    return (
+        float(center.get("x") or 0.0) + local_x * math.cos(angle) - local_y * math.sin(angle),
+        float(center.get("y") or 0.0) + local_x * math.sin(angle) + local_y * math.cos(angle),
+    )
+
+
+def asset_box(
+    prefix: str,
+    item: dict,
+    part: str,
+    local_x: float,
+    local_y: float,
+    width: float,
+    depth: float,
+    height: float,
+    z_center: float,
+    material: str,
+) -> bpy.types.Object:
+    x, y = oriented_xy(item, local_x, local_y)
+    obj = new_box(
+        f"{prefix}_{safe_name(part)}",
+        Vector((max(0.025, width), max(0.025, depth), max(0.025, height))),
+        Vector((x, y, z_center)),
+        math.radians(float(item.get("rotation_deg") or 0.0)),
+        MATERIALS[material],
+    )
+    bevel = obj.modifiers.new("Soft_Edges", "BEVEL")
+    bevel.width = min(0.025, max(0.004, min(width, depth, height) * 0.08))
+    bevel.segments = 2
+    return obj
+
+
+def build_table(item: dict, prefix: str, width: float, depth: float, coffee: bool = False) -> None:
+    top_z = 0.42 if coffee else 0.76
+    asset_box(prefix, item, "Top", 0, 0, width, depth, 0.08, top_z, "wood_light")
+    leg_height = top_z - 0.08
+    leg_width = max(0.035, min(width, depth) * 0.08)
+    for x_sign in (-1.0, 1.0):
+        for y_sign in (-1.0, 1.0):
+            asset_box(
+                prefix,
+                item,
+                f"Leg_{int(x_sign)}_{int(y_sign)}",
+                x_sign * width * 0.38,
+                y_sign * depth * 0.36,
+                leg_width,
+                leg_width,
+                leg_height,
+                leg_height / 2,
+                "wood",
+            )
+
+
+def asset_family(category: str) -> str:
+    """Resolve specific semantic categories before broad room-like tokens."""
+    normalized = category.lower().replace("-", "_").replace(" ", "_")
+    tokens = {token for token in normalized.split("_") if token}
+    if "sink" in tokens or normalized.endswith("sink"):
+        return "sink"
+    if {"stove", "stovetop", "hob", "cooktop"} & tokens:
+        return "stove"
+    if (
+        "table" in tokens
+        or normalized.endswith("table")
+        or "nightstand" in tokens
+        or "bedside" in tokens
+    ):
+        return "table"
+    if "chair" in tokens:
+        return "chair"
+    if "bed" in tokens or normalized.startswith("bed_") or normalized.endswith("_bed"):
+        return "bed"
+    if "sofa" in tokens or "couch" in tokens:
+        return "sofa"
+    if {"wardrobe", "cabinet", "shelf", "closet"} & tokens:
+        return "wardrobe"
+    if "counter" in tokens or "kitchen" in tokens:
+        return "counter"
+    if {"bath", "bathtub", "toilet", "fixture"} & tokens or "bath" in normalized:
+        return "fixture"
+    if "rug" in tokens or "carpet" in tokens:
+        return "rug"
+    if "tv" in tokens or "television" in tokens:
+        return "tv"
+    if "plant" in tokens:
+        return "plant"
+    return "generic"
+
+
+def build_procedural_asset(item: dict, prefix: str, category: str) -> None:
+    category = category.lower()
+    family = asset_family(category)
+    width = max(0.20, float(item.get("width_m") or 0.60))
+    depth = max(0.20, float(item.get("depth_m") or 0.60))
+
+    if family == "bed":
+        width, depth = max(width, 0.80), max(depth, 1.35)
+        asset_box(prefix, item, "Frame", 0, 0, width, depth, 0.22, 0.16, "wood")
+        asset_box(prefix, item, "Mattress", 0, -depth * 0.03, width * 0.94, depth * 0.88, 0.22, 0.36, "fabric_light")
+        asset_box(prefix, item, "Headboard", 0, depth * 0.47, width, 0.09, 0.82, 0.43, "wood")
+        for side in (-1.0, 1.0):
+            asset_box(prefix, item, f"Pillow_{int(side)}", side * width * 0.23, depth * 0.31, width * 0.36, depth * 0.17, 0.10, 0.54, "fabric_light")
+        return
+
+    if family == "sofa":
+        width, depth = max(width, 1.15), max(depth, 0.62)
+        asset_box(prefix, item, "Seat", 0, 0, width, depth, 0.28, 0.28, "upholstery")
+        asset_box(prefix, item, "Back", 0, depth * 0.43, width, depth * 0.14, 0.78, 0.52, "upholstery")
+        for side in (-1.0, 1.0):
+            asset_box(prefix, item, f"Arm_{int(side)}", side * width * 0.47, 0, width * 0.10, depth, 0.54, 0.36, "upholstery")
+        return
+
+    if family == "chair":
+        width, depth = max(width, 0.42), max(depth, 0.42)
+        asset_box(prefix, item, "Seat", 0, 0, width, depth, 0.10, 0.45, "upholstery")
+        asset_box(prefix, item, "Back", 0, depth * 0.44, width, 0.07, 0.52, 0.70, "upholstery")
+        for x_sign in (-1.0, 1.0):
+            for y_sign in (-1.0, 1.0):
+                asset_box(prefix, item, f"Leg_{int(x_sign)}_{int(y_sign)}", x_sign * width * 0.40, y_sign * depth * 0.38, 0.04, 0.04, 0.42, 0.21, "wood")
+        return
+
+    if family == "table":
+        coffee = "coffee" in category or "side" in category
+        width = max(width, 0.55 if coffee else 0.90)
+        depth = max(depth, 0.45 if coffee else 0.68)
+        build_table(item, prefix, width, depth, coffee=coffee)
+        return
+
+    if family == "wardrobe":
+        width, depth = max(width, 0.70), max(depth, 0.38)
+        asset_box(prefix, item, "Carcass", 0, 0, width, depth, 1.85, 0.925, "cabinet")
+        asset_box(prefix, item, "Door_Left", -width * 0.24, -depth * 0.51, width * 0.46, 0.035, 1.66, 0.93, "wood_light")
+        asset_box(prefix, item, "Door_Right", width * 0.24, -depth * 0.51, width * 0.46, 0.035, 1.66, 0.93, "wood_light")
+        return
+
+    if family == "stove":
+        width, depth = max(width, 0.48), max(depth, 0.44)
+        asset_box(prefix, item, "Cooktop", 0, 0, width, depth, 0.06, 0.92, "metal")
+        for x_sign in (-1.0, 1.0):
+            for y_sign in (-1.0, 1.0):
+                asset_box(prefix, item, f"Burner_{int(x_sign)}_{int(y_sign)}", x_sign * width * 0.23, y_sign * depth * 0.23, width * 0.22, depth * 0.22, 0.018, 0.96, "fixture")
+        return
+
+    if family == "sink":
+        width, depth = max(width, 0.50), max(depth, 0.42)
+        asset_box(prefix, item, "Rim", 0, 0, width, depth, 0.08, 0.90, "fixture")
+        asset_box(prefix, item, "Basin", 0, 0, width * 0.72, depth * 0.64, 0.12, 0.84, "metal")
+        return
+
+    if family == "counter":
+        width, depth = max(width, 0.60), max(depth, 0.52)
+        asset_box(prefix, item, "Cabinet", 0, 0, width, depth, 0.86, 0.43, "cabinet")
+        asset_box(prefix, item, "Worktop", 0, 0, width * 1.04, depth * 1.06, 0.07, 0.895, "counter")
+        return
+
+    if family == "fixture":
+        width, depth = max(width, 0.58), max(depth, 1.10 if "bath" in category else 0.62)
+        asset_box(prefix, item, "Body", 0, 0, width, depth, 0.38, 0.22, "fixture")
+        asset_box(prefix, item, "Inset", 0, -depth * 0.05, width * 0.68, depth * 0.67, 0.08, 0.43, "metal")
+        return
+
+    if family == "rug":
+        asset_box(prefix, item, "Rug", 0, 0, width, depth, 0.025, 0.017, "rug")
+        return
+
+    if family == "tv":
+        width, depth = max(width, 0.75), max(depth, 0.25)
+        asset_box(prefix, item, "Console", 0, 0, width, depth, 0.42, 0.21, "wood")
+        asset_box(prefix, item, "Screen", 0, 0, width * 0.78, 0.035, 0.78, 0.92, "metal")
+        return
+
+    if family == "plant":
+        asset_box(prefix, item, "Pot", 0, 0, width * 0.55, depth * 0.55, 0.35, 0.175, "pot")
+        asset_box(prefix, item, "Leaves", 0, 0, width, depth, 0.70, 0.72, "plant")
+        return
+
+    asset_box(prefix, item, "Body", 0, 0, width, depth, 0.55, 0.275, "wood_light")
+
+
+def build_furniture(item: dict, index: int) -> None:
+    category = safe_name(item.get("category") or "unknown")
+    build_procedural_asset(item, f"Furniture_{index:03d}_{category}", category)
+
+
+def build_special_element(element: dict, index: int) -> None:
+    kind = safe_name(element.get("kind") or "unknown")
+    prefix = f"Special_{index:03d}_{kind}"
+    polygon = element.get("polygon") or []
+    if kind in {"balcony", "terrace"} and len(polygon) >= 3:
+        build_polygon_slab(prefix, polygon, 0.02, 0.08, MATERIALS["counter"])
+        return
+    if kind in {"stair", "stairs", "staircase"}:
+        item = dict(element)
+        item.setdefault("center", {"x": 0.0, "y": 0.0})
+        width = max(0.70, float(item.get("width_m") or 1.0))
+        depth = max(1.20, float(item.get("depth_m") or 2.0))
+        steps = max(4, min(14, int((item.get("metadata") or {}).get("step_count") or 10)))
+        for step in range(steps):
+            step_depth = depth / steps
+            y = -depth / 2 + step_depth * (step + 0.5)
+            height = 0.16 * (step + 1)
+            asset_box(prefix, item, f"Step_{step:02d}", 0, y, width, step_depth * 0.94, height, height / 2, "counter")
+        return
+    if kind == "lift":
+        item = dict(element)
+        item.setdefault("center", {"x": 0.0, "y": 0.0})
+        width = max(1.0, float(item.get("width_m") or 1.4))
+        depth = max(1.0, float(item.get("depth_m") or 1.4))
+        asset_box(prefix, item, "Floor", 0, 0, width, depth, 0.08, 0.04, "metal")
+        asset_box(prefix, item, "Rear", 0, depth * 0.49, width, 0.08, 2.2, 1.1, "metal")
+        for side in (-1.0, 1.0):
+            asset_box(prefix, item, f"Side_{int(side)}", side * width * 0.48, 0, 0.08, depth, 2.2, 1.1, "metal")
+        return
+    if kind in {"kitchen_counter", "counter", "shelf"} and element.get("center"):
+        build_procedural_asset(element, prefix, kind)
+
+
+# ---------------------------------------------------------------------------
 # Lighting
 
 
@@ -408,14 +744,14 @@ def build_lighting() -> None:
         sky.sun_elevation = math.radians(40)
         sky.sun_rotation = math.radians(135)
     background = nodes.new("ShaderNodeBackground")
-    background.inputs["Strength"].default_value = 0.6
+    background.inputs["Strength"].default_value = 0.9
     output = nodes.new("ShaderNodeOutputWorld")
     links.new(sky.outputs["Color"], background.inputs["Color"])
     links.new(background.outputs["Background"], output.inputs["Surface"])
 
     sun_data = bpy.data.lights.new("Sun", "SUN")
-    sun_data.energy = 3.5
-    sun_data.angle = math.radians(1.0)
+    sun_data.energy = 2.5
+    sun_data.angle = math.radians(2.0)
     sun = bpy.data.objects.new("Sun", sun_data)
     sun.rotation_euler = (math.radians(50), 0.0, math.radians(135))
     link(sun)
@@ -430,12 +766,38 @@ def build_lighting() -> None:
         ys = [p["y"] for p in points]
         area = abs((max(xs) - min(xs)) * (max(ys) - min(ys)))
         light_data = bpy.data.lights.new(f"RoomLight_{index:03d}", "POINT")
-        light_data.energy = max(25.0, min(120.0, area * 8.0))
-        light_data.shadow_soft_size = 0.2
+        # Blender point-light power is measured in watts. The old 25-120 W
+        # range left enclosed rooms and their baked floors almost black.
+        light_data.energy = max(300.0, min(1200.0, area * 55.0))
+        light_data.color = (1.0, 0.82, 0.66)
+        light_data.shadow_soft_size = 0.35
         light = bpy.data.objects.new(f"RoomLight_{index:03d}", light_data)
         height = float(PLAN.get("walls", [{}])[0].get("height_m") or WALL_HEIGHT_DEFAULT)
         light.location = (cx, cy, height - 0.35)
         link(light)
+
+
+def tune_realtime_lights_for_export() -> None:
+    """Keep portable glTF lighting useful without exporting bake-level power.
+
+    The room lights need substantial power while Cycles bakes enclosed rooms,
+    but those same values can clip badly in realtime viewers.  Baked modes also
+    retain procedural furniture and door leaves as ordinary PBR materials, so
+    omitting lights from the GLB leaves those semantic assets almost black.
+    """
+    for obj in bpy.context.scene.objects:
+        if obj.type != "LIGHT":
+            continue
+        light = obj.data
+        if light.type == "SUN":
+            light.energy = min(float(light.energy), 1.5)
+            continue
+        if light.type != "POINT":
+            continue
+        if MODE == "none":
+            light.energy = max(18.0, min(55.0, float(light.energy) * 0.05))
+        else:
+            light.energy = max(12.0, min(35.0, float(light.energy) * 0.035))
 
 
 # ---------------------------------------------------------------------------
@@ -509,6 +871,7 @@ def rewire_to_baked(obj: bpy.types.Object, lightmap: bpy.types.Image) -> None:
         uv_node = nodes.new("ShaderNodeUVMap")
         uv_node.uv_map = "LightmapUV"
         emission = nodes.new("ShaderNodeEmission")
+        emission.inputs["Strength"].default_value = 1.15
         output = nodes.new("ShaderNodeOutputMaterial")
         links.new(uv_node.outputs["UV"], image_node.inputs["Vector"])
         links.new(image_node.outputs["Color"], emission.inputs["Color"])
@@ -521,7 +884,9 @@ def run_bake() -> None:
         (["Wall_"], "Walls_Joined", LIGHTMAP_PX),
         (["Floor_"], "Floors_Joined", LIGHTMAP_PX),
         (["Ceiling_"], "Ceilings_Joined", max(512, LIGHTMAP_PX // 2)),
-        (["Baseboard_", "DoorJamb_", "DoorHeader_", "DoorLeaf_", "WindowFrame_", "WindowJamb_"], "Trim_Joined", max(512, LIGHTMAP_PX // 2)),
+        # Door leaves stay separate so the walkthrough can exclude them from
+        # its static collision mesh by their stable DoorLeaf_* names.
+        (["Baseboard_", "DoorJamb_", "DoorHeader_", "WindowFrame_", "WindowJamb_"], "Trim_Joined", max(512, LIGHTMAP_PX // 2)),
     ]
     for prefixes, joined_name, resolution in groups:
         joined = join_objects(prefixes, joined_name)
@@ -550,7 +915,7 @@ def main() -> None:
 
     started = _time.time()
     reset_scene()
-    device = enable_gpu_if_available()
+    device = enable_gpu_if_available() if MODE != "none" else "n/a"
     print(f"[generate_building] mode={MODE} samples={SAMPLES} lightmap={LIGHTMAP_PX} device={device}")
     build_materials()
 
@@ -561,34 +926,47 @@ def main() -> None:
         build_baseboards(wall, index)
 
     rooms = PLAN.get("rooms", [])
-    if rooms:
+    build_floors(rooms, walls)
+    ceiling = PLAN.get("ceiling") or {}
+    if rooms and ceiling.get("enabled", False):
+        ceiling_height = float(ceiling.get("height_m") or WALL_HEIGHT_DEFAULT)
+        ceiling_thickness = float(ceiling.get("thickness_m") or CEILING_THICKNESS)
         for index, room in enumerate(rooms):
-            build_polygon_slab(f"Floor_{index:03d}", room.get("points", []), 0.0, FLOOR_THICKNESS, MATERIALS["floor"])
-            height = float(walls[0].get("height_m") or WALL_HEIGHT_DEFAULT) if walls else WALL_HEIGHT_DEFAULT
             build_polygon_slab(
-                f"Ceiling_{index:03d}", room.get("points", []), height + CEILING_THICKNESS, CEILING_THICKNESS, MATERIALS["ceiling"]
+                f"Ceiling_{index:03d}",
+                room.get("points", []),
+                ceiling_height + ceiling_thickness,
+                ceiling_thickness,
+                MATERIALS["ceiling"],
             )
-    elif walls:
-        xs = [v for w in walls for v in (w["start"]["x"], w["end"]["x"])]
-        ys = [v for w in walls for v in (w["start"]["y"], w["end"]["y"])]
-        pad = 0.3
-        rect = [
-            {"x": min(xs) - pad, "y": min(ys) - pad},
-            {"x": max(xs) + pad, "y": min(ys) - pad},
-            {"x": max(xs) + pad, "y": max(ys) + pad},
-            {"x": min(xs) - pad, "y": max(ys) + pad},
-        ]
-        build_polygon_slab("Floor_000", rect, 0.0, FLOOR_THICKNESS, MATERIALS["floor"])
+    for index, balcony in enumerate(PLAN.get("balconies") or []):
+        build_polygon_slab(
+            f"Balcony_{index:03d}",
+            balcony.get("points") or [],
+            0.02,
+            0.08,
+            MATERIALS["counter"],
+        )
 
     for index, door in enumerate(PLAN.get("doors", [])):
         build_door_assets(door, walls_by_id, index)
     for index, window in enumerate(PLAN.get("windows", [])):
         build_window_assets(window, walls_by_id, index)
 
+    for index, item in enumerate(PLAN.get("furniture", [])):
+        build_furniture(item, index)
+    for index, element in enumerate(PLAN.get("special_elements", [])):
+        build_special_element(element, index)
+
     build_lighting()
 
     if MODE != "none":
         run_bake()
+
+    # Export controlled lights in every mode.  Static architectural groups may
+    # be emissive lightmaps in draft/final, but semantic assets are deliberately
+    # kept as separate PBR meshes for interaction and still require illumination.
+    tune_realtime_lights_for_export()
 
     output = Path(ARGS.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -596,7 +974,7 @@ def main() -> None:
         "filepath": str(output),
         "export_format": "GLB",
         "export_apply": True,
-        "export_lights": MODE == "none",
+        "export_lights": True,
     }
     bpy.ops.export_scene.gltf(**export_kwargs)
     # Build report: makes the preset that actually ran visible to the app/UI,

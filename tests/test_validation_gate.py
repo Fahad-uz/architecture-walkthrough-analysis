@@ -5,7 +5,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from architecture_walkthrough.config import AppConfig
+import architecture_walkthrough.pipeline as pipeline
+from architecture_walkthrough.config import AppConfig, ExportSettings, OptimizeSettings
 from architecture_walkthrough.geometry.models import (
     DoorOpening,
     FloorPlanModel,
@@ -140,8 +141,17 @@ def test_crossing_walls_without_junction_reported() -> None:
     assert issues and issues[0].code == "wall_crossing_without_junction"
 
 
+def test_zero_length_wall_is_a_render_blocking_error() -> None:
+    model = _square_model(
+        walls=[WallSegment(id="collapsed", start=Point2D(x=1, y=1), end=Point2D(x=1, y=1))],
+        rooms=[],
+    )
+    issues = validate_reconstruction(model)
+    assert any(issue.code == "zero_length_wall" and issue.severity == "error" for issue in issues)
+
+
 def test_export_gate_blocks_low_quality_unless_forced(tmp_path: Path) -> None:
-    model = _square_model()
+    model = _square_model(pixels_per_metre=None, metadata={})
     model = model.model_copy(
         update={"reconstruction": model.reconstruction.model_copy(update={"quality_score": 0.2, "quality_state": "failed"})}
     )
@@ -163,6 +173,62 @@ def test_export_gate_allows_good_quality(tmp_path: Path) -> None:
     model.save_json(plan)
     output = build_model(plan, tmp_path / "out.glb", AppConfig())
     assert output.exists()
+
+
+def test_enabled_post_export_validation_rejects_invalid_glb(tmp_path: Path, monkeypatch) -> None:
+    model = _square_model()
+    plan = tmp_path / "floorplan.json"
+    model.save_json(plan)
+    monkeypatch.setattr(
+        pipeline,
+        "validate_glb",
+        lambda _path: {"valid": False, "issues": ["malformed scene"]},
+    )
+
+    with pytest.raises(RuntimeError, match="malformed scene"):
+        build_model(plan, tmp_path / "out.glb", AppConfig(), force=True)
+
+
+def test_glb_browser_delivery_limit_is_enforced(tmp_path: Path, monkeypatch) -> None:
+    model = _square_model()
+    plan = tmp_path / "floorplan.json"
+    model.save_json(plan)
+
+    def export_oversized(_model, output_glb, *_args, **_kwargs):
+        output_glb.write_bytes(b"x" * (1024 * 1024 + 1))
+        return output_glb
+
+    monkeypatch.setattr(pipeline, "export_floorplan_glb", export_oversized)
+    config = AppConfig(
+        export=ExportSettings(validation_enabled=False),
+        optimize=OptimizeSettings(enabled=False, target_max_mb=1),
+    )
+
+    with pytest.raises(RuntimeError, match="browser-delivery limit"):
+        build_model(plan, tmp_path / "out.glb", config, force=True)
+
+
+def test_export_gate_blocks_structural_errors_even_when_score_is_high(tmp_path: Path) -> None:
+    model = _square_model(
+        doors=[
+            DoorOpening(
+                id="bad-door",
+                wall_id="w0",
+                center=Point2D(x=4.5, y=0),
+                start_offset_m=4.1,
+                end_offset_m=4.9,
+                width_m=0.8,
+            )
+        ]
+    )
+    model = model.model_copy(
+        update={"reconstruction": model.reconstruction.model_copy(update={"quality_score": 0.9, "quality_state": "high"})}
+    )
+    plan = tmp_path / "floorplan.json"
+    model.save_json(plan)
+
+    with pytest.raises(ValueError, match="unresolved validation errors"):
+        build_model(plan, tmp_path / "out.glb", AppConfig())
 
 
 def test_fixture_two_bedroom_flat_passes_gate(tmp_path: Path) -> None:

@@ -12,7 +12,8 @@ TIER_ORDER: tuple[str, ...] = (
     "manual",
     "dimension_annotation",  # dimension text associated with detected geometry
     "room_dimension",  # room-size labels matched to room polygons
-    "door_width",  # standard door width from a detected opening gap
+    "plan_extent",  # last-resort typical residential plan span
+    "door_width",  # unconfirmed repeated gaps, used only without plan extent
     "wall_thickness",  # assumed thickness - always low confidence
 )
 
@@ -22,6 +23,7 @@ TIER_BASE_CONFIDENCE: dict[str, tuple[float, float]] = {
     "dimension_annotation": (0.65, 0.9),
     "room_dimension": (0.6, 0.85),
     "door_width": (0.3, 0.45),
+    "plan_extent": (0.18, 0.25),
     "wall_thickness": (0.15, 0.2),
 }
 

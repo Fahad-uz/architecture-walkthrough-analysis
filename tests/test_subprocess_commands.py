@@ -7,7 +7,15 @@ from architecture_walkthrough.walkthrough.render_video import ffmpeg_frames_to_m
 
 
 def test_blender_command_uses_argument_list() -> None:
-    assert blender_background_command("blender", Path("script.py")) == ["blender", "--background", "--python", "script.py"]
+    command = blender_background_command("blender", Path("script.py"))
+    assert command == [
+        "blender",
+        "--background",
+        "--python-exit-code",
+        "1",
+        "--python",
+        "script.py",
+    ]
 
 
 def test_ffmpeg_command_uses_argument_list() -> None:

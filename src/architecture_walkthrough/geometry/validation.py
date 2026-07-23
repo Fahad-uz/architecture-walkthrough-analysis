@@ -9,7 +9,7 @@ from shapely.geometry import LineString, Polygon
 
 from architecture_walkthrough.geometry.wall_graph import enumerate_faces
 
-from .models import FloorPlanModel, ValidationIssue
+from .models import DoorOpening, FloorPlanModel, ValidationIssue, WindowOpening
 
 # Validation is a gate, not a cosmetic score. Every component is scored from
 # actual evidence and consistency, and MISSING evidence lowers confidence --
@@ -169,7 +169,8 @@ def opening_interval_issues(model: FloorPlanModel) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     walls = {wall.id: wall for wall in model.walls if wall.id}
     by_wall: dict[str, list[tuple[float, float, str | None]]] = {}
-    for opening in [*model.doors, *model.windows]:
+    openings: list[DoorOpening | WindowOpening] = [*model.doors, *model.windows]
+    for opening in openings:
         if opening.wall_id not in walls:
             issues.append(
                 ValidationIssue(
@@ -231,8 +232,9 @@ def opening_presence_score(model: FloorPlanModel) -> float:
     if total == 0:
         return 0.2 if len(model.rooms) >= 2 else UNKNOWN_COMPONENT_SCORE
     valid_wall_ids = {wall.id for wall in model.walls if wall.id}
-    attached = sum(1 for o in [*model.doors, *model.windows] if o.wall_id in valid_wall_ids)
-    low_conf = sum(1 for o in [*model.doors, *model.windows] if o.confidence < 0.45)
+    openings: list[DoorOpening | WindowOpening] = [*model.doors, *model.windows]
+    attached = sum(1 for opening in openings if opening.wall_id in valid_wall_ids)
+    low_conf = sum(1 for opening in openings if opening.confidence < 0.45)
     attachment = attached / total
     certainty = 1.0 - 0.5 * (low_conf / total)
     return max(0.0, min(1.0, attachment * certainty))
@@ -255,6 +257,15 @@ def validate_reconstruction(model: FloorPlanModel, evidence: SourceEvidence | No
             )
         ]
     issues: list[ValidationIssue] = []
+    for wall in model.walls:
+        if wall.start.distance_to(wall.end) <= 1e-6:
+            issues.append(
+                ValidationIssue(
+                    code="zero_length_wall",
+                    severity="error",
+                    message=f"wall {wall.id or '<unnamed>'} has zero length and cannot be rendered",
+                )
+            )
     issues.extend(room_geometry_issues(model))
     issues.extend(opening_interval_issues(model))
     issues.extend(wall_crossings_without_junction(model))

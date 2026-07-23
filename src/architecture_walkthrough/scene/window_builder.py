@@ -10,7 +10,10 @@ from architecture_walkthrough.scene.wall_builder import point_offset_on_wall
 
 
 def _paint(mesh: trimesh.Trimesh, color: tuple[int, int, int, int]) -> trimesh.Trimesh:
-    mesh.visual.vertex_colors = np.tile(np.array(color, dtype=np.uint8), (len(mesh.vertices), 1))
+    mesh.visual = trimesh.visual.ColorVisuals(
+        mesh=mesh,
+        vertex_colors=np.tile(np.array(color, dtype=np.uint8), (len(mesh.vertices), 1)),
+    )
     return mesh
 
 
