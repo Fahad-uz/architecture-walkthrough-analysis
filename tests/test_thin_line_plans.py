@@ -67,3 +67,17 @@ def test_roi_covers_full_thin_line_plan() -> None:
     assert rect.x <= 85 and rect.y <= 85
     assert rect.x + rect.width >= 695
     assert rect.y + rect.height >= 495
+
+
+def test_roi_keeps_detached_narrow_stair_or_lift_region() -> None:
+    image = np.full((600, 800, 3), 255, dtype=np.uint8)
+    grey = (120, 120, 120)
+    cv2.rectangle(image, (220, 80), (720, 520), grey, 2)
+    # A separated stair/lift edge is too narrow to meet the old bounding-box
+    # area threshold but is long enough to be meaningful plan structure.
+    cv2.line(image, (70, 180), (70, 430), grey, 3)
+
+    result = detect_plan_roi(image, padding_ratio=0.0)
+
+    assert result.roi.rect.x <= 70
+    assert result.roi.rect.x + result.roi.rect.width >= 720

@@ -17,26 +17,50 @@ def _merge_collinear(walls: list[WallSegment], coord_tol: float, gap_tol: float,
     merged: list[WallSegment] = []
     for horizontal in (True, False):
         oriented = [wall for wall in normalized if is_horizontal(wall) == horizontal]
-        if horizontal:
-            oriented.sort(key=lambda wall: (round(wall.start.y / coord_tol), wall.start.x))
-        else:
-            oriented.sort(key=lambda wall: (round(wall.start.x / coord_tol), wall.start.y))
-        groups: list[list[WallSegment]] = []
-        for wall in oriented:
-            if not groups:
-                groups.append([wall])
-                continue
-            prev = groups[-1][-1]
-            if horizontal:
-                same = abs(wall.start.y - prev.start.y) <= coord_tol
-                touches = wall.start.x <= prev.end.x + gap_tol
-            else:
-                same = abs(wall.start.x - prev.start.x) <= coord_tol
-                touches = wall.start.y <= prev.end.y + gap_tol
-            if same and touches:
-                groups[-1].append(wall)
-            else:
-                groups.append([wall])
+
+        def line_coordinate(wall: WallSegment) -> float:
+            return wall.start.y if horizontal else wall.start.x
+
+        def span(wall: WallSegment) -> tuple[float, float]:
+            values = (wall.start.x, wall.end.x) if horizontal else (wall.start.y, wall.end.y)
+            return min(values), max(values)
+
+        def interval_gap(first: WallSegment, second: WallSegment) -> float:
+            first_start, first_end = span(first)
+            second_start, second_end = span(second)
+            return max(0.0, max(first_start, second_start) - min(first_end, second_end))
+
+        oriented.sort(key=lambda wall: (line_coordinate(wall), span(wall)[0], span(wall)[1]))
+        parents = list(range(len(oriented)))
+
+        def find(index: int) -> int:
+            while parents[index] != index:
+                parents[index] = parents[parents[index]]
+                index = parents[index]
+            return index
+
+        def union(first: int, second: int) -> None:
+            root_first = find(first)
+            root_second = find(second)
+            if root_first != root_second:
+                parents[root_second] = root_first
+
+        for first_index, first in enumerate(oriented):
+            for second_index in range(first_index + 1, len(oriented)):
+                second = oriented[second_index]
+                coordinate_delta = line_coordinate(second) - line_coordinate(first)
+                if coordinate_delta > coord_tol:
+                    break
+                if interval_gap(first, second) <= gap_tol:
+                    union(first_index, second_index)
+
+        grouped: dict[int, list[WallSegment]] = {}
+        for index, wall in enumerate(oriented):
+            grouped.setdefault(find(index), []).append(wall)
+        groups = sorted(
+            grouped.values(),
+            key=lambda group: (min(line_coordinate(wall) for wall in group), min(span(wall)[0] for wall in group)),
+        )
         for group in groups:
             base = group[0]
             confidence = sum(wall.confidence for wall in group) / len(group)

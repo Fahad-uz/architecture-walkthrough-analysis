@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import numpy as np
-from shapely.geometry import Polygon
-from shapely.ops import triangulate
+from shapely.geometry import Polygon  # type: ignore[import-untyped]
+from shapely.ops import triangulate  # type: ignore[import-untyped]
 import trimesh
 
 from architecture_walkthrough.geometry.models import FloorPlanModel, Point2D, RoomPolygon
 
 
 def _paint(mesh: trimesh.Trimesh, color: tuple[int, int, int, int]) -> trimesh.Trimesh:
-    mesh.visual.vertex_colors = np.tile(np.array(color, dtype=np.uint8), (len(mesh.vertices), 1))
+    mesh.visual = trimesh.visual.ColorVisuals(
+        mesh=mesh,
+        vertex_colors=np.tile(np.array(color, dtype=np.uint8), (len(mesh.vertices), 1)),
+    )
     return mesh
 
 

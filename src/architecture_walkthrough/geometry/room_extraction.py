@@ -36,30 +36,62 @@ def _to_room_polygon(
     coords = list(polygon.exterior.coords)[:-1]
     points = [Point2D(x=x, y=y) for x, y in coords]
     centroid = polygon.centroid
-    best_label: OCRText | None = None
-    best_distance = float("inf")
+    # A room commonly contains two independent pieces of text (for example
+    # ``BEDROOM`` and ``300X290``).  Treating the first label encountered as
+    # both the name and the dimension made the result depend on list order and
+    # silently threw away the dimension that the scale solver needs.
+    nearby: list[tuple[OCRText, bool, float]] = []
+    max_distance = max(1.5, polygon.length * 0.12)
     for label in labels:
         label_point = _label_point(label, pixels_per_metre, image_height_px)
-        if polygon.contains(label_point):
-            best_label = label
-            best_distance = 0.0
-            break
+        inside = polygon.covers(label_point)
         distance = centroid.distance(label_point)
-        if distance < best_distance:
-            best_distance = distance
-            best_label = label
+        if inside or distance <= max_distance:
+            nearby.append((label, inside, distance))
+
+    def label_rank(candidate: tuple[OCRText, bool, float]) -> tuple[bool, float, float]:
+        label, inside, distance = candidate
+        return (not inside, distance, -label.confidence)
+
+    nearby.sort(key=label_rank)
     name = None
     dimension = None
     confidence = 0.65
-    if best_label is not None and best_distance < max(1.5, polygon.length * 0.12):
-        name = best_label.normalized_text
-        confidence = max(confidence, best_label.confidence)
+
+    # Dimension parsing is deliberately independent of semantic_type.  OCR
+    # and vision models occasionally classify a bare ``300X290`` string as a
+    # room label; it is still valid dimension evidence.
+    for label, inside, _distance in nearby:
+        if not inside:
+            continue
         try:
-            parsed = parse_dimension_pair(best_label.normalized_text)
+            parsed = parse_dimension_pair(label.normalized_text)
         except ValueError:
             parsed = None
-        if parsed:
+        if parsed and min(parsed.width_m, parsed.height_m) >= 1.2:
             dimension = (parsed.width_m, parsed.height_m)
+            confidence = max(confidence, label.confidence)
+            break
+
+    for label, inside, _distance in nearby:
+        if not inside:
+            continue
+        try:
+            parsed = parse_dimension_pair(label.normalized_text)
+        except ValueError:
+            parsed = None
+        if parsed is not None or label.semantic_type == "dimension":
+            continue
+        if label.semantic_type not in {
+            "room_label",
+            "balcony_label",
+            "lift_label",
+            "stair_label",
+        }:
+            continue
+        name = label.normalized_text
+        confidence = max(confidence, label.confidence)
+        break
     return RoomPolygon(
         id=f"room_{index:03d}",
         name=name,
@@ -79,6 +111,7 @@ def extract_rooms_from_walls(
     doors: list[DoorOpening] | None = None,
     windows: list[WindowOpening] | None = None,
     junction_snap_m: float = DEFAULT_JUNCTION_SNAP_M,
+    bridge_ambiguous_openings: bool = False,
 ) -> RoomExtractionResult:
     """Rooms are faces of the planar wall graph.
 
@@ -93,6 +126,7 @@ def extract_rooms_from_walls(
         windows,
         junction_snap_m=junction_snap_m,
         min_room_area_m2=min_area_m2,
+        unconfirmed_opening_range_m=(0.55, 1.40) if bridge_ambiguous_openings else None,
     )
     if not result.faces:
         return RoomExtractionResult(rooms=[], rejected=["wall topology did not close any room polygons"])

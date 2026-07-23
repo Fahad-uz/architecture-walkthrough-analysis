@@ -3,6 +3,9 @@
   "private": true,
   "description": "GLB post-processing toolchain (gltf-transform) for the walkthrough pipeline",
   "dependencies": {
-    "@gltf-transform/cli": "^4.1.0"
+    "@gltf-transform/cli": "^4.4.1"
+  },
+  "overrides": {
+    "sharp": "0.35.3"
   }
 }

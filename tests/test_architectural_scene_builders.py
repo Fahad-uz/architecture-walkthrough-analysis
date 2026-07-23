@@ -4,6 +4,7 @@ from pathlib import Path
 
 from architecture_walkthrough.geometry.models import DoorOpening, FloorPlanModel, Point2D, RoomPolygon, WallSegment, WindowOpening
 from architecture_walkthrough.scene.asset_loader import load_asset_registry
+from architecture_walkthrough.scene.door_builder import door_meshes
 from architecture_walkthrough.scene.floor_builder import polygon_floor_mesh
 from architecture_walkthrough.scene.glb_validator import validate_glb
 from architecture_walkthrough.scene.pbr_materials import load_material_registry
@@ -24,6 +25,28 @@ def test_wall_splits_around_one_door() -> None:
 
     assert len(sections) == 3
     assert any(section.bottom_m == 2.1 and section.top_m == 3.0 for section in sections)
+
+
+def test_door_leaf_rotates_around_the_declared_hinge() -> None:
+    wall = WallSegment(start=Point2D(x=0, y=0), end=Point2D(x=5, y=0), height_m=3.0)
+    door = DoorOpening(
+        center=Point2D(x=1.5, y=0),
+        start_offset_m=1.0,
+        end_offset_m=2.0,
+        width_m=1.0,
+        height_m=2.1,
+        hinge_side="start",
+        swing_side="left",
+    )
+
+    leaf, header = door_meshes(wall, door, (128, 74, 34, 255))
+
+    assert abs(float(header.centroid[0]) - 1.5) < 1e-6
+    assert abs(float(header.centroid[1])) < 1e-6
+    hinge_distance = (
+        (float(leaf.centroid[0]) - 1.0) ** 2 + float(leaf.centroid[1]) ** 2
+    ) ** 0.5
+    assert abs(hinge_distance - 0.5) < 1e-6
 
 
 def test_wall_splits_around_one_window() -> None:

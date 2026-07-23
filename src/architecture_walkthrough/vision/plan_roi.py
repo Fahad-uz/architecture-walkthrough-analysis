@@ -122,7 +122,17 @@ def detect_plan_roi(
     # The plan is the union of all significant structural regions, not just the
     # single largest blob — thin-walled plans fragment into many components.
     boxes = [cv2.boundingRect(contour) for contour in contours]
-    significant = [box for box in boxes if box[2] * box[3] >= width * height * 0.005]
+    # Detached stairs, lifts and balcony rails are often long but narrow.  A
+    # bounding-box-area-only filter dropped them from the crop even though they
+    # are architecturally meaningful.  Keep elongated structural regions too;
+    # true page-border bars were already removed above.
+    significant = [
+        box
+        for box in boxes
+        if box[2] * box[3] >= width * height * 0.005
+        or box[2] >= width * 0.08
+        or box[3] >= height * 0.08
+    ]
     if not significant:
         significant = sorted(boxes, key=lambda box: box[2] * box[3], reverse=True)[:1]
     x0u = min(box[0] for box in significant)

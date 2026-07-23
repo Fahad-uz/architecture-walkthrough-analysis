@@ -98,7 +98,7 @@ def _strict_schema() -> dict:
     }
     return {
         "type": "object",
-        "required": ["walls", "rooms", "openings", "furniture", "notes"],
+        "required": ["walls", "rooms", "openings", "furniture", "dimension_texts", "notes"],
         "properties": {
             "walls": {
                 "type": "array",
@@ -230,13 +230,17 @@ class GeminiFloorPlanVisionAnalyzer:
         from architecture_walkthrough.ai.retry import call_with_backoff
 
         client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+        contents = types.Content(
+            role="user",
+            parts=[
+                types.Part.from_text(text=prompt),
+                types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+            ],
+        )
         response = call_with_backoff(
             lambda: client.models.generate_content(
                 model=self.settings.gemini_model,
-                contents=[
-                    prompt,
-                    types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                ],
+                contents=contents,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=_strict_schema(),

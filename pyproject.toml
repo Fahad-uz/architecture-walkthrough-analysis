@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=83", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -13,19 +13,28 @@ dependencies = [
   "pydantic>=2.7,<3",
   "pydantic-settings>=2.2,<3",
   "numpy>=1.26,<3",
-  "opencv-python-headless>=4.9,<5",
-  "Pillow>=10,<12",
+  "opencv-python>=4.9,<5",
+  "Pillow>=12.3,<13",
   "Shapely>=2.0,<3",
   "PyYAML>=6,<7",
   "trimesh>=4.4,<5",
   "python-multipart>=0.0.9,<1",
   "google-genai>=1.0,<2",
+  "pyasn1>=0.6.4,<1",
   "python-dotenv>=1,<2",
+  "rapidocr>=3.9,<4",
+  "onnxruntime>=1.20,<2",
 ]
 
 [project.optional-dependencies]
 ai = ["torch>=2.3"]
-dev = ["pytest>=8,<9", "pytest-cov>=5,<6", "mypy>=1.10,<2", "ruff>=0.5,<1"]
+dev = [
+  "pytest>=9,<10",
+  "pytest-cov>=7,<8",
+  "mypy>=1.10,<2",
+  "ruff>=0.5,<1",
+  "types-PyYAML>=6,<7",
+]
 
 [project.scripts]
 architecture-walkthrough = "architecture_walkthrough.main:main"
@@ -41,3 +50,8 @@ markers = ["integration: requires external tools such as Blender or FFmpeg"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+exclude = ["src/architecture_walkthrough/scene/blender_templates/"]

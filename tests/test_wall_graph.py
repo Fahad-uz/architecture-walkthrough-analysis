@@ -4,8 +4,10 @@ import pytest
 
 from architecture_walkthrough.geometry.models import DoorOpening, Point2D, RoomPolygon, WallSegment
 from architecture_walkthrough.geometry.wall_graph import (
+    collinear_gaps,
     enumerate_faces,
     match_faces_to_rooms,
+    perpendicular_endpoint_gaps,
     snap_endpoints_to_walls,
 )
 
@@ -55,6 +57,51 @@ def test_doorway_gap_stays_open_without_confirmed_opening() -> None:
     assert len(result.faces) == 1
     assert len(result.unclosed_gaps) == 1
     assert result.unclosed_gaps[0]["length_m"] == pytest.approx(0.9)
+
+
+def test_unconfirmed_door_sized_gap_can_bridge_topology_without_inventing_opening() -> None:
+    walls = [
+        *_square(),
+        _wall("w4", 2, 0, 2, 1.5),
+        _wall("w5", 2, 2.4, 2, 4),
+    ]
+
+    result = enumerate_faces(walls, unconfirmed_opening_range_m=(0.55, 1.40))
+
+    assert len(result.faces) == 2
+    assert len(result.closures) == 1
+    assert result.unclosed_gaps[0]["topology_bridge"] is True
+
+
+def test_perpendicular_door_sized_corner_gap_can_bridge_topology() -> None:
+    walls = [
+        _wall("bottom", 0, 0, 4, 0),
+        _wall("left", 0, 0, 0, 4),
+        _wall("top", 0, 4, 4, 4),
+        _wall("right", 4, 0, 4, 3.1),
+    ]
+
+    gaps = perpendicular_endpoint_gaps(walls, 0.55, 1.40)
+    result = enumerate_faces(walls, unconfirmed_opening_range_m=(0.55, 1.40))
+
+    assert len(gaps) == 1
+    assert gaps[0]["length_m"] == pytest.approx(0.9)
+    assert len(result.faces) == 1
+    assert result.unclosed_gaps[0]["corner_bridge"] is True
+
+
+def test_collinear_gap_grouping_sorts_spans_after_coordinate_matching() -> None:
+    # Slightly offset detector centerlines used to sort by x first, leaving the
+    # upper segment before the lower segment and silently missing their gap.
+    walls = [
+        _wall("upper", 0.0, 5.0, 0.0, 10.0),
+        _wall("lower", 0.17, 0.0, 0.17, 4.0),
+    ]
+
+    gaps = collinear_gaps(walls, coord_tol=0.18)
+
+    assert len(gaps) == 1
+    assert gaps[0]["length_m"] == pytest.approx(1.0)
 
 
 def test_doorway_gap_closes_when_opening_confirms_it() -> None:
@@ -137,3 +184,53 @@ def test_manual_room_without_matching_face_is_dropped() -> None:
     rooms = match_faces_to_rooms(faces, previous)
     assert len(rooms) == 1
     assert rooms[0].name is None
+
+
+def test_new_face_ids_do_not_collide_with_later_preserved_room_ids() -> None:
+    # Faces are area-sorted: the larger right face is visited first and is new,
+    # while the smaller left face preserves room_000.  The old implementation
+    # assigned room_000 to the first face before discovering the collision.
+    walls = [*_square(), _wall("w4", 1.5, 0, 1.5, 4)]
+    faces = enumerate_faces(walls).faces
+    previous = [
+        RoomPolygon(
+            id="room_000",
+            face_id="left_stable_face",
+            name="Bedroom",
+            points=[Point2D(x=0.1, y=0.1), Point2D(x=1.4, y=0.1), Point2D(x=1.4, y=3.9), Point2D(x=0.1, y=3.9)],
+        )
+    ]
+
+    rooms = match_faces_to_rooms(faces, previous)
+
+    assert len({room.id for room in rooms}) == 2
+    bedroom = next(room for room in rooms if room.name == "Bedroom")
+    other = next(room for room in rooms if room.name != "Bedroom")
+    assert bedroom.id == "room_000"
+    assert other.id == "room_001"
+
+    regenerated = match_faces_to_rooms(faces, rooms)
+    assert {room.id for room in regenerated} == {"room_000", "room_001"}
+
+
+def test_legacy_duplicate_room_ids_are_repaired_on_match() -> None:
+    walls = [*_square(), _wall("w4", 2, 0, 2, 4)]
+    faces = enumerate_faces(walls).faces
+    previous = [
+        RoomPolygon(
+            id="room_000",
+            name="Left",
+            points=[Point2D(x=0.1, y=0.1), Point2D(x=1.9, y=0.1), Point2D(x=1.9, y=3.9), Point2D(x=0.1, y=3.9)],
+        ),
+        RoomPolygon(
+            id="room_000",
+            name="Right",
+            points=[Point2D(x=2.1, y=0.1), Point2D(x=3.9, y=0.1), Point2D(x=3.9, y=3.9), Point2D(x=2.1, y=3.9)],
+        ),
+    ]
+
+    rooms = match_faces_to_rooms(faces, previous)
+
+    assert len(rooms) == 2
+    assert len({room.id for room in rooms}) == 2
+    assert {room.name for room in rooms} == {"Left", "Right"}
