@@ -84,6 +84,7 @@ render:
   preview_fps: 24
   camera_speed_mps: 1.0
 textures:
+  registry_path: assets/textures/material_registry.yaml
   default_resolution: 2048
   allow_4k: false
   embed_in_glb: true

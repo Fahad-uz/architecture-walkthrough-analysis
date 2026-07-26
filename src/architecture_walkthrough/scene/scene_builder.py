@@ -3,9 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from architecture_walkthrough.config import AppConfig
 from architecture_walkthrough.geometry.models import FloorPlanModel
 from architecture_walkthrough.scene.blender_generator import TEMPLATE
 from architecture_walkthrough.scene.lighting import LightingSettings
+from architecture_walkthrough.scene.pbr_materials import (
+    load_material_registry,
+    model_with_material_plan,
+)
 
 
 def build_blender_script(
@@ -16,6 +21,7 @@ def build_blender_script(
     lighting: LightingSettings | None = None,
     render_frames_dir: Path | None = None,
     frame_count: int = 120,
+    config: AppConfig | None = None,
 ) -> str:
     """Build the offline-render script around the production scene generator.
 
@@ -26,7 +32,10 @@ def build_blender_script(
     render settings.
     """
     lighting = lighting or LightingSettings()
-    plan_data = json.dumps(floorplan.model_dump(mode="json"))
+    runtime_config = config or AppConfig()
+    registry = load_material_registry(runtime_config.textures.registry_path)
+    render_model = model_with_material_plan(floorplan, registry)
+    plan_data = json.dumps(render_model.model_dump(mode="json"))
     render_block = ""
     if render_frames_dir is not None:
         render_block = f"""

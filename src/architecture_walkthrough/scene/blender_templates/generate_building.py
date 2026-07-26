@@ -41,6 +41,11 @@ def parse_args() -> argparse.Namespace:
 
 ARGS = parse_args()
 PLAN = json.loads(Path(ARGS.floorplan).read_text(encoding="utf-8"))
+MATERIAL_PLAN = (
+    (PLAN.get("metadata") or {}).get("blender_material_plan") or {}
+)
+if not isinstance(MATERIAL_PLAN, dict):
+    MATERIAL_PLAN = {}
 MODE = ARGS.mode
 SAMPLES = ARGS.samples or (256 if MODE == "final" else 16)
 LIGHTMAP_PX = ARGS.lightmap_px or (2048 if MODE == "final" else 512)
@@ -91,22 +96,131 @@ def enable_gpu_if_available() -> str:
 # Materials
 
 
-def make_pbr(name: str, rgba, roughness: float = 0.7, metallic: float = 0.0, transmission: float = 0.0) -> bpy.types.Material:
+def make_pbr(
+    name: str,
+    rgba,
+    roughness: float = 0.7,
+    metallic: float = 0.0,
+    transmission: float = 0.0,
+    alpha_mode: str = "OPAQUE",
+    double_sided: bool = True,
+) -> bpy.types.Material:
+    normalized_alpha_mode = str(alpha_mode or "OPAQUE").upper()
+    if normalized_alpha_mode not in {"OPAQUE", "MASK", "BLEND"}:
+        normalized_alpha_mode = "OPAQUE"
+    effective_rgba = tuple(rgba)
+    if normalized_alpha_mode == "OPAQUE":
+        effective_rgba = (*effective_rgba[:3], 1.0)
+
     material = bpy.data.materials.new(name)
     material.use_nodes = True
     bsdf = material.node_tree.nodes["Principled BSDF"]
-    bsdf.inputs["Base Color"].default_value = rgba
+    bsdf.inputs["Base Color"].default_value = effective_rgba
     bsdf.inputs["Roughness"].default_value = roughness
     bsdf.inputs["Metallic"].default_value = metallic
+    if "Alpha" in bsdf.inputs:
+        bsdf.inputs["Alpha"].default_value = float(effective_rgba[3])
+        if normalized_alpha_mode == "MASK":
+            alpha_value = material.node_tree.nodes.new("ShaderNodeValue")
+            alpha_value.name = "glTF Alpha"
+            alpha_value.outputs[0].default_value = float(effective_rgba[3])
+            alpha_clip = material.node_tree.nodes.new("ShaderNodeMath")
+            alpha_clip.name = "glTF Alpha Clip"
+            alpha_clip.operation = "GREATER_THAN"
+            alpha_clip.inputs[1].default_value = 0.5
+            material.node_tree.links.new(
+                alpha_value.outputs[0],
+                alpha_clip.inputs[0],
+            )
+            material.node_tree.links.new(
+                alpha_clip.outputs[0],
+                bsdf.inputs["Alpha"],
+            )
+    material.diffuse_color = effective_rgba
+    material.use_backface_culling = not double_sided
     if transmission > 0:
         # Blender 4+/5 renamed Transmission to Transmission Weight.
         key = "Transmission Weight" if "Transmission Weight" in bsdf.inputs else "Transmission"
         bsdf.inputs[key].default_value = transmission
-        material.blend_method = "BLEND"
+    try:
+        if normalized_alpha_mode == "MASK":
+            material.blend_method = "CLIP"
+            material.alpha_threshold = 0.5
+        elif normalized_alpha_mode == "BLEND":
+            material.blend_method = "BLEND"
+        else:
+            material.blend_method = "OPAQUE"
+    except (AttributeError, TypeError):
+        pass
     return material
 
 
 MATERIALS: dict[str, bpy.types.Material] = {}
+
+
+def material_key(value: object) -> str:
+    cleaned = "".join(
+        char if char.isalnum() else "_"
+        for char in str(value or "").strip().lower()
+    )
+    return "_".join(part for part in cleaned.split("_") if part)
+
+
+def scalar_material(name: str, payload: dict) -> bpy.types.Material:
+    raw_color = payload.get("base_color", [0.8, 0.8, 0.8, 1.0])
+    try:
+        color = tuple(
+            max(0.0, min(1.0, float(component)))
+            for component in raw_color
+        )
+    except (TypeError, ValueError):
+        color = (0.8, 0.8, 0.8, 1.0)
+    if len(color) != 4:
+        color = (0.8, 0.8, 0.8, 1.0)
+    try:
+        roughness = max(0.0, min(1.0, float(payload.get("roughness", 0.65))))
+        metallic = max(0.0, min(1.0, float(payload.get("metallic", 0.0))))
+    except (TypeError, ValueError):
+        roughness, metallic = 0.65, 0.0
+    return make_pbr(
+        f"PBR_{material_key(name) or 'fallback'}",
+        color,
+        roughness=roughness,
+        metallic=metallic,
+        alpha_mode=str(payload.get("alpha_mode") or "OPAQUE").upper(),
+        double_sided=bool(payload.get("double_sided", False)),
+    )
+
+
+def material_for_preset(
+    preset: object,
+    fallback_role: str,
+) -> bpy.types.Material:
+    key = material_key(preset)
+    if key:
+        resolved = MATERIALS.get(f"preset:{key}")
+        if resolved is not None:
+            return resolved
+    return MATERIALS[fallback_role]
+
+
+def planned_default(role: str, fallback_role: str) -> bpy.types.Material:
+    defaults = MATERIAL_PLAN.get("defaults") or {}
+    preset = defaults.get(role) if isinstance(defaults, dict) else None
+    return material_for_preset(preset, fallback_role)
+
+
+def planned_indexed(
+    collection: str,
+    index: int,
+    default_role: str,
+    fallback_role: str,
+) -> bpy.types.Material:
+    presets = MATERIAL_PLAN.get(collection) or []
+    preset = presets[index] if isinstance(presets, list) and index < len(presets) else None
+    if preset is not None:
+        return material_for_preset(preset, fallback_role)
+    return planned_default(default_role, fallback_role)
 
 
 def build_materials() -> None:
@@ -139,6 +253,14 @@ def build_materials() -> None:
     MATERIALS["rug"] = make_pbr("Rug_Fabric", (0.46, 0.20, 0.16, 1.0), roughness=0.92)
     MATERIALS["plant"] = make_pbr("Plant_Leaves", (0.12, 0.38, 0.17, 1.0), roughness=0.8)
     MATERIALS["pot"] = make_pbr("Plant_Pot", (0.38, 0.20, 0.12, 1.0), roughness=0.72)
+    planned_materials = MATERIAL_PLAN.get("materials") or {}
+    if isinstance(planned_materials, dict):
+        for preset_name, payload in sorted(planned_materials.items()):
+            if not isinstance(payload, dict):
+                continue
+            key = material_key(preset_name)
+            if key:
+                MATERIALS[f"preset:{key}"] = scalar_material(key, payload)
 
 
 # ---------------------------------------------------------------------------
@@ -209,12 +331,18 @@ def build_wall(wall: dict, index: int) -> bpy.types.Object:
     thickness = float(wall.get("thickness_m") or 0.12)
     height = float(wall.get("height_m") or WALL_HEIGHT_DEFAULT)
     center = start + Vector((math.cos(angle), math.sin(angle), 0.0)) * (length / 2)
+    wall_material = planned_indexed(
+        "wall_presets",
+        index,
+        "wall",
+        "wall",
+    )
     obj = new_box(
         f"Wall_{index:03d}",
         Vector((length, thickness, height)),
         Vector((center.x, center.y, height / 2)),
         angle,
-        MATERIALS["wall"],
+        wall_material,
     )
     doors, windows = openings_on_wall(wall.get("id") or "")
     cutters: list[bpy.types.Object] = []
@@ -233,7 +361,7 @@ def build_wall(wall: dict, index: int) -> bpy.types.Object:
                 Vector((width, thickness * 3, door_height)),
                 Vector((position.x, position.y, door_height / 2)),
                 angle,
-                MATERIALS["wall"],
+                wall_material,
             )
         )
     for opening in windows:
@@ -252,7 +380,7 @@ def build_wall(wall: dict, index: int) -> bpy.types.Object:
                 Vector((width, thickness * 3, window_height)),
                 Vector((position.x, position.y, sill + window_height / 2)),
                 angle,
-                MATERIALS["wall"],
+                wall_material,
             )
         )
     for cutter in cutters:
@@ -337,7 +465,12 @@ def build_floors(rooms: list[dict], walls: list[dict]) -> None:
                 slab.get("points") or [],
                 0.0,
                 float(slab.get("thickness_m") or FLOOR_THICKNESS),
-                MATERIALS["floor"],
+                planned_indexed(
+                    "slab_presets",
+                    index,
+                    "floor",
+                    "floor",
+                ),
             )
         return
     if rooms and room_floor_coverage(rooms, walls) >= MIN_ROOM_FLOOR_COVERAGE:
@@ -347,7 +480,12 @@ def build_floors(rooms: list[dict], walls: list[dict]) -> None:
                 room.get("points") or [],
                 0.0,
                 FLOOR_THICKNESS,
-                MATERIALS["floor"],
+                planned_indexed(
+                    "room_floor_presets",
+                    index,
+                    "floor",
+                    "floor",
+                ),
             )
         return
     if not walls:
@@ -361,7 +499,13 @@ def build_floors(rooms: list[dict], walls: list[dict]) -> None:
         {"x": max(xs) + pad, "y": max(ys) + pad},
         {"x": min(xs) - pad, "y": max(ys) + pad},
     ]
-    build_polygon_slab("Floor_000", envelope, 0.0, FLOOR_THICKNESS, MATERIALS["floor"])
+    build_polygon_slab(
+        "Floor_000",
+        envelope,
+        0.0,
+        FLOOR_THICKNESS,
+        planned_default("floor", "floor"),
+    )
 
 
 def build_baseboards(wall: dict, index: int) -> list[bpy.types.Object]:
@@ -374,6 +518,12 @@ def build_baseboards(wall: dict, index: int) -> list[bpy.types.Object]:
         if interval:
             blocked.append(interval)
     blocked.sort()
+    wall_material = planned_indexed(
+        "wall_presets",
+        index,
+        "wall",
+        "baseboard",
+    )
     spans: list[tuple[float, float]] = []
     cursor = 0.0
     for b_start, b_end in blocked:
@@ -394,7 +544,7 @@ def build_baseboards(wall: dict, index: int) -> list[bpy.types.Object]:
                 Vector((e - s, thickness, BASEBOARD_HEIGHT)),
                 Vector((position.x, position.y, BASEBOARD_HEIGHT / 2)),
                 angle,
-                MATERIALS["baseboard"],
+                wall_material,
             )
         )
     return objs
@@ -413,6 +563,12 @@ def build_door_assets(door: dict, walls_by_id: dict, index: int) -> None:
     height = float(door.get("height_m") or 2.1)
     thickness = float(wall.get("thickness_m") or 0.12)
     direction = Vector((math.cos(angle), math.sin(angle), 0.0))
+    door_material = planned_indexed(
+        "door_presets",
+        index,
+        "door",
+        "door",
+    )
     # Frame: two jambs and a header hugging the cut.
     for side_offset in (o_start + 0.03, o_end - 0.03):
         position = start + direction * side_offset
@@ -421,7 +577,7 @@ def build_door_assets(door: dict, walls_by_id: dict, index: int) -> None:
             Vector((0.06, thickness * 1.15, height)),
             Vector((position.x, position.y, height / 2)),
             angle,
-            MATERIALS["frame"],
+            door_material,
         )
     header_mid = start + direction * ((o_start + o_end) / 2)
     new_box(
@@ -429,7 +585,7 @@ def build_door_assets(door: dict, walls_by_id: dict, index: int) -> None:
         Vector((width, thickness * 1.15, 0.08)),
         Vector((header_mid.x, header_mid.y, height + 0.04)),
         angle,
-        MATERIALS["frame"],
+        door_material,
     )
     # Leaf hinged at hinge_side, slightly open.
     hinge_side = door.get("hinge_side") or "start"
@@ -444,7 +600,7 @@ def build_door_assets(door: dict, walls_by_id: dict, index: int) -> None:
         Vector((width - 0.04, 0.045, height - 0.04)),
         Vector((leaf_center.x, leaf_center.y, (height - 0.04) / 2)),
         leaf_angle,
-        MATERIALS["door"],
+        door_material,
     )
 
 
@@ -464,6 +620,12 @@ def build_window_assets(window: dict, walls_by_id: dict, index: int) -> None:
     direction = Vector((math.cos(angle), math.sin(angle), 0.0))
     mid = start + direction * ((o_start + o_end) / 2)
     z_mid = sill + height / 2
+    frame_material = planned_indexed(
+        "window_frame_presets",
+        index,
+        "window_frame",
+        "frame",
+    )
     # Frame border.
     for offset, size in (
         (Vector((0, 0, -height / 2)), Vector((width, thickness * 1.1, 0.06))),
@@ -474,7 +636,7 @@ def build_window_assets(window: dict, walls_by_id: dict, index: int) -> None:
             size,
             Vector((mid.x, mid.y, z_mid)) + offset,
             angle,
-            MATERIALS["frame"],
+            frame_material,
         )
     for side in (o_start + 0.03, o_end - 0.03):
         position = start + direction * side
@@ -483,8 +645,10 @@ def build_window_assets(window: dict, walls_by_id: dict, index: int) -> None:
             Vector((0.06, thickness * 1.1, height)),
             Vector((position.x, position.y, z_mid)),
             angle,
-            MATERIALS["frame"],
+            frame_material,
         )
+    # Keep the transmission-capable glass shader until the scalar registry
+    # contract can express transmission without degrading window realism.
     new_box(
         f"WindowGlass_{index:03d}",
         Vector((width - 0.05, 0.02, height - 0.05)),
@@ -695,7 +859,13 @@ def build_special_element(element: dict, index: int) -> None:
     prefix = f"Special_{index:03d}_{kind}"
     polygon = element.get("polygon") or []
     if kind in {"balcony", "terrace"} and len(polygon) >= 3:
-        build_polygon_slab(prefix, polygon, 0.02, 0.08, MATERIALS["counter"])
+        build_polygon_slab(
+            prefix,
+            polygon,
+            0.02,
+            0.08,
+            planned_default("balcony", "counter"),
+        )
         return
     if kind in {"stair", "stairs", "staircase"}:
         item = dict(element)
@@ -937,7 +1107,10 @@ def main() -> None:
                 room.get("points", []),
                 ceiling_height + ceiling_thickness,
                 ceiling_thickness,
-                MATERIALS["ceiling"],
+                material_for_preset(
+                    MATERIAL_PLAN.get("ceiling_preset"),
+                    "ceiling",
+                ),
             )
     for index, balcony in enumerate(PLAN.get("balconies") or []):
         build_polygon_slab(
@@ -945,7 +1118,12 @@ def main() -> None:
             balcony.get("points") or [],
             0.02,
             0.08,
-            MATERIALS["counter"],
+            planned_indexed(
+                "balcony_floor_presets",
+                index,
+                "balcony",
+                "counter",
+            ),
         )
 
     for index, door in enumerate(PLAN.get("doors", [])):

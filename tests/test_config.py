@@ -52,3 +52,21 @@ def test_analysis_capacity_and_timeout_are_loaded_from_yaml(tmp_path: Path) -> N
 
     assert config.limits.max_concurrent_analyses == 2
     assert config.limits.processing_timeout_seconds == 37
+
+
+def test_material_registry_path_has_default_and_yaml_override(tmp_path: Path) -> None:
+    default_config = load_config(tmp_path / "missing.yaml")
+    assert default_config.textures.registry_path == Path(
+        "assets/textures/material_registry.yaml"
+    )
+
+    config_path = tmp_path / "materials.yaml"
+    config_path.write_text(
+        "textures:\n"
+        "  registry_path: custom/materials.yaml\n",
+        encoding="utf-8",
+    )
+
+    configured = load_config(config_path)
+
+    assert configured.textures.registry_path == Path("custom/materials.yaml")

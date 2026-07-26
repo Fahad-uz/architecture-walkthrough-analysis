@@ -5,6 +5,10 @@ from pathlib import Path
 
 from architecture_walkthrough.config import AppConfig
 from architecture_walkthrough.geometry.models import FloorPlanModel
+from architecture_walkthrough.scene.pbr_materials import (
+    load_material_registry,
+    model_with_material_plan,
+)
 from architecture_walkthrough.security.sandbox import require_executable, run_subprocess
 
 LOGGER = logging.getLogger(__name__)
@@ -65,7 +69,8 @@ def generate_glb_with_blender(
     executable = require_executable(str(config.paths.blender_executable), "Blender")
     output_glb.parent.mkdir(parents=True, exist_ok=True)
     floorplan_json = output_glb.with_suffix(".blender_input.json")
-    model.save_json(floorplan_json)
+    registry = load_material_registry(config.textures.registry_path)
+    model_with_material_plan(model, registry).save_json(floorplan_json)
     samples = config.bake.final_samples if bake_mode == "final" else config.bake.draft_samples
     lightmap = config.bake.final_lightmap_px if bake_mode == "final" else config.bake.draft_lightmap_px
     command = blender_generate_command(

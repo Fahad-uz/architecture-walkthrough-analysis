@@ -18,6 +18,7 @@ def test_blender_script_embeds_floorplan_as_json_string() -> None:
     assert '"external": true' in script
     assert "generate_building.py" in script
     assert "template_path.read_text" in script
+    assert "blender_material_plan" in script
     assert "add_placeholder_furniture" not in script
     assert "BLENDER_EEVEE_NEXT" in script and "BLENDER_EEVEE" in script
 

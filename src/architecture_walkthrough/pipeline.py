@@ -1249,7 +1249,13 @@ def render_walkthrough(floorplan_path: Path, output_mp4: Path, config: AppConfig
     frame_count = min(config.limits.max_frames, 120 if mode == "preview" else 360)
     script_path = output_mp4.with_suffix(".walkthrough.blender.py")
     script_path.write_text(
-        build_blender_script(model, model_path, render_frames_dir=frames_dir, frame_count=frame_count),
+        build_blender_script(
+            model,
+            model_path,
+            render_frames_dir=frames_dir,
+            frame_count=frame_count,
+            config=config,
+        ),
         encoding="utf-8",
     )
     run_blender_script(str(config.paths.blender_executable), script_path, config.limits.subprocess_timeout_seconds)
