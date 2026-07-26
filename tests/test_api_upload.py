@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pathlib import Path
 
 import pytest
@@ -355,7 +355,11 @@ def test_blender_generation_capacity_is_bounded_across_jobs(tmp_path: Path, monk
         job_dir = tmp_path / job_id
         job_dir.mkdir()
         (job_dir / "job.json").write_text(
-            JobRecord(job_id=job_id, status="needs_review").model_dump_json(indent=2),
+            JobRecord(
+                job_id=job_id,
+                status="needs_review",
+                message="ready for generation",
+            ).model_dump_json(indent=2),
             encoding="utf-8",
         )
     release = threading.Event()
@@ -372,7 +376,107 @@ def test_blender_generation_capacity_is_bounded_across_jobs(tmp_path: Path, monk
 
     assert first.status_code == 200
     assert second.status_code == 429
-    assert client.get("/jobs/second-generation-job").json()["status"] == "needs_review"
+    restored = client.get("/jobs/second-generation-job").json()
+    assert restored["status"] == "needs_review"
+    assert restored["message"] == "ready for generation"
+    persisted = JobRecord.model_validate_json(
+        (tmp_path / "second-generation-job" / "job.json").read_text(encoding="utf-8")
+    )
+    assert persisted.status == "needs_review"
+    assert persisted.message == "ready for generation"
+
+
+def test_poll_snapshot_is_detached_from_cached_record(tmp_path: Path) -> None:
+    runner = LocalJobRunner(AppConfig(paths=PathSettings(work_root=tmp_path)))
+    record = runner.create_job()
+    before = runner.snapshot(record.job_id)
+
+    runner.publish(
+        record,
+        expected_status="created",
+        status="processing",
+        message="analysis started",
+    )
+
+    after = runner.snapshot(record.job_id)
+    assert before.status == "created"
+    assert before.message == ""
+    assert after.status == "processing"
+    assert after.message == "analysis started"
+
+
+def test_poll_waits_for_complete_terminal_bundle_to_persist(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runner = LocalJobRunner(AppConfig(paths=PathSettings(work_root=tmp_path)))
+    record = runner.create_job()
+    entered_persistence = threading.Event()
+    release_persistence = threading.Event()
+    original_persist = runner._persist_locked
+
+    def blocked_persist(updated: JobRecord) -> None:
+        if updated.status == "needs_review":
+            entered_persistence.set()
+            release_persistence.wait(timeout=5)
+        original_persist(updated)
+
+    monkeypatch.setattr(runner, "_persist_locked", blocked_persist)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        publishing = executor.submit(
+            runner.publish,
+            record,
+            expected_status="created",
+            status="needs_review",
+            message="analysis complete",
+            bump_glb_version=True,
+            glb_url=f"/jobs/{record.job_id}/artifacts/building.glb",
+            glb_source="preview",
+        )
+        assert entered_persistence.wait(timeout=1)
+        polling = executor.submit(runner.snapshot, record.job_id)
+        with pytest.raises(FutureTimeout):
+            polling.result(timeout=0.05)
+        release_persistence.set()
+        publishing.result(timeout=2)
+        snapshot = polling.result(timeout=2)
+
+    assert snapshot.status == "needs_review"
+    assert snapshot.message == "analysis complete"
+    assert snapshot.glb_source == "preview"
+    assert snapshot.glb_url and snapshot.glb_url.endswith("/building.glb")
+    assert snapshot.glb_version > 0
+
+
+def test_job_json_replace_failure_restores_memory_and_disk(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runner = LocalJobRunner(AppConfig(paths=PathSettings(work_root=tmp_path)))
+    record = runner.create_job()
+    record_path = tmp_path / record.job_id / "job.json"
+    original_bytes = record_path.read_bytes()
+    original_replace = api_app.os.replace
+
+    def fail_job_replace(source, target) -> None:
+        if Path(target) == record_path:
+            raise PermissionError("simulated locked job.json")
+        original_replace(source, target)
+
+    monkeypatch.setattr(api_app.os, "replace", fail_job_replace)
+
+    with pytest.raises(PermissionError, match="simulated locked job.json"):
+        runner.publish(
+            record,
+            expected_status="created",
+            status="processing",
+            message="analysis started",
+        )
+
+    assert runner.snapshot(record.job_id).status == "created"
+    assert runner.snapshot(record.job_id).message == ""
+    assert record_path.read_bytes() == original_bytes
+    assert not list(record_path.parent.glob(".job.*.tmp"))
 
 
 def test_interrupted_jobs_recover_to_safe_persisted_states(tmp_path: Path) -> None:
