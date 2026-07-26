@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "audit:runtime": "node scripts/audit-runtime.mjs",
     "prebuild": "node scripts/copy-draco.mjs",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
@@ -19,7 +20,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-konva": "^18.2.10",
-    "react-router-dom": "^6.28.0",
+    "react-router-dom": "7.18.1",
     "three": "^0.169.0",
     "three-mesh-bvh": "^0.8.3"
   },
