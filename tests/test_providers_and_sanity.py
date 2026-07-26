@@ -8,9 +8,16 @@ from architecture_walkthrough.ai.sanity_check import (
     GeminiLayoutSanityChecker,
     SanityWarning,
     _layout_summary,
+    _sanity_prompt,
 )
 from architecture_walkthrough.config import AppConfig
-from architecture_walkthrough.geometry.models import FloorPlanModel, Point2D, WallSegment
+from architecture_walkthrough.geometry.models import (
+    BalconyPolygon,
+    FloorPlanModel,
+    Point2D,
+    RoomPolygon,
+    WallSegment,
+)
 from architecture_walkthrough.vision.providers import (
     CubiCasaGeometryProvider,
     WallBandGeometryProvider,
@@ -39,6 +46,37 @@ def _model() -> FloorPlanModel:
     return FloorPlanModel(
         pixels_per_metre=100.0,
         walls=[WallSegment(id="w0", start=Point2D(x=0, y=0), end=Point2D(x=4, y=0))],
+    )
+
+
+def _model_with_room_and_balcony() -> FloorPlanModel:
+    return _model().model_copy(
+        update={
+            "rooms": [
+                RoomPolygon(
+                    id="room-0",
+                    name="BEDROOM",
+                    points=[
+                        Point2D(x=0, y=0),
+                        Point2D(x=2, y=0),
+                        Point2D(x=2, y=2),
+                        Point2D(x=0, y=2),
+                    ],
+                )
+            ],
+            "balconies": [
+                BalconyPolygon(
+                    id="balcony-0",
+                    name="BALCONY",
+                    points=[
+                        Point2D(x=2, y=0),
+                        Point2D(x=4, y=0),
+                        Point2D(x=4, y=1),
+                        Point2D(x=2, y=1),
+                    ],
+                )
+            ],
+        }
     )
 
 
@@ -71,6 +109,82 @@ def test_sanity_checker_parses_mocked_warnings(monkeypatch, tmp_path: Path) -> N
 
 
 def test_layout_summary_is_normalized_json() -> None:
-    payload = json.loads(_layout_summary(_model(), image_width_px=400, image_height_px=300))
+    model = _model_with_room_and_balcony()
+    payload = json.loads(_layout_summary(model, image_width_px=400, image_height_px=300))
     assert payload["walls"][0]["start"] == {"x": 0.0, "y": 1.0}
     assert payload["walls"][0]["end"]["x"] == 1.0
+    assert payload["rooms"][0] == {
+        "id": "room-0",
+        "name": "BEDROOM",
+        "center": {"x": 0.25, "y": 0.667},
+        "polygon": [
+            {"x": 0.0, "y": 1.0},
+            {"x": 0.5, "y": 1.0},
+            {"x": 0.5, "y": 0.333},
+            {"x": 0.0, "y": 0.333},
+        ],
+    }
+    assert payload["balconies"][0] == {
+        "id": "balcony-0",
+        "name": "BALCONY",
+        "center": {"x": 0.75, "y": 0.833},
+        "polygon": [
+            {"x": 0.5, "y": 1.0},
+            {"x": 1.0, "y": 1.0},
+            {"x": 1.0, "y": 0.667},
+            {"x": 0.5, "y": 0.667},
+        ],
+    }
+
+
+def test_sanity_prompt_distinguishes_rooms_from_balconies() -> None:
+    prompt = _sanity_prompt(_model_with_room_and_balcony(), 400, 300)
+    assert "inside a rooms[].polygon" in prompt
+    assert "BALCONY or TERRACE label inside a balconies[].polygon" in prompt
+    assert "not a wrong_room_label" in prompt
+
+
+def test_sanity_checker_discards_only_room_label_warnings_inside_balconies(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    image = tmp_path / "plan.png"
+    image.write_bytes(b"png")
+    warnings = [
+        SanityWarning(
+            kind="wrong_room_label",
+            description="balcony was mistaken for a bedroom",
+            x=0.75,
+            y=0.833,
+            confidence=0.9,
+        ),
+        SanityWarning(
+            kind="wrong_room_label",
+            description="printed kitchen label contradicts bedroom",
+            x=0.25,
+            y=0.667,
+            confidence=0.9,
+        ),
+        SanityWarning(
+            kind="missed_window",
+            description="window on balcony edge",
+            x=0.75,
+            y=0.833,
+            confidence=0.8,
+        ),
+    ]
+
+    with patch.object(GeminiLayoutSanityChecker, "_request", return_value=warnings):
+        result = GeminiLayoutSanityChecker(AppConfig().ai).check(
+            image,
+            _model_with_room_and_balcony(),
+            400,
+            300,
+        )
+
+    assert result.succeeded
+    assert [(warning.kind, warning.description) for warning in result.warnings] == [
+        ("wrong_room_label", "printed kitchen label contradicts bedroom"),
+        ("missed_window", "window on balcony edge"),
+    ]
