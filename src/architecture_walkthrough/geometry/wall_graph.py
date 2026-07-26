@@ -3,8 +3,9 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 
+from shapely import unary_union
 from shapely.geometry import LineString, Point, Polygon
-from shapely.ops import polygonize, unary_union
+from shapely.ops import polygonize
 
 from architecture_walkthrough.geometry.models import (
     DoorOpening,
@@ -22,6 +23,11 @@ DEFAULT_OPENING_CLOSURE_MAX_M = 2.0
 DEFAULT_MIN_ROOM_AREA_M2 = 0.8
 # Faces thinner than this are wall-thickness slivers, not rooms.
 MIN_FACE_THINNESS_RATIO = 0.05
+# GEOS uses exact coordinates when noding linework. Reciprocal endpoint snaps
+# can differ by a few floating-point ulps even though they represent the same
+# measured junction, so node on a one-micrometre grid. This is orders of
+# magnitude below the accuracy of a floor-plan raster.
+GRAPH_NODING_GRID_M = 1e-6
 
 
 @dataclass(frozen=True)
@@ -322,7 +328,10 @@ def enumerate_faces(
                 }
             )
 
-    merged = unary_union([*lines, *closures])
+    merged = unary_union(
+        [*lines, *closures],
+        grid_size=GRAPH_NODING_GRID_M,
+    )
     faces: list[GraphFace] = []
     for polygon in polygonize(merged):
         if polygon.area < min_room_area_m2:
