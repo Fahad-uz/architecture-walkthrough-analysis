@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import architecture_walkthrough.scene.blender_generator as blender_generator
 from architecture_walkthrough.config import AppConfig
-from architecture_walkthrough.geometry.models import ArchitecturalElement, FloorPlanModel, FurniturePlacement, Point2D
+from architecture_walkthrough.geometry.models import (
+    ArchitecturalElement,
+    CeilingSettings,
+    FloorPlanModel,
+    FurniturePlacement,
+    MaterialAssignment,
+    Point2D,
+)
 from architecture_walkthrough.scene.blender_generator import (
     TEMPLATE,
     blender_generate_command,
@@ -59,6 +69,49 @@ def test_unknown_bake_mode_is_rejected(tmp_path: Path) -> None:
     model = FloorPlanModel.load_json(FIXTURES / "sample_two_bedroom_flat.json")
     with pytest.raises(ValueError, match="unknown bake mode"):
         generate_glb_with_blender(model, tmp_path / "out.glb", AppConfig(), mode="ultra")
+
+
+def test_blender_input_embeds_a_schema_safe_material_plan(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    model = FloorPlanModel.load_json(
+        FIXTURES / "sample_high_detail_floorplan.json"
+    )
+    config = AppConfig()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        blender_generator,
+        "require_executable",
+        lambda _executable, _purpose: "blender",
+    )
+
+    def fake_run(command: list[str], timeout_seconds: int):
+        floorplan_path = Path(command[command.index("--floorplan") + 1])
+        output_path = Path(command[command.index("--output") + 1])
+        payload = json.loads(floorplan_path.read_text(encoding="utf-8"))
+        captured["payload"] = payload
+        captured["timeout"] = timeout_seconds
+        FloorPlanModel.model_validate(payload)
+        output_path.write_bytes(b"glTF")
+        return SimpleNamespace(stderr="", stdout="")
+
+    monkeypatch.setattr(blender_generator, "run_subprocess", fake_run)
+
+    output = generate_glb_with_blender(
+        model,
+        tmp_path / "building.glb",
+        config,
+        mode="none",
+    )
+
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    material_plan = payload["metadata"]["blender_material_plan"]
+    assert material_plan["room_floor_presets"] == ["wood", "ceramic_tile"]
+    assert "blender_material_plan" not in model.metadata
+    assert output.read_bytes() == b"glTF"
 
 
 @pytest.mark.integration
@@ -135,3 +188,103 @@ def test_blender_generates_glb_in_none_mode(tmp_path: Path) -> None:
     exported_lights = gltf["extensions"]["KHR_lights_punctual"]["lights"]
     assert exported_lights
     assert max(float(light["intensity"]) for light in exported_lights) <= 6_000
+
+
+@pytest.mark.integration
+def test_blender_binds_material_presets_to_architectural_surfaces(
+    tmp_path: Path,
+) -> None:
+    import json
+    import shutil
+    import struct
+
+    import trimesh
+
+    if shutil.which("blender") is None:
+        pytest.skip("Blender not on PATH")
+    registry_path = tmp_path / "materials.yaml"
+    registry_path.write_text(
+        Path("assets/textures/material_registry.yaml").read_text(encoding="utf-8")
+        + "\n"
+        + "  masked_panel:\n"
+        + "    base_color: [0.2, 0.4, 0.6, 0.4]\n"
+        + "    alpha_mode: MASK\n"
+        + "  opaque_panel:\n"
+        + "    base_color: [0.6, 0.4, 0.2, 0.4]\n"
+        + "    alpha_mode: OPAQUE\n",
+        encoding="utf-8",
+    )
+    config = AppConfig()
+    config = config.model_copy(
+        update={
+            "textures": config.textures.model_copy(
+                update={"registry_path": registry_path}
+            )
+        }
+    )
+    model = FloorPlanModel.load_json(FIXTURES / "sample_two_bedroom_flat.json")
+    model = model.model_copy(
+        update={
+            "walls": [
+                model.walls[0].model_copy(update={"material_preset": "metal"}),
+                model.walls[1].model_copy(
+                    update={"material_preset": "masked_panel"}
+                ),
+                model.walls[2].model_copy(
+                    update={"material_preset": "opaque_panel"}
+                ),
+                *model.walls[3:],
+            ],
+            "material_assignments": [
+                MaterialAssignment(
+                    target="room_living",
+                    preset="glass",
+                )
+            ],
+            "ceiling": CeilingSettings(
+                enabled=True,
+                material_preset="painted_wall",
+            ),
+        }
+    )
+
+    output = generate_glb_with_blender(
+        model,
+        tmp_path / "materials.glb",
+        config,
+        mode="none",
+    )
+    scene = trimesh.load(output, force="scene")
+    nodes = {str(name) for name in scene.graph.nodes_geometry}
+
+    def material_for(prefix: str) -> str:
+        node = next(name for name in nodes if name.startswith(prefix))
+        _transform, geometry_name = scene.graph[node]
+        material = scene.geometry[geometry_name].visual.material
+        return str(material.name)
+
+    assert material_for("Wall_000") == "PBR_metal"
+    assert material_for("Wall_001") == "PBR_masked_panel"
+    assert material_for("Wall_002") == "PBR_opaque_panel"
+    assert material_for("Wall_003") == "PBR_painted_wall"
+    assert material_for("Floor_000") == "PBR_glass"
+    assert material_for("Floor_001") == "PBR_wood"
+    assert material_for("DoorJamb_000") == "PBR_wood"
+    assert material_for("DoorLeaf_000") == "PBR_wood"
+    assert material_for("WindowFrame_000") == "PBR_metal"
+    assert material_for("WindowGlass_000") == "Window_Glass"
+    assert material_for("Ceiling_000") == "PBR_painted_wall"
+
+    binary = output.read_bytes()
+    json_length, _ = struct.unpack_from("<II", binary, 12)
+    gltf = json.loads(binary[20 : 20 + json_length])
+    materials = {material["name"]: material for material in gltf["materials"]}
+    assert materials["PBR_metal"]["pbrMetallicRoughness"]["metallicFactor"] == pytest.approx(0.85)
+    assert materials["PBR_metal"].get("doubleSided", False) is False
+    assert materials["PBR_masked_panel"]["alphaMode"] == "MASK"
+    assert materials["PBR_masked_panel"]["pbrMetallicRoughness"]["baseColorFactor"][3] == pytest.approx(0.4)
+    assert "alphaMode" not in materials["PBR_opaque_panel"]
+    assert materials["PBR_opaque_panel"]["pbrMetallicRoughness"]["baseColorFactor"][3] == pytest.approx(1.0)
+    assert materials["PBR_glass"]["alphaMode"] == "BLEND"
+    assert materials["PBR_glass"]["doubleSided"] is True
+    assert materials["Window_Glass"]["doubleSided"] is True

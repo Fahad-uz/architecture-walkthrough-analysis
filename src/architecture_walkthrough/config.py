@@ -151,6 +151,7 @@ class BakeSettings(BaseModel):
 
 
 class TextureSettings(BaseModel):
+    registry_path: Path = Path("assets/textures/material_registry.yaml")
     default_resolution: PositiveInt = 2048
     allow_4k: bool = False
     embed_in_glb: bool = True
