@@ -45,6 +45,32 @@ def test_t_junction_endpoint_sloppiness_is_snapped() -> None:
     assert len(result.faces) == 2
 
 
+def test_reciprocal_endpoint_snaps_node_on_a_stable_precision_grid() -> None:
+    # Scale conversion and projection can leave two mutually snapped endpoints
+    # a few floating-point ulps apart. GEOS then sees an open loop even though
+    # both points describe the same measured junction.
+    bottom_y = 4.765941533279317
+    right_x = 5.174885080427878
+    walls = [
+        _wall("bottom", 0, bottom_y, 5.302585029690035, bottom_y),
+        _wall("left", 0, bottom_y, 0, 8),
+        _wall("top", 0, 8, right_x, 8),
+        _wall("right", right_x, 4.765942, right_x, 8),
+    ]
+
+    result = enumerate_faces(
+        walls,
+        junction_snap_m=0.2,
+        min_room_area_m2=0.1,
+    )
+
+    assert len(result.faces) == 1
+    assert result.faces[0].polygon.area == pytest.approx(
+        right_x * (8 - bottom_y),
+        abs=1e-5,
+    )
+
+
 def test_doorway_gap_stays_open_without_confirmed_opening() -> None:
     # Divider has a 0.9 m doorway gap; without an opening the rooms must merge
     # (single face) rather than being closed by an invented wall.
