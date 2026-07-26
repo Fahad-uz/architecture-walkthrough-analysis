@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import json
 import logging
+import multiprocessing
 import os
 import shutil
 import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from multiprocessing.process import BaseProcess
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -290,7 +294,153 @@ ARTIFACT_WHITELIST = {
     "analysis_overlay.png",
 }
 
+ANALYSIS_PUBLIC_ARTIFACTS = (
+    "building.glb",
+    "floorplan.json",
+    "floorplan.raw.json",
+    "floorplan.optimized.json",
+    "validation_report.json",
+    "analysis_overlay.svg",
+    "analysis_overlay.png",
+)
+ANALYSIS_ERROR_FILE = "analysis_error.json"
 EDITABLE_JOB_STATES = {"needs_review", "model_generated", "blocked", "generation_failed"}
+
+
+def _analysis_worker_entry(
+    image_path: Path,
+    staging_dir: Path,
+    config_payload: dict[str, object],
+    manual_scale: float | None,
+    crop_rect: tuple[int, int, int, int] | None,
+) -> None:
+    """Run the CPU-heavy analysis outside the API process.
+
+    The child never mutates ``JobRecord`` or public artifacts. Its entire
+    writable surface is a private staging directory that the parent publishes
+    only after a clean exit.
+    """
+
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        config = AppConfig.model_validate(config_payload)
+        model = analyze_image(
+            image_path,
+            staging_dir,
+            config,
+            manual_scale=manual_scale,
+            require_ai_success=False,
+            crop_rect=crop_rect,
+        )
+        export_simple_glb(model, staging_dir / "building.glb")
+    except Exception as exc:
+        error_path = staging_dir / ANALYSIS_ERROR_FILE
+        try:
+            error_path.write_text(
+                json.dumps({"message": str(exc)[:2000]}, indent=2),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+        raise
+
+
+def _rewrite_staged_paths(value: object, source_root: str, target_root: str) -> object:
+    """Rewrite analysis metadata paths after the debug directory is promoted."""
+
+    if isinstance(value, dict):
+        return {
+            key: _rewrite_staged_paths(item, source_root, target_root)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_rewrite_staged_paths(item, source_root, target_root) for item in value]
+    if isinstance(value, str) and (
+        value == source_root or value.startswith(f"{source_root}{os.sep}")
+    ):
+        return f"{target_root}{value[len(source_root):]}"
+    return value
+
+
+def _promote_analysis_artifacts(staging_dir: Path, job_dir: Path, revision: str) -> FloorPlanModel:
+    """Validate and atomically publish a completed child-process revision."""
+
+    missing = [
+        name
+        for name in ANALYSIS_PUBLIC_ARTIFACTS
+        if not (staging_dir / name).is_file()
+    ]
+    debug_source = staging_dir / "debug"
+    debug_target = job_dir / "debug"
+    if missing:
+        raise RuntimeError(f"analysis worker omitted required artifacts: {', '.join(missing)}")
+    if not debug_source.is_dir():
+        raise RuntimeError("analysis worker omitted debug evidence")
+    if debug_target.exists():
+        raise RuntimeError("analysis debug target already exists")
+
+    source_root = str(staging_dir.resolve())
+    target_root = str(job_dir.resolve())
+    for name in (
+        "floorplan.json",
+        "floorplan.raw.json",
+        "floorplan.optimized.json",
+        "validation_report.json",
+    ):
+        path = staging_dir / name
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        rewritten = _rewrite_staged_paths(payload, source_root, target_root)
+        path.write_text(json.dumps(rewritten, indent=2), encoding="utf-8")
+
+    # Validate the rewritten model before any public path is changed. Once the
+    # artifact transaction succeeds, returning the already-loaded model cannot
+    # introduce a post-commit validation failure.
+    model = FloorPlanModel.load_json(staging_dir / "floorplan.optimized.json")
+    os.replace(debug_source, debug_target)
+    replacements = [
+        (staging_dir / name, job_dir / name)
+        for name in ANALYSIS_PUBLIC_ARTIFACTS
+    ]
+    optional_hints = staging_dir / "floorplan_vision_hints.json"
+    if optional_hints.is_file():
+        replacements.append((optional_hints, job_dir / optional_hints.name))
+    try:
+        _commit_artifact_set(replacements, revision)
+    except Exception:
+        shutil.rmtree(debug_target, ignore_errors=True)
+        raise
+    return model
+
+
+def _discard_promoted_analysis_artifacts(job_dir: Path) -> None:
+    """Best-effort rollback when durable terminal-state publication fails."""
+
+    for name in (*ANALYSIS_PUBLIC_ARTIFACTS, "floorplan_vision_hints.json"):
+        _best_effort_unlink(job_dir / name, "rolling back analysis publication")
+    shutil.rmtree(job_dir / "debug", ignore_errors=True)
+
+
+def _analysis_error_message(staging_dir: Path, exit_code: int | None) -> str:
+    try:
+        payload = json.loads(
+            (staging_dir / ANALYSIS_ERROR_FILE).read_text(encoding="utf-8")
+        )
+        message = str(payload.get("message") or "").strip()
+    except (OSError, ValueError, TypeError):
+        message = ""
+    if message:
+        return message
+    return f"analysis worker exited unsuccessfully (exit code {exit_code})"
+
+
+@dataclass
+class _AnalysisOperation:
+    process: BaseProcess
+    staging_dir: Path
+    revision: str
+    monitor: threading.Thread | None = None
+    monitor_started: bool = False
+    cancel_message: str | None = None
 
 
 class JobRecord(BaseModel):
@@ -313,16 +463,21 @@ class JobRecord(BaseModel):
 
 
 class LocalJobRunner:
-    """Single-process job store; long work runs on daemon threads and the
-    frontend polls GET /jobs/{id}. Swap for a queue if this outgrows one user."""
+    """Single-process job store with bounded, killable background work."""
 
     def __init__(self, config: AppConfig) -> None:
         self.config = config
         self.jobs: dict[str, JobRecord] = {}
         self._lock = threading.RLock()
+        self._analysis_context = multiprocessing.get_context("spawn")
+        self._analysis_slots = threading.BoundedSemaphore(
+            config.limits.max_concurrent_analyses
+        )
+        self._analysis_operations: dict[str, _AnalysisOperation] = {}
         self._generation_slots = threading.BoundedSemaphore(
             config.limits.max_concurrent_generations
         )
+        self._closed = False
 
     def create_job(self) -> JobRecord:
         job_dir = create_job_dir(self.config.paths.work_root)
@@ -335,6 +490,21 @@ class LocalJobRunner:
                 self.jobs.pop(record.job_id, None)
                 raise
         return record
+
+    def discard_created_job(self, record: JobRecord) -> None:
+        """Remove an unadvertised job after admission is rejected."""
+
+        job_dir = self._job_dir(record.job_id)
+        with self._lock:
+            current = self.jobs.get(record.job_id)
+            if current is None:
+                return
+            if current.status != "created":
+                raise RuntimeError(
+                    f"cannot discard job {record.job_id} while it is {current.status}"
+                )
+            self.jobs.pop(record.job_id, None)
+        shutil.rmtree(job_dir, ignore_errors=True)
 
     def _job_dir(self, job_id: str) -> Path:
         try:
@@ -361,6 +531,11 @@ class LocalJobRunner:
             job_dir = self._job_dir(job_id)
             for stale_temporary in job_dir.glob(".job.*.tmp"):
                 _best_effort_unlink(stale_temporary, f"loading job {job_id}")
+            for stale_analysis in job_dir.glob(".analysis.*"):
+                if stale_analysis.is_dir():
+                    shutil.rmtree(stale_analysis, ignore_errors=True)
+                else:
+                    _best_effort_unlink(stale_analysis, f"loading job {job_id}")
             record_path = job_dir / "job.json"
             if record_path.exists():
                 record = JobRecord.model_validate_json(record_path.read_text(encoding="utf-8"))
@@ -406,6 +581,7 @@ class LocalJobRunner:
     def snapshot(self, job_id: str) -> JobRecord:
         """Return a detached response-safe view of one complete job state."""
 
+        self._reap_unmonitored_analyses()
         with self._lock:
             return self.get(job_id).model_copy(deep=True)
 
@@ -490,6 +666,99 @@ class LocalJobRunner:
 
     # -- background stages ---------------------------------------------------
 
+    def _new_analysis_process(
+        self,
+        image_path: Path,
+        staging_dir: Path,
+        job_config: AppConfig,
+        manual_scale: float | None,
+        crop_rect: tuple[int, int, int, int] | None,
+    ) -> BaseProcess:
+        return self._analysis_context.Process(
+            target=_analysis_worker_entry,
+            args=(
+                image_path,
+                staging_dir,
+                job_config.model_dump(mode="json"),
+                manual_scale,
+                crop_rect,
+            ),
+            daemon=True,
+        )
+
+    @staticmethod
+    def _stop_analysis_process(process: BaseProcess) -> bool:
+        """Terminate one worker and confirm it is gone before capacity is reused."""
+
+        try:
+            if not process.is_alive():
+                process.join(timeout=0)
+                return True
+            process.terminate()
+            process.join(timeout=2)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=2)
+            return not process.is_alive()
+        except Exception:
+            LOGGER.exception("could not stop analysis worker process")
+            return False
+
+    def _finish_analysis_operation(
+        self,
+        job_id: str,
+        operation: _AnalysisOperation,
+        *,
+        process_reaped: bool,
+    ) -> None:
+        if process_reaped:
+            shutil.rmtree(operation.staging_dir, ignore_errors=True)
+        with self._lock:
+            if self._analysis_operations.get(job_id) is not operation:
+                return
+            if process_reaped:
+                self._analysis_operations.pop(job_id, None)
+                self._analysis_slots.release()
+            else:
+                LOGGER.error(
+                    "analysis worker for job %s could not be stopped; "
+                    "capacity remains reserved",
+                    job_id,
+                )
+
+    def _publish_analysis_failure(self, record: JobRecord, message: str) -> None:
+        try:
+            self.publish(
+                record,
+                expected_status="processing",
+                status="failed",
+                message=message,
+            )
+        except RuntimeError:
+            LOGGER.info("analysis job %s already reached a terminal state", record.job_id)
+
+    def _reap_unmonitored_analyses(self) -> None:
+        """Finalize workers whose dedicated monitor thread could not start."""
+
+        with self._lock:
+            candidates = [
+                (job_id, operation)
+                for job_id, operation in self._analysis_operations.items()
+                if not operation.monitor_started
+            ]
+        for job_id, operation in candidates:
+            try:
+                operation.process.join(timeout=0)
+                process_alive = operation.process.is_alive()
+            except Exception:
+                LOGGER.exception("could not reap analysis worker %s", job_id)
+                continue
+            if process_alive:
+                continue
+            record = self.jobs.get(job_id)
+            if record is not None:
+                self._monitor_analysis(record, operation)
+
     def start_analysis(
         self,
         record: JobRecord,
@@ -498,73 +767,315 @@ class LocalJobRunner:
         manual_scale: float | None,
         crop_rect: tuple[int, int, int, int] | None,
     ) -> None:
-        self.publish(
-            record,
-            expected_status="created",
-            status="processing",
-            message="analyzing floor plan",
-        )
-        thread = threading.Thread(
-            target=self._run_analysis,
-            args=(record, image_path, job_config, manual_scale, crop_rect),
-            daemon=True,
-        )
-        thread.start()
+        self._reap_unmonitored_analyses()
+        if not self._analysis_slots.acquire(blocking=False):
+            raise HTTPException(
+                status_code=429,
+                detail="all analysis slots are busy; retry shortly",
+                headers={"Retry-After": "5"},
+            )
 
-    def _run_analysis(
+        previous = self.snapshot(record.job_id)
+        operation: _AnalysisOperation | None = None
+        process_reaped = True
+        monitor_owns_slot = False
+        try:
+            with self._lock:
+                if self._closed:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="analysis service is shutting down",
+                        headers={"Retry-After": "5"},
+                    )
+                self.publish(
+                    record,
+                    expected_status="created",
+                    status="processing",
+                    message="analyzing floor plan",
+                )
+                revision = uuid.uuid4().hex
+                job_dir = self._job_dir(record.job_id)
+                staging_dir = job_dir / f".analysis.{revision}"
+                staging_dir.mkdir(parents=False, exist_ok=False)
+                process = self._new_analysis_process(
+                    image_path,
+                    staging_dir,
+                    job_config,
+                    manual_scale,
+                    crop_rect,
+                )
+                operation = _AnalysisOperation(
+                    process=process,
+                    staging_dir=staging_dir,
+                    revision=revision,
+                )
+                monitor = threading.Thread(
+                    target=self._monitor_analysis,
+                    args=(record, operation),
+                    name=f"analysis-monitor-{record.job_id}",
+                    daemon=True,
+                )
+                operation.monitor = monitor
+                process.start()
+                process_reaped = False
+                self._analysis_operations[record.job_id] = operation
+                monitor.start()
+                operation.monitor_started = True
+                monitor_owns_slot = True
+            return
+        except HTTPException:
+            if operation is not None and not process_reaped:
+                process_reaped = self._stop_analysis_process(operation.process)
+            with self._lock:
+                if operation is not None:
+                    self._analysis_operations.pop(record.job_id, None)
+            self.restore_mutation(record, previous, expected_status="processing")
+            raise
+        except Exception as exc:
+            LOGGER.exception("could not start analysis worker for job %s", record.job_id)
+            if operation is not None and not process_reaped:
+                process_reaped = self._stop_analysis_process(operation.process)
+            if operation is not None and not process_reaped:
+                # A worker that outlived monitor-thread startup must remain
+                # tracked. Polling, admission, or shutdown will reap it later;
+                # blocking here would freeze the async request's event loop.
+                with self._lock:
+                    operation.cancel_message = (
+                        "analysis worker monitoring could not start; "
+                        "waiting for the worker to stop"
+                    )
+                    self.publish(
+                        record,
+                        expected_status="processing",
+                        status="processing",
+                        message=(
+                            f"{operation.cancel_message}; "
+                            "capacity remains reserved"
+                        ),
+                    )
+                monitor_owns_slot = True
+                return
+            with self._lock:
+                if operation is not None:
+                    self._analysis_operations.pop(record.job_id, None)
+            self.restore_mutation(record, previous, expected_status="processing")
+            raise HTTPException(
+                status_code=503,
+                detail="analysis worker could not start; retry shortly",
+                headers={"Retry-After": "5"},
+            ) from exc
+        finally:
+            if not monitor_owns_slot:
+                if operation is not None and process_reaped:
+                    shutil.rmtree(operation.staging_dir, ignore_errors=True)
+                if process_reaped:
+                    self._analysis_slots.release()
+
+    def _monitor_analysis(
         self,
         record: JobRecord,
-        image_path: Path,
-        job_config: AppConfig,
-        manual_scale: float | None,
-        crop_rect: tuple[int, int, int, int] | None,
+        operation: _AnalysisOperation,
     ) -> None:
-        job_dir = self.config.paths.work_root / record.job_id
+        process = operation.process
+        process_reaped = False
+        terminal_status = "failed"
+        terminal_message = "analysis failed"
+        terminal_changes: dict[str, object] = {}
+        timed_out = False
+        worker_succeeded = False
         try:
-            model = analyze_image(
-                image_path,
-                job_dir,
-                job_config,
-                manual_scale=manual_scale,
-                require_ai_success=False,
-                crop_rect=crop_rect,
-            )
-            # Instant untextured preview so the model page works before the
-            # Blender quality build is requested.
-            export_simple_glb(model, job_dir / "building.glb")
-            metadata = model.metadata
-            self.publish(
-                record,
-                expected_status="processing",
-                status="needs_review",
-                message="analysis complete; review the layout in the editor",
-                bump_glb_version=True,
-                ai_assist_attempted=bool(metadata.get("ai_assist_attempted")),
-                ai_assist_succeeded=bool(metadata.get("ai_assist_succeeded")),
-                ai_assist_error=metadata.get("ai_assist_error"),
-                quality_state=model.reconstruction.quality_state,
-                quality_score=model.reconstruction.quality_score,
-                glb_url=f"/jobs/{record.job_id}/artifacts/building.glb",
-                glb_source="preview",
-                optimized_json_url=(
-                    f"/jobs/{record.job_id}/artifacts/floorplan.optimized.json"
-                ),
-                overlay_url=f"/jobs/{record.job_id}/artifacts/analysis_overlay.svg",
-                validation_report_url=(
-                    f"/jobs/{record.job_id}/artifacts/validation_report.json"
-                ),
-            )
-        except Exception as exc:  # surfaced via polling, never a 500 later
+            process.join(timeout=self.config.limits.processing_timeout_seconds)
+            timed_out = process.is_alive()
+            if timed_out:
+                process_reaped = self._stop_analysis_process(process)
+            else:
+                process_reaped = True
+
+            if timed_out:
+                terminal_message = (
+                    "analysis timed out after "
+                    f"{self.config.limits.processing_timeout_seconds} seconds"
+                )
+            elif process.exitcode != 0:
+                terminal_message = _analysis_error_message(
+                    operation.staging_dir,
+                    process.exitcode,
+                )
+            else:
+                worker_succeeded = True
+        except Exception as exc:
             LOGGER.exception("analysis failed for job %s", record.job_id)
+            terminal_message = str(exc)
+            process_reaped = self._stop_analysis_process(process)
+
+        if not process_reaped:
+            with self._lock:
+                if self._analysis_operations.get(record.job_id) is not operation:
+                    return
+                self.publish(
+                    record,
+                    expected_status="processing",
+                    status="processing",
+                    message=(
+                        f"{terminal_message}; the worker could not be stopped "
+                        "and capacity remains reserved"
+                    ),
+                )
+            # Keep the bounded monitor alive as a reaper. Capacity remains
+            # reserved until the operating system confirms the worker exited.
+            while not process_reaped:
+                try:
+                    process.join(timeout=1)
+                    if not process.is_alive():
+                        process.join(timeout=0)
+                        process_reaped = True
+                except Exception:
+                    LOGGER.exception(
+                        "could not wait for analysis worker %s",
+                        record.job_id,
+                    )
+                    time.sleep(1)
+
+        # One lock makes cleanup, capacity release, and the terminal JobRecord
+        # publication externally indivisible. Pollers cannot observe a terminal
+        # status while the prior operation still owns resources.
+        with self._lock:
+            if self._analysis_operations.get(record.job_id) is not operation:
+                return
+            if operation.cancel_message:
+                worker_succeeded = False
+                terminal_message = operation.cancel_message
+            if worker_succeeded:
+                try:
+                    job_dir = self._job_dir(record.job_id)
+                    model = _promote_analysis_artifacts(
+                        operation.staging_dir,
+                        job_dir,
+                        operation.revision,
+                    )
+                    metadata = model.metadata
+                    terminal_status = "needs_review"
+                    terminal_message = (
+                        "analysis complete; review the layout in the editor"
+                    )
+                    terminal_changes = {
+                        "ai_assist_attempted": bool(
+                            metadata.get("ai_assist_attempted")
+                        ),
+                        "ai_assist_succeeded": bool(
+                            metadata.get("ai_assist_succeeded")
+                        ),
+                        "ai_assist_error": metadata.get("ai_assist_error"),
+                        "quality_state": model.reconstruction.quality_state,
+                        "quality_score": model.reconstruction.quality_score,
+                        "glb_url": (
+                            f"/jobs/{record.job_id}/artifacts/building.glb"
+                        ),
+                        "glb_source": "preview",
+                        "optimized_json_url": (
+                            f"/jobs/{record.job_id}/artifacts/"
+                            "floorplan.optimized.json"
+                        ),
+                        "overlay_url": (
+                            f"/jobs/{record.job_id}/artifacts/"
+                            "analysis_overlay.svg"
+                        ),
+                        "validation_report_url": (
+                            f"/jobs/{record.job_id}/artifacts/"
+                            "validation_report.json"
+                        ),
+                    }
+                except Exception as exc:
+                    LOGGER.exception(
+                        "could not publish analysis artifacts for job %s",
+                        record.job_id,
+                    )
+                    terminal_status = "failed"
+                    terminal_message = str(exc)
+                    terminal_changes = {}
+
+            self._finish_analysis_operation(
+                record.job_id,
+                operation,
+                process_reaped=True,
+            )
             try:
                 self.publish(
                     record,
                     expected_status="processing",
-                    status="failed",
-                    message=str(exc),
+                    status=terminal_status,
+                    message=terminal_message,
+                    bump_glb_version=terminal_status == "needs_review",
+                    **terminal_changes,
                 )
-            except RuntimeError:
-                LOGGER.info("analysis job %s already reached a terminal state", record.job_id)
+            except Exception as exc:
+                if terminal_status == "needs_review":
+                    _discard_promoted_analysis_artifacts(
+                        self._job_dir(record.job_id)
+                    )
+                LOGGER.exception(
+                    "could not persist terminal analysis state for job %s",
+                    record.job_id,
+                )
+                try:
+                    self.publish(
+                        record,
+                        expected_status="processing",
+                        status="failed",
+                        message=f"analysis publication failed: {exc}",
+                    )
+                except Exception:
+                    LOGGER.exception(
+                        "could not persist analysis publication failure for job %s",
+                        record.job_id,
+                    )
+
+    def close(self) -> None:
+        """Stop accepting analyses and reap active child processes."""
+
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            operations = list(self._analysis_operations.items())
+            for job_id, operation in operations:
+                operation.cancel_message = (
+                    "analysis was interrupted by server shutdown; upload the plan again"
+                )
+                LOGGER.info("stopping analysis worker for job %s", job_id)
+
+        process_reaped = {
+            job_id: self._stop_analysis_process(operation.process)
+            for job_id, operation in operations
+        }
+        for _job_id, operation in operations:
+            if operation.monitor is not None and operation.monitor_started:
+                operation.monitor.join(timeout=5)
+
+        for job_id, operation in operations:
+            if not process_reaped[job_id]:
+                process_reaped[job_id] = self._stop_analysis_process(
+                    operation.process
+                )
+            if not process_reaped[job_id]:
+                LOGGER.error("analysis worker for job %s survived shutdown", job_id)
+                continue
+            with self._lock:
+                if self._analysis_operations.get(job_id) is not operation:
+                    continue
+                self._finish_analysis_operation(
+                    job_id,
+                    operation,
+                    process_reaped=True,
+                )
+                self._publish_analysis_failure(
+                    self.jobs[job_id],
+                    operation.cancel_message
+                    or (
+                        "analysis was interrupted by server shutdown; "
+                        "upload the plan again"
+                    ),
+                )
 
     def start_generation(self, record: JobRecord, force: bool, bake_mode: str | None) -> None:
         mode = bake_mode or self.config.bake.mode
@@ -751,7 +1262,16 @@ def _apply_correction_revision(
 def create_app() -> FastAPI:
     config = load_config()
     runner = LocalJobRunner(config)
-    app = FastAPI(title="Architecture Walkthrough Analysis")
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        try:
+            yield
+        finally:
+            runner.close()
+
+    app = FastAPI(title="Architecture Walkthrough Analysis", lifespan=lifespan)
+    app.state.runner = runner
     app.add_middleware(
         RequestBodyLimitMiddleware,
         max_body_bytes=config.limits.max_upload_mb * 1024 * 1024 + MULTIPART_OVERHEAD_BYTES,
@@ -826,7 +1346,12 @@ def create_app() -> FastAPI:
         crop_rect = None
         if crop_x is not None and crop_y is not None and crop_width is not None and crop_height is not None:
             crop_rect = (crop_x, crop_y, crop_width, crop_height)
-        runner.start_analysis(record, safe_path, job_config, manual_scale, crop_rect)
+        try:
+            runner.start_analysis(record, safe_path, job_config, manual_scale, crop_rect)
+        except HTTPException as exc:
+            if exc.status_code in {429, 503}:
+                runner.discard_created_job(record)
+            raise
         return runner.snapshot(record.job_id)
 
     @app.get("/jobs/{job_id}", response_model=JobRecord)

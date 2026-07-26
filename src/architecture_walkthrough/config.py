@@ -26,6 +26,7 @@ class LimitSettings(BaseModel):
     max_image_height: PositiveInt = 6000
     processing_timeout_seconds: PositiveInt = 120
     subprocess_timeout_seconds: PositiveInt = 600
+    max_concurrent_analyses: PositiveInt = 1
     max_concurrent_generations: PositiveInt = 1
     max_frames: PositiveInt = 900
     preview_resolution: Resolution = Resolution(width=960, height=540)

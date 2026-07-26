@@ -37,3 +37,18 @@ def test_runtime_tool_and_gemini_environment_overrides(tmp_path: Path, monkeypat
     assert config.paths.ffmpeg_executable == "C:/tools/ffmpeg.exe"
     assert config.ai.gemini_enabled is False
     assert config.ai.gemini_model == "gemini-test"
+
+
+def test_analysis_capacity_and_timeout_are_loaded_from_yaml(tmp_path: Path) -> None:
+    config_path = tmp_path / "limits.yaml"
+    config_path.write_text(
+        "limits:\n"
+        "  max_concurrent_analyses: 2\n"
+        "  processing_timeout_seconds: 37\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.limits.max_concurrent_analyses == 2
+    assert config.limits.processing_timeout_seconds == 37

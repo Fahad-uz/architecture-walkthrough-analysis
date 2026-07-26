@@ -8,6 +8,7 @@ limits:
   max_image_height: 6000
   processing_timeout_seconds: 120
   subprocess_timeout_seconds: 600
+  max_concurrent_analyses: 1
   max_concurrent_generations: 1
   max_frames: 900
   preview_resolution:
