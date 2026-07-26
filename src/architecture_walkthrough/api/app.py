@@ -319,7 +319,7 @@ class LocalJobRunner:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
         self.jobs: dict[str, JobRecord] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._generation_slots = threading.BoundedSemaphore(
             config.limits.max_concurrent_generations
         )
@@ -329,7 +329,11 @@ class LocalJobRunner:
         record = JobRecord(job_id=job_dir.name, status="created")
         with self._lock:
             self.jobs[record.job_id] = record
-        self.save(record)
+            try:
+                self._persist_locked(record)
+            except Exception:
+                self.jobs.pop(record.job_id, None)
+                raise
         return record
 
     def _job_dir(self, job_id: str) -> Path:
@@ -354,7 +358,10 @@ class LocalJobRunner:
         with self._lock:
             if job_id in self.jobs:
                 return self.jobs[job_id]
-            record_path = self._job_dir(job_id) / "job.json"
+            job_dir = self._job_dir(job_id)
+            for stale_temporary in job_dir.glob(".job.*.tmp"):
+                _best_effort_unlink(stale_temporary, f"loading job {job_id}")
+            record_path = job_dir / "job.json"
             if record_path.exists():
                 record = JobRecord.model_validate_json(record_path.read_text(encoding="utf-8"))
                 if record.job_id != job_id:
@@ -370,35 +377,116 @@ class LocalJobRunner:
                     record.status = "needs_review"
                     record.message = "saving corrections was interrupted; review and save the layout again"
                 if record.status != original_status:
-                    record_path.write_text(record.model_dump_json(indent=2), encoding="utf-8")
+                    self._persist_locked(record)
                 self.jobs[job_id] = record
                 return record
         raise HTTPException(status_code=404, detail="job not found")
 
-    def save(self, record: JobRecord) -> None:
+    def _persist_locked(self, record: JobRecord) -> None:
+        """Durably replace job.json while the runner lock is held."""
+
         job_dir = self._job_dir(record.job_id)
         job_dir.mkdir(parents=True, exist_ok=True)
-        (job_dir / "job.json").write_text(record.model_dump_json(indent=2), encoding="utf-8")
+        record_path = job_dir / "job.json"
+        temporary = job_dir / f".job.{uuid.uuid4().hex}.tmp"
+        try:
+            with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+                handle.write(record.model_dump_json(indent=2))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, record_path)
+        finally:
+            _best_effort_unlink(temporary, f"persisting job {record.job_id}")
 
-    def claim_mutation(self, record: JobRecord, status: str, message: str) -> str:
+    def save(self, record: JobRecord) -> None:
+        with self._lock:
+            self.jobs[record.job_id] = record
+            self._persist_locked(record)
+
+    def snapshot(self, job_id: str) -> JobRecord:
+        """Return a detached response-safe view of one complete job state."""
+
+        with self._lock:
+            return self.get(job_id).model_copy(deep=True)
+
+    @staticmethod
+    def _restore_fields(target: JobRecord, source: JobRecord) -> None:
+        for field_name in type(source).model_fields:
+            setattr(target, field_name, getattr(source, field_name))
+
+    def publish(
+        self,
+        record: JobRecord,
+        *,
+        expected_status: str,
+        status: str,
+        message: str,
+        bump_glb_version: bool = False,
+        **changes: object,
+    ) -> JobRecord:
+        """Publish a complete state bundle and its durable JSON as one transition."""
+
+        with self._lock:
+            current = self.jobs.setdefault(record.job_id, record)
+            if current.status != expected_status:
+                raise RuntimeError(
+                    f"job {record.job_id} moved from {expected_status} to {current.status}"
+                )
+            previous = current.model_copy(deep=True)
+            try:
+                for field_name, value in changes.items():
+                    if field_name not in type(current).model_fields:
+                        raise ValueError(f"unknown JobRecord field: {field_name}")
+                    setattr(current, field_name, value)
+                if bump_glb_version:
+                    current.glb_version = _next_glb_version(current.glb_version)
+                current.message = message
+                current.status = status
+                self._persist_locked(current)
+            except Exception:
+                self._restore_fields(current, previous)
+                raise
+            return current.model_copy(deep=True)
+
+    def claim_mutation(self, record: JobRecord, status: str, message: str) -> JobRecord:
         """Atomically reserve a job for one state-changing operation."""
 
         with self._lock:
-            if record.status not in EDITABLE_JOB_STATES:
+            current = self.jobs.setdefault(record.job_id, record)
+            if current.status not in EDITABLE_JOB_STATES:
                 raise HTTPException(
                     status_code=409,
-                    detail=f"job is {record.status}; wait for the active operation to finish",
+                    detail=f"job is {current.status}; wait for the active operation to finish",
                 )
-            previous = record.status
-            record.status = status
-            record.message = message
-        self.save(record)
+            previous = current.model_copy(deep=True)
+            current.status = status
+            current.message = message
+            try:
+                self._persist_locked(current)
+            except Exception:
+                self._restore_fields(current, previous)
+                raise
         return previous
 
-    def restore_mutation(self, record: JobRecord, previous_status: str) -> None:
+    def restore_mutation(
+        self,
+        record: JobRecord,
+        previous: JobRecord,
+        *,
+        expected_status: str,
+    ) -> JobRecord:
         with self._lock:
-            record.status = previous_status
-        self.save(record)
+            current = self.jobs.setdefault(record.job_id, record)
+            if current.status != expected_status:
+                return current.model_copy(deep=True)
+            active = current.model_copy(deep=True)
+            self._restore_fields(current, previous)
+            try:
+                self._persist_locked(current)
+            except Exception:
+                self._restore_fields(current, active)
+                raise
+            return current.model_copy(deep=True)
 
     # -- background stages ---------------------------------------------------
 
@@ -410,8 +498,12 @@ class LocalJobRunner:
         manual_scale: float | None,
         crop_rect: tuple[int, int, int, int] | None,
     ) -> None:
-        record.status = "processing"
-        self.save(record)
+        self.publish(
+            record,
+            expected_status="created",
+            status="processing",
+            message="analyzing floor plan",
+        )
         thread = threading.Thread(
             target=self._run_analysis,
             args=(record, image_path, job_config, manual_scale, crop_rect),
@@ -441,24 +533,38 @@ class LocalJobRunner:
             # Blender quality build is requested.
             export_simple_glb(model, job_dir / "building.glb")
             metadata = model.metadata
-            record.ai_assist_attempted = bool(metadata.get("ai_assist_attempted"))
-            record.ai_assist_succeeded = bool(metadata.get("ai_assist_succeeded"))
-            record.ai_assist_error = metadata.get("ai_assist_error")
-            record.quality_state = model.reconstruction.quality_state
-            record.quality_score = model.reconstruction.quality_score
-            record.status = "needs_review"
-            record.message = "analysis complete; review the layout in the editor"
-            record.glb_url = f"/jobs/{record.job_id}/artifacts/building.glb"
-            record.glb_source = "preview"
-            record.glb_version = _next_glb_version(record.glb_version)
-            record.optimized_json_url = f"/jobs/{record.job_id}/artifacts/floorplan.optimized.json"
-            record.overlay_url = f"/jobs/{record.job_id}/artifacts/analysis_overlay.svg"
-            record.validation_report_url = f"/jobs/{record.job_id}/artifacts/validation_report.json"
+            self.publish(
+                record,
+                expected_status="processing",
+                status="needs_review",
+                message="analysis complete; review the layout in the editor",
+                bump_glb_version=True,
+                ai_assist_attempted=bool(metadata.get("ai_assist_attempted")),
+                ai_assist_succeeded=bool(metadata.get("ai_assist_succeeded")),
+                ai_assist_error=metadata.get("ai_assist_error"),
+                quality_state=model.reconstruction.quality_state,
+                quality_score=model.reconstruction.quality_score,
+                glb_url=f"/jobs/{record.job_id}/artifacts/building.glb",
+                glb_source="preview",
+                optimized_json_url=(
+                    f"/jobs/{record.job_id}/artifacts/floorplan.optimized.json"
+                ),
+                overlay_url=f"/jobs/{record.job_id}/artifacts/analysis_overlay.svg",
+                validation_report_url=(
+                    f"/jobs/{record.job_id}/artifacts/validation_report.json"
+                ),
+            )
         except Exception as exc:  # surfaced via polling, never a 500 later
             LOGGER.exception("analysis failed for job %s", record.job_id)
-            record.status = "failed"
-            record.message = str(exc)
-        self.save(record)
+            try:
+                self.publish(
+                    record,
+                    expected_status="processing",
+                    status="failed",
+                    message=str(exc),
+                )
+            except RuntimeError:
+                LOGGER.info("analysis job %s already reached a terminal state", record.job_id)
 
     def start_generation(self, record: JobRecord, force: bool, bake_mode: str | None) -> None:
         mode = bake_mode or self.config.bake.mode
@@ -468,13 +574,13 @@ class LocalJobRunner:
             samples = self.config.bake.final_samples if mode == "final" else self.config.bake.draft_samples
             lightmap = self.config.bake.final_lightmap_px if mode == "final" else self.config.bake.draft_lightmap_px
             preset = f"{samples} spp, {lightmap}px lightmaps"
-        previous_status = self.claim_mutation(
+        previous = self.claim_mutation(
             record,
             "generating",
             f"Blender build running — {mode} ({preset})",
         )
         if not self._generation_slots.acquire(blocking=False):
-            self.restore_mutation(record, previous_status)
+            self.restore_mutation(record, previous, expected_status="generating")
             raise HTTPException(
                 status_code=429,
                 detail="all Blender generation slots are busy; retry shortly",
@@ -488,7 +594,7 @@ class LocalJobRunner:
             thread.start()
         except Exception:
             self._generation_slots.release()
-            self.restore_mutation(record, previous_status)
+            self.restore_mutation(record, previous, expected_status="generating")
             raise
 
     def _run_generation_with_slot(
@@ -506,6 +612,9 @@ class LocalJobRunner:
         job_dir = self.config.paths.work_root / record.job_id
         revision = uuid.uuid4().hex
         temporary_glb = job_dir / f".building.{revision}.glb"
+        terminal_status = "model_generated"
+        terminal_message = ""
+        terminal_changes: dict[str, object] = {}
         try:
             build_model(
                 job_dir,
@@ -521,23 +630,30 @@ class LocalJobRunner:
                 if companion.exists():
                     replacements.append((companion, job_dir / f"building{suffix}"))
             _commit_artifact_set(replacements, revision)
-            record.status = "model_generated"
-            record.message = _bake_summary(job_dir / "building.bake.json")
-            record.glb_url = f"/jobs/{record.job_id}/artifacts/building.glb"
-            record.glb_source = "blender"
-            record.glb_version = _next_glb_version(record.glb_version)
+            terminal_message = _bake_summary(job_dir / "building.bake.json")
+            terminal_changes = {
+                "glb_url": f"/jobs/{record.job_id}/artifacts/building.glb",
+                "glb_source": "blender",
+            }
         except ValueError as exc:  # quality gate
-            record.status = "blocked"
-            record.message = str(exc)
+            terminal_status = "blocked"
+            terminal_message = str(exc)
         except Exception as exc:
             LOGGER.exception("generation failed for job %s", record.job_id)
-            record.status = "generation_failed"
-            record.message = str(exc)
+            terminal_status = "generation_failed"
+            terminal_message = str(exc)
         finally:
             for temporary in job_dir.glob(f"{temporary_glb.stem}*"):
                 if temporary.is_file():
                     _best_effort_unlink(temporary, f"generation job {record.job_id}")
-        self.save(record)
+        self.publish(
+            record,
+            expected_status="generating",
+            status=terminal_status,
+            message=terminal_message,
+            bump_glb_version=terminal_status == "model_generated",
+            **terminal_changes,
+        )
 
 
 def _apply_correction_revision(
@@ -618,14 +734,17 @@ def _apply_correction_revision(
         for temporary, _target in replacements:
             _best_effort_unlink(temporary, f"correction revision {revision}")
 
-    record.quality_state = quality.state
-    record.quality_score = quality.score
-    record.status = "needs_review"
-    record.message = "corrections saved; lightweight 3D preview updated"
-    record.glb_url = f"/jobs/{record.job_id}/artifacts/building.glb"
-    record.glb_source = "preview"
-    record.glb_version = _next_glb_version(record.glb_version)
-    runner.save(record)
+    runner.publish(
+        record,
+        expected_status="saving_corrections",
+        status="needs_review",
+        message="corrections saved; lightweight 3D preview updated",
+        bump_glb_version=True,
+        quality_state=quality.state,
+        quality_score=quality.score,
+        glb_url=f"/jobs/{record.job_id}/artifacts/building.glb",
+        glb_source="preview",
+    )
     return {"status": "accepted", "model": model.model_dump(mode="json"), **report}
 
 
@@ -693,9 +812,12 @@ def create_app() -> FastAPI:
             validated = validate_image_file(upload_path, config.limits, file.content_type)
         except ValueError as exc:
             upload_path.unlink(missing_ok=True)
-            record.status = "rejected"
-            record.message = str(exc)
-            runner.save(record)
+            runner.publish(
+                record,
+                expected_status="created",
+                status="rejected",
+                message=str(exc),
+            )
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         safe_path = job_dir / validated.safe_filename
         upload_path.replace(safe_path)
@@ -705,11 +827,11 @@ def create_app() -> FastAPI:
         if crop_x is not None and crop_y is not None and crop_width is not None and crop_height is not None:
             crop_rect = (crop_x, crop_y, crop_width, crop_height)
         runner.start_analysis(record, safe_path, job_config, manual_scale, crop_rect)
-        return record
+        return runner.snapshot(record.job_id)
 
     @app.get("/jobs/{job_id}", response_model=JobRecord)
     def get_job(job_id: str) -> JobRecord:
-        return runner.get(job_id)
+        return runner.snapshot(job_id)
 
     def current_floorplan_path(job_dir: Path) -> Path:
         for name in ("floorplan.corrected.json", "floorplan.optimized.json", "floorplan.json"):
@@ -778,7 +900,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=422, detail="editor corrections must use metre coordinates")
         if not model.walls:
             raise HTTPException(status_code=422, detail="a corrected floorplan must contain at least one wall")
-        previous_status = runner.claim_mutation(
+        previous = runner.claim_mutation(
             record,
             "saving_corrections",
             "validating and rebuilding the corrected model",
@@ -792,8 +914,11 @@ def create_app() -> FastAPI:
                 detail=f"correction cannot be rendered safely: {exc}",
             ) from exc
         finally:
-            if record.status == "saving_corrections":
-                runner.restore_mutation(record, previous_status)
+            runner.restore_mutation(
+                record,
+                previous,
+                expected_status="saving_corrections",
+            )
 
     @app.post("/jobs/{job_id}/validate-corrections")
     def validate_corrections(job_id: str) -> dict[str, object]:
@@ -831,7 +956,7 @@ def create_app() -> FastAPI:
     def generate_model(job_id: str, force: bool = False, bake_mode: str | None = None) -> JobRecord:
         record = runner.get(job_id)
         runner.start_generation(record, force=force, bake_mode=bake_mode)
-        return record
+        return runner.snapshot(job_id)
 
     @app.post("/jobs/{job_id}/generate-walkthrough")
     def generate_walkthrough(job_id: str) -> dict[str, str]:
