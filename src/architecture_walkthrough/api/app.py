@@ -24,6 +24,9 @@ from starlette.datastructures import UploadFile as StarletteUploadFile
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from architecture_walkthrough.config import AppConfig, load_config
+from architecture_walkthrough.geometry.balcony_ownership import (
+    reconcile_room_balcony_ownership,
+)
 from architecture_walkthrough.geometry.floorplan import load_corrected_floorplan
 from architecture_walkthrough.geometry.models import FloorPlanModel, ValidationIssue
 from architecture_walkthrough.geometry.validation import (
@@ -1182,8 +1185,30 @@ def _apply_correction_revision(
         model.windows,
         unconfirmed_opening_range_m=(0.55, 1.40),
     )
-    regenerated = match_faces_to_rooms(face_result.faces, model.rooms)
-    model = model.model_copy(update={"rooms": regenerated, "camera_waypoints": []})
+    regenerated = match_faces_to_rooms(
+        face_result.faces,
+        [*model.rooms, *model.balconies],
+    )
+    balcony_ownership = reconcile_room_balcony_ownership(
+        regenerated,
+        model.balconies,
+    )
+    model = model.model_copy(
+        update={
+            "rooms": balcony_ownership.rooms,
+            "balconies": balcony_ownership.balconies,
+            "camera_waypoints": [],
+            "metadata": {
+                **model.metadata,
+                "balcony_topology_faces_matched": (
+                    balcony_ownership.matched_topology_faces
+                ),
+                "rooms_trimmed_for_balconies": (
+                    balcony_ownership.subtracted_room_count
+                ),
+            },
+        }
+    )
     try:
         route = manual_or_auto_waypoints(model)
         model = model.model_copy(update={"camera_waypoints": waypoints_from_points(route)})

@@ -28,6 +28,9 @@ from architecture_walkthrough.geometry.models import (
     ValidationIssue,
     WallSegment,
 )
+from architecture_walkthrough.geometry.balcony_ownership import (
+    reconcile_room_balcony_ownership,
+)
 from architecture_walkthrough.geometry.furniture_layout import fit_furniture_to_rooms
 from architecture_walkthrough.geometry.reconstruction import reconstruct_walls
 from architecture_walkthrough.geometry.room_extraction import (
@@ -941,11 +944,23 @@ def analyze_image(
         pixels_per_metre,
         resized_height,
     )
+    balcony_ownership = reconcile_room_balcony_ownership(
+        final_rooms,
+        balconies,
+    )
+    final_rooms = balcony_ownership.rooms
+    balconies = balcony_ownership.balconies
     stages.record(
         "classify_special_elements",
         started,
         element_count=len(special_elements),
         balcony_count=len(balconies),
+        balcony_topology_faces_matched=(
+            balcony_ownership.matched_topology_faces
+        ),
+        rooms_trimmed_for_balconies=(
+            balcony_ownership.subtracted_room_count
+        ),
     )
 
     started = time.perf_counter()
@@ -1034,6 +1049,12 @@ def analyze_image(
             "grounded_ai_wall_rejected_off_envelope": grounded_hints.rejected_off_envelope,
             "repetitive_detail_region_count": len(wall_detection.repetitive_detail_regions),
             "grounded_balcony_count": len(balconies),
+            "balcony_topology_faces_matched": (
+                balcony_ownership.matched_topology_faces
+            ),
+            "rooms_trimmed_for_balconies": (
+                balcony_ownership.subtracted_room_count
+            ),
             "repetitive_detail_band_rejection_count": len(wall_detection.rejected_detail_bands),
             "grounded_wall_repetitive_detail_rejection_count": len(grounded_detail_filter.rejected),
             "local_colored_object_wall_rejection_count": (

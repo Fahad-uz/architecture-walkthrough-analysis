@@ -58,6 +58,28 @@ def write_analysis_overlay(
             cy = height - (sum(point.y for point in room.points) / len(room.points) * ppm)
             layers.append(f'<text x="{cx:.2f}" y="{cy:.2f}" font-size="13" fill="#006d2c">{escape(room.name)}</text>')
     layers.append("</g>")
+    layers.append('<g id="balconies">')
+    for balcony in model.balconies:
+        points = " ".join(
+            f"{x:.2f},{y:.2f}"
+            for x, y in [_pt(point, ppm, height) for point in balcony.points]
+        )
+        layers.append(
+            f'<polygon points="{points}" fill="#3182bd22" '
+            'stroke="#3182bd" stroke-width="2"/>'
+        )
+        if balcony.name:
+            cx = sum(point.x for point in balcony.points) / len(balcony.points) * ppm
+            cy = height - (
+                sum(point.y for point in balcony.points)
+                / len(balcony.points)
+                * ppm
+            )
+            layers.append(
+                f'<text x="{cx:.2f}" y="{cy:.2f}" font-size="13" '
+                f'fill="#08519c">{escape(balcony.name)}</text>'
+            )
+    layers.append("</g>")
     layers.append('<g id="openings">')
     for door in model.doors:
         x, y = _pt(door.center, ppm, height)
@@ -100,6 +122,13 @@ def write_analysis_overlay(
             pts = np.array([_pt(point, ppm, height) for point in room.points], dtype=np.int32)
             if len(pts) >= 3:
                 cv2.polylines(canvas, [pts], True, (47, 163, 84), 2)
+        for balcony in model.balconies:
+            pts = np.array(
+                [_pt(point, ppm, height) for point in balcony.points],
+                dtype=np.int32,
+            )
+            if len(pts) >= 3:
+                cv2.polylines(canvas, [pts], True, (189, 130, 49), 2)
         output_png.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(output_png), canvas)
         png_path = output_png

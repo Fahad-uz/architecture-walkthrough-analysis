@@ -162,6 +162,30 @@ def room_geometry_issues(model: FloorPlanModel) -> list[ValidationIssue]:
                         element_id=id_a,
                     )
                 )
+    balcony_polygons: list[tuple[str | None, Polygon]] = []
+    for balcony in model.balconies:
+        polygon = Polygon([(point.x, point.y) for point in balcony.points])
+        if polygon.is_valid and polygon.area > 0:
+            balcony_polygons.append((balcony.id, polygon))
+    for room_id, room_polygon in polygons:
+        for balcony_id, balcony_polygon in balcony_polygons:
+            overlap = room_polygon.intersection(balcony_polygon).area
+            tolerance = max(
+                0.01,
+                0.01 * min(room_polygon.area, balcony_polygon.area),
+            )
+            if overlap > tolerance:
+                issues.append(
+                    ValidationIssue(
+                        code="room_balcony_overlap",
+                        severity="warning",
+                        message=(
+                            f"room {room_id} and balcony {balcony_id} overlap "
+                            f"by {overlap:.2f} m²"
+                        ),
+                        element_id=room_id,
+                    )
+                )
     return issues
 
 
