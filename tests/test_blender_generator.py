@@ -41,6 +41,9 @@ def test_template_keeps_scene_semantics_in_the_blender_export() -> None:
     assert 'PLAN.get("special_elements", [])' in source
     assert "build_procedural_asset" in source
     assert "asset_family" in source
+    assert "asset_cylinder" in source
+    assert "asset_ellipsoid" in source
+    assert source.count("mesh.from_pydata") >= 4
     assert "room_floor_coverage" in source
     assert "MIN_ROOM_FLOOR_COVERAGE" in source
     assert "tune_realtime_lights_for_export" in source
@@ -158,6 +161,12 @@ def test_blender_generates_glb_in_none_mode(tmp_path: Path) -> None:
                     width_m=0.60,
                     depth_m=0.50,
                 ),
+                FurniturePlacement(
+                    category="dining_table",
+                    center=Point2D(x=5.9, y=3.1),
+                    width_m=1.60,
+                    depth_m=0.80,
+                ),
             ],
             "special_elements": [
                 ArchitecturalElement(
@@ -178,6 +187,12 @@ def test_blender_generates_glb_in_none_mode(tmp_path: Path) -> None:
     assert any(name.startswith("Special_") for name in nodes)
     assert any(name.startswith("DoorLeaf_") for name in nodes)
     assert any("bedside_table_Top" in name for name in nodes)
+    assert any("bed_Duvet" in name for name in nodes)
+    assert sum("bed_Pillow_" in name for name in nodes) == 2
+    assert sum("sofa_Seat_Cushion_" in name for name in nodes) == 2
+    assert sum("sofa_Back_Cushion_" in name for name in nodes) == 2
+    assert any("dining_table_Top" in name for name in nodes)
+    assert sum("dining_table_Leg_" in name for name in nodes) == 4
     assert any("kitchen_sink_Rim" in name for name in nodes)
     assert any("kitchen_stove_Cooktop" in name for name in nodes)
     assert not any(name.startswith("Ceiling_") for name in nodes)
