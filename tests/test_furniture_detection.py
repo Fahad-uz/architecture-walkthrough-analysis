@@ -117,3 +117,80 @@ def test_ai_furniture_only_renames_matched_local_footprints() -> None:
     assert grounded.furniture[0].category == "sofa"
     assert grounded.matched_hint_count == 1
     assert grounded.rejected_hint_count == 1
+
+
+def test_ai_chair_hint_does_not_overwrite_local_dining_table() -> None:
+    footprints = [
+        LocalObjectFootprint(
+            category="dining_table",
+            center=Point2D(x=547.5, y=311.0),
+            width_px=142,
+            depth_px=59,
+            rotation_deg=-90,
+        )
+    ]
+    hints = SimpleNamespace(
+        furniture=[
+            SimpleNamespace(
+                category="dining table",
+                confidence=0.9,
+                center=SimpleNamespace(x=0.516, y=0.389),
+                width=0.08,
+                depth=0.133,
+            ),
+            SimpleNamespace(
+                category="chair",
+                confidence=0.9,
+                center=SimpleNamespace(x=0.557, y=0.389),
+                width=0.036,
+                depth=0.04,
+            ),
+        ]
+    )
+
+    grounded = ground_ai_furniture_semantics(
+        footprints,
+        hints,
+        image_width_px=942,
+        image_height_px=785,
+        pixels_per_metre=82.224,
+    )
+
+    assert grounded.furniture[0].category == "dining_table"
+    assert grounded.matched_hint_count == 0
+    assert grounded.rejected_hint_count == 2
+
+
+def test_ai_can_refine_a_local_category_within_the_same_family() -> None:
+    footprints = [
+        LocalObjectFootprint(
+            category="dining_table",
+            center=Point2D(x=100, y=100),
+            width_px=80,
+            depth_px=50,
+            rotation_deg=0,
+        )
+    ]
+    hints = SimpleNamespace(
+        furniture=[
+            SimpleNamespace(
+                category="coffee table",
+                confidence=0.9,
+                center=SimpleNamespace(x=0.10, y=0.10),
+                width=0.08,
+                depth=0.05,
+            )
+        ]
+    )
+
+    grounded = ground_ai_furniture_semantics(
+        footprints,
+        hints,
+        image_width_px=1000,
+        image_height_px=1000,
+        pixels_per_metre=100,
+    )
+
+    assert grounded.furniture[0].category == "coffee_table"
+    assert grounded.matched_hint_count == 1
+    assert grounded.rejected_hint_count == 0
