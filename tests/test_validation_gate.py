@@ -150,6 +150,57 @@ def test_room_balcony_overlap_is_reported() -> None:
     assert any(issue.code == "room_balcony_overlap" for issue in issues)
 
 
+def test_overlapping_balconies_are_reported() -> None:
+    model = _square_model(
+        rooms=[],
+        balconies=[
+            BalconyPolygon(
+                id="balcony_a",
+                points=[
+                    Point2D(x=0, y=0),
+                    Point2D(x=3, y=0),
+                    Point2D(x=3, y=1),
+                    Point2D(x=0, y=1),
+                ],
+            ),
+            BalconyPolygon(
+                id="balcony_b",
+                points=[
+                    Point2D(x=1, y=0),
+                    Point2D(x=4, y=0),
+                    Point2D(x=4, y=1),
+                    Point2D(x=1, y=1),
+                ],
+            ),
+        ],
+    )
+
+    issues = validate_reconstruction(model)
+
+    assert any(issue.code == "balcony_polygons_overlap" for issue in issues)
+
+
+def test_invalid_balcony_polygon_is_reported() -> None:
+    model = _square_model(
+        rooms=[],
+        balconies=[
+            BalconyPolygon(
+                id="bow_tie",
+                points=[
+                    Point2D(x=0, y=0),
+                    Point2D(x=2, y=2),
+                    Point2D(x=0, y=2),
+                    Point2D(x=2, y=0),
+                ],
+            )
+        ],
+    )
+
+    issues = validate_reconstruction(model)
+
+    assert any(issue.code == "invalid_balcony_polygon" for issue in issues)
+
+
 def test_crossing_walls_without_junction_reported() -> None:
     model = _square_model(
         walls=[

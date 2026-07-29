@@ -163,10 +163,44 @@ def room_geometry_issues(model: FloorPlanModel) -> list[ValidationIssue]:
                     )
                 )
     balcony_polygons: list[tuple[str | None, Polygon]] = []
-    for balcony in model.balconies:
+    for idx, balcony in enumerate(model.balconies):
         polygon = Polygon([(point.x, point.y) for point in balcony.points])
-        if polygon.is_valid and polygon.area > 0:
-            balcony_polygons.append((balcony.id, polygon))
+        if not polygon.is_valid:
+            issues.append(
+                ValidationIssue(
+                    code="invalid_balcony_polygon",
+                    severity="error",
+                    message=f"balcony {idx} polygon is invalid",
+                    element_id=balcony.id,
+                )
+            )
+            continue
+        if polygon.area <= 0:
+            issues.append(
+                ValidationIssue(
+                    code="empty_balcony_polygon",
+                    severity="error",
+                    message=f"balcony {idx} polygon has no area",
+                    element_id=balcony.id,
+                )
+            )
+            continue
+        balcony_polygons.append((balcony.id, polygon))
+    for index, (id_a, poly_a) in enumerate(balcony_polygons):
+        for id_b, poly_b in balcony_polygons[index + 1 :]:
+            overlap = poly_a.intersection(poly_b).area
+            if overlap > 0.05 * min(poly_a.area, poly_b.area):
+                issues.append(
+                    ValidationIssue(
+                        code="balcony_polygons_overlap",
+                        severity="error",
+                        message=(
+                            f"balconies {id_a} and {id_b} overlap "
+                            f"by {overlap:.2f} m²"
+                        ),
+                        element_id=id_a,
+                    )
+                )
     for room_id, room_polygon in polygons:
         for balcony_id, balcony_polygon in balcony_polygons:
             overlap = room_polygon.intersection(balcony_polygon).area

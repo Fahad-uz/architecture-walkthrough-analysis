@@ -13,7 +13,11 @@ from fastapi.testclient import TestClient
 import architecture_walkthrough.api.app as api_app
 from architecture_walkthrough.api.app import JobRecord, LocalJobRunner, create_app
 from architecture_walkthrough.config import AISettings, AppConfig, LimitSettings, PathSettings
-from architecture_walkthrough.geometry.models import FloorPlanModel
+from architecture_walkthrough.geometry.models import (
+    BalconyPolygon,
+    FloorPlanModel,
+    Point2D,
+)
 from architecture_walkthrough.pipeline import convert_image_to_glb
 
 
@@ -301,6 +305,69 @@ def test_saving_corrections_replaces_stale_blender_model_with_current_preview(
     assert record["glb_source"] == "preview"
     assert record["glb_version"] > 7
     assert (job_dir / "building.glb").read_bytes()[:4] == b"glTF"
+
+
+def test_saving_corrections_preserves_exclusive_balcony_ownership(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from shapely.geometry import Polygon
+
+    monkeypatch.setattr(
+        api_app,
+        "load_config",
+        lambda: AppConfig(paths=PathSettings(work_root=tmp_path)),
+    )
+    job_id = "balcony-correction-job"
+    job_dir = tmp_path / job_id
+    (job_dir / "debug").mkdir(parents=True)
+    Image.new("RGB", (320, 240), "white").save(
+        job_dir / "debug" / "01_original_roi.png"
+    )
+    (job_dir / "job.json").write_text(
+        JobRecord(
+            job_id=job_id,
+            status="needs_review",
+        ).model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+    model = FloorPlanModel.load_json(
+        Path("tests/fixtures/sample_floorplan.json")
+    ).model_copy(
+        update={
+            "balconies": [
+                BalconyPolygon(
+                    id="balcony_0",
+                    name="BALCONY",
+                    points=[
+                        Point2D(x=0, y=0),
+                        Point2D(x=2, y=0),
+                        Point2D(x=2, y=1),
+                        Point2D(x=0, y=1),
+                    ],
+                )
+            ]
+        }
+    )
+
+    response = TestClient(create_app()).post(
+        f"/jobs/{job_id}/corrections",
+        json=model.model_dump(mode="json"),
+    )
+
+    assert response.status_code == 200, response.text
+    corrected = FloorPlanModel.model_validate(response.json()["model"])
+    assert [balcony.id for balcony in corrected.balconies] == ["balcony_0"]
+    balcony_polygon = Polygon(
+        [(point.x, point.y) for point in corrected.balconies[0].points]
+    )
+    assert all(
+        Polygon(
+            [(point.x, point.y) for point in room.points]
+        ).intersection(balcony_polygon).area
+        == pytest.approx(0)
+        for room in corrected.rooms
+    )
 
 
 def test_invalid_correction_does_not_overwrite_last_good_file(tmp_path: Path, monkeypatch) -> None:

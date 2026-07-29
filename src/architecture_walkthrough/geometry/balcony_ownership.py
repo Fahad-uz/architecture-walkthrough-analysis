@@ -23,6 +23,13 @@ class BalconyOwnershipResult:
     subtracted_room_count: int = 0
 
 
+@dataclass(frozen=True)
+class _BalconyCandidate:
+    balcony: BalconyPolygon
+    topology_backed: bool
+    subtract_from_room: bool
+
+
 def _polygon(region: RoomPolygon) -> Polygon | None:
     polygon = Polygon([(point.x, point.y) for point in region.points])
     if not polygon.is_valid or polygon.area <= 0:
@@ -55,10 +62,10 @@ def _combined_evidence(*values: str) -> str:
 def _canonical_balcony(
     room: RoomPolygon,
     detected: BalconyPolygon | None,
-    fallback_id: str,
+    balcony_id: str,
 ) -> BalconyPolygon:
     source = detected or BalconyPolygon(
-        id=fallback_id,
+        id=balcony_id,
         name=room.name or "BALCONY",
         points=room.points,
         confidence=room.confidence,
@@ -66,7 +73,7 @@ def _canonical_balcony(
     )
     return source.model_copy(
         update={
-            "id": source.id or fallback_id,
+            "id": balcony_id,
             "face_id": room.face_id,
             "name": room.name or source.name or "BALCONY",
             "points": room.points,
@@ -85,6 +92,7 @@ def reconcile_room_balcony_ownership(
     balconies: list[BalconyPolygon],
     *,
     min_topology_overlap_ratio: float = 0.5,
+    min_balcony_duplicate_overlap_ratio: float = 0.75,
     min_room_overlap_ratio: float = 0.5,
     boundary_tolerance_m: float = 0.08,
 ) -> BalconyOwnershipResult:
@@ -110,12 +118,30 @@ def reconcile_room_balcony_ownership(
         if index not in semantic_room_indexes
     ]
 
+    reserved_ids = {balcony.id for balcony in balconies if balcony.id}
+    assigned_ids: set[str] = set()
+    next_balcony_index = 0
+
+    def unique_balcony_id(requested: str | None) -> str:
+        nonlocal next_balcony_index
+        if requested and requested not in assigned_ids:
+            assigned_ids.add(requested)
+            return requested
+        while True:
+            candidate = f"balcony_{next_balcony_index:03d}"
+            next_balcony_index += 1
+            if candidate not in reserved_ids and candidate not in assigned_ids:
+                assigned_ids.add(candidate)
+                return candidate
+
     used_semantic_rooms: set[int] = set()
-    reconciled_balconies: list[BalconyPolygon] = []
-    subtract_candidates: list[BalconyPolygon] = []
+    balcony_candidates: list[_BalconyCandidate] = []
     matched_topology_faces = 0
 
-    for balcony_index, balcony in enumerate(balconies):
+    for balcony in balconies:
+        balcony = balcony.model_copy(
+            update={"id": unique_balcony_id(balcony.id)}
+        )
         balcony_polygon = _polygon(balcony)
         best_match: tuple[float, int, RoomPolygon] | None = None
         if balcony_polygon is not None:
@@ -136,32 +162,75 @@ def reconcile_room_balcony_ownership(
             _ratio, semantic_index, room = best_match
             used_semantic_rooms.add(semantic_index)
             matched_topology_faces += 1
-            reconciled_balconies.append(
-                _canonical_balcony(
-                    room,
-                    balcony,
-                    fallback_id=f"balcony_{balcony_index:03d}",
+            balcony_candidates.append(
+                _BalconyCandidate(
+                    balcony=_canonical_balcony(
+                        room,
+                        balcony,
+                        balcony_id=balcony.id or unique_balcony_id(None),
+                    ),
+                    topology_backed=True,
+                    subtract_from_room=False,
                 )
             )
         else:
-            reconciled_balconies.append(balcony)
-            subtract_candidates.append(balcony)
+            balcony_candidates.append(
+                _BalconyCandidate(
+                    balcony=balcony,
+                    topology_backed=False,
+                    subtract_from_room=True,
+                )
+            )
 
     for semantic_index, (_room_index, room, _polygon_value) in enumerate(
         semantic_rooms
     ):
         if semantic_index in used_semantic_rooms:
             continue
-        reconciled_balconies.append(
-            _canonical_balcony(
-                room,
-                None,
-                fallback_id=f"balcony_{len(reconciled_balconies):03d}",
+        balcony_candidates.append(
+            _BalconyCandidate(
+                balcony=_canonical_balcony(
+                    room,
+                    None,
+                    balcony_id=unique_balcony_id(None),
+                ),
+                topology_backed=True,
+                subtract_from_room=False,
             )
         )
 
+    deduplicated_candidates: list[_BalconyCandidate] = []
+    for candidate in balcony_candidates:
+        candidate_polygon = _polygon(candidate.balcony)
+        duplicate_index: int | None = None
+        if candidate_polygon is not None:
+            for index, existing in enumerate(deduplicated_candidates):
+                existing_polygon = _polygon(existing.balcony)
+                if existing_polygon is None:
+                    continue
+                smaller_area = min(
+                    candidate_polygon.area,
+                    existing_polygon.area,
+                )
+                overlap_ratio = (
+                    candidate_polygon.intersection(existing_polygon).area
+                    / smaller_area
+                )
+                if overlap_ratio >= min_balcony_duplicate_overlap_ratio:
+                    duplicate_index = index
+                    break
+        if duplicate_index is None:
+            deduplicated_candidates.append(candidate)
+            continue
+        existing = deduplicated_candidates[duplicate_index]
+        if candidate.topology_backed and not existing.topology_backed:
+            deduplicated_candidates[duplicate_index] = candidate
+
     subtracted_room_indexes: set[int] = set()
-    for balcony in subtract_candidates:
+    for candidate in deduplicated_candidates:
+        if not candidate.subtract_from_room:
+            continue
+        balcony = candidate.balcony
         balcony_polygon = _polygon(balcony)
         if balcony_polygon is None:
             continue
@@ -205,7 +274,10 @@ def reconcile_room_balcony_ownership(
 
     return BalconyOwnershipResult(
         rooms=interior_rooms,
-        balconies=reconciled_balconies,
+        balconies=[
+            candidate.balcony
+            for candidate in deduplicated_candidates
+        ],
         matched_topology_faces=matched_topology_faces,
         subtracted_room_count=len(subtracted_room_indexes),
     )

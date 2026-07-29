@@ -135,3 +135,54 @@ def test_unmatched_named_terrace_face_is_promoted_without_changing_open_plan() -
     assert result.balconies[0].name == "Roof Terrace"
     assert result.balconies[0].face_id == "face_terrace"
     assert result.matched_topology_faces == 0
+
+
+def test_duplicate_patterns_collapse_to_one_topology_backed_balcony() -> None:
+    balcony_face = RoomPolygon(
+        id="room_balcony",
+        face_id="face_balcony",
+        name="BALCONY",
+        points=_points(0, 0, 4, 1),
+    )
+    detected = [
+        BalconyPolygon(
+            id="balcony_left",
+            points=_points(0, 0, 3, 1),
+        ),
+        BalconyPolygon(
+            id="balcony_right",
+            points=_points(1, 0, 4, 1),
+        ),
+    ]
+
+    result = reconcile_room_balcony_ownership(
+        [balcony_face],
+        detected,
+    )
+
+    assert len(result.balconies) == 1
+    assert result.balconies[0].points == balcony_face.points
+    assert result.matched_topology_faces == 1
+
+
+def test_promoted_terrace_uses_an_unreserved_unique_id() -> None:
+    detected = BalconyPolygon(
+        id="balcony_001",
+        points=_points(0, 0, 2, 1),
+    )
+    terrace = RoomPolygon(
+        id="terrace",
+        name="TERRACE",
+        points=_points(4, 0, 6, 1),
+    )
+
+    result = reconcile_room_balcony_ownership(
+        [terrace],
+        [detected],
+    )
+
+    assert [balcony.id for balcony in result.balconies] == [
+        "balcony_001",
+        "balcony_000",
+    ]
+    assert len({balcony.id for balcony in result.balconies}) == 2

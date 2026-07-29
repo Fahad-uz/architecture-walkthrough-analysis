@@ -7,7 +7,7 @@ import type { FloorPlanModel, Opening, Point2D, QualityReport, RoomPolygon, Sani
 
 type Tool = "select" | "wall" | "door" | "window" | "scale";
 type BakeMode = "final" | "draft" | "none";
-type Selection = { kind: "walls" | "doors" | "windows" | "rooms"; index: number } | null;
+type Selection = { kind: "walls" | "doors" | "windows" | "rooms" | "balconies"; index: number } | null;
 type SavedCorrection = QualityReport & { model: FloorPlanModel };
 
 /** Editor works in image-pixel space; the model stores metres with origin at
@@ -276,7 +276,9 @@ export default function EditorPage() {
         img.src = data.image_url;
         const issueCount = data.model.validation_issues?.length ?? 0;
         setStatus(
-          `loaded: ${data.model.walls.length} walls, ${data.model.rooms.length} rooms${
+          `loaded: ${data.model.walls.length} walls, ${data.model.rooms.length} rooms, ${
+            data.model.balconies?.length ?? 0
+          } balconies${
             issueCount ? ` · ${issueCount} validation issue${issueCount === 1 ? "" : "s"}` : ""
           }`,
         );
@@ -666,6 +668,66 @@ export default function EditorPage() {
               <KonvaImage image={image} />
             </Layer>
             <Layer>
+              {(model.balconies ?? []).map((balcony, index) => {
+                const selected = selection?.kind === "balconies" && selection.index === index;
+                const hovered = hover?.kind === "balconies" && hover.index === index;
+                const centroid = balcony.points.reduce(
+                  (acc, p) => ({
+                    x: acc.x + p.x / balcony.points.length,
+                    y: acc.y + p.y / balcony.points.length,
+                  }),
+                  { x: 0, y: 0 },
+                );
+                const labelAt = toPx(centroid);
+                return (
+                  <Group key={`balcony-${balcony.id ?? index}`}>
+                    <Line
+                      points={balcony.points.flatMap((p) => {
+                        const q = toPx(p);
+                        return [q.x, q.y];
+                      })}
+                      closed
+                      fill={
+                        selected
+                          ? "rgba(255,159,28,0.28)"
+                          : hovered
+                            ? "rgba(0,122,172,0.22)"
+                            : "rgba(0,122,172,0.10)"
+                      }
+                      stroke={selected ? "#ff9f1c" : hovered ? "#006b99" : "#007aac"}
+                      strokeWidth={selected ? 4 : hovered ? 3 : 2}
+                      dash={selected ? undefined : [10, 5]}
+                      onMouseEnter={(e) => {
+                        if (tool !== "select") return;
+                        setHover({ kind: "balconies", index });
+                        const stage = e.target.getStage();
+                        if (stage) stage.container().style.cursor = "pointer";
+                      }}
+                      onMouseLeave={(e) => {
+                        setHover(null);
+                        const stage = e.target.getStage();
+                        if (stage) stage.container().style.cursor = "default";
+                      }}
+                      onMouseDown={(e) => {
+                        if (tool !== "select") return;
+                        e.cancelBubble = true;
+                        setSelection({ kind: "balconies", index });
+                      }}
+                    />
+                    <Text
+                      x={labelAt.x - 45}
+                      y={labelAt.y - 8}
+                      width={90}
+                      align="center"
+                      text={balcony.name ?? "Balcony"}
+                      fontSize={13}
+                      fontStyle="bold"
+                      fill="#005f87"
+                      listening={false}
+                    />
+                  </Group>
+                );
+              })}
               {model.rooms.map((room, index) => {
                 const selected = selection?.kind === "rooms" && selection.index === index;
                 const hovered = hover?.kind === "rooms" && hover.index === index;
@@ -846,7 +908,7 @@ export default function EditorPage() {
               type="button"
               className="danger"
               onClick={removeSelected}
-              disabled={!selection || selection.kind === "rooms"}
+              disabled={!selection || selection.kind === "rooms" || selection.kind === "balconies"}
             >
               Delete selected
             </button>
@@ -887,6 +949,16 @@ export default function EditorPage() {
                   <span>face: {selectedItem.face_id ?? "—"} (name survives wall edits via face matching)</span>
                 </div>
               </>
+            )}
+            {selection!.kind === "balconies" && (
+              <div style={{ fontSize: 12, color: "#667078", display: "grid", gap: 2 }}>
+                <span>{roomStats(selectedItem)}</span>
+                <span>face: {selectedItem.face_id ?? "—"}</span>
+                <span>
+                  Balconies are exterior areas detected independently from indoor rooms. Their geometry is read-only
+                  here.
+                </span>
+              </div>
             )}
             {selection!.kind === "walls" && (
               <>
