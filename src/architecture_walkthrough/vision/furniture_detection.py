@@ -390,6 +390,53 @@ def _normalized_furniture_category(value: object) -> str:
     return "_".join(str(value or "furniture").strip().lower().replace("-", " ").split()) or "furniture"
 
 
+def _furniture_semantic_family(category: str) -> str | None:
+    normalized = _normalized_furniture_category(category)
+    tokens = {token for token in normalized.split("_") if token}
+    if normalized in {"furniture", "generic", "unknown"}:
+        return None
+    if "sink" in tokens or normalized.endswith("sink"):
+        return "sink"
+    if {"stove", "stovetop", "hob", "cooktop"} & tokens:
+        return "stove"
+    if (
+        "table" in tokens
+        or normalized.endswith("table")
+        or "nightstand" in tokens
+        or "bedside" in tokens
+    ):
+        return "table"
+    if {"chair", "armchair"} & tokens:
+        return "chair"
+    if "bed" in tokens or normalized.startswith("bed_") or normalized.endswith("_bed"):
+        return "bed"
+    if {"sofa", "couch"} & tokens:
+        return "sofa"
+    if {"counter", "kitchen_counter"} & tokens:
+        return "counter"
+    if {"wardrobe", "cabinet", "shelf", "closet"} & tokens:
+        return "storage"
+    if {"bath", "bathtub", "toilet", "fixture"} & tokens or "bath" in normalized:
+        return "fixture"
+    if {"rug", "carpet"} & tokens:
+        return "rug"
+    if {"plant", "planter"} & tokens:
+        return "plant"
+    if {"tv", "television"} & tokens:
+        return "tv"
+    return normalized
+
+
+def _furniture_categories_compatible(
+    local_category: str,
+    hint_category: str,
+) -> bool:
+    local_family = _furniture_semantic_family(local_category)
+    if local_family is None:
+        return True
+    return local_family == _furniture_semantic_family(hint_category)
+
+
 def _hint_is_furniture(category: str) -> bool:
     structural_tokens = (
         "wall",
@@ -454,7 +501,7 @@ def ground_ai_furniture_semantics(
 
     basis = max(image_width_px, image_height_px, 1)
     candidate_pairs: list[tuple[float, int, int]] = []
-    for hint_index, (hint, _category, confidence) in enumerate(eligible_hints):
+    for hint_index, (hint, category, confidence) in enumerate(eligible_hints):
         center = Point2D(
             x=float(hint.center.x) * image_width_px,
             y=float(hint.center.y) * image_height_px,
@@ -464,6 +511,11 @@ def ground_ai_furniture_semantics(
         hint_diagonal = math.hypot(hint_width, hint_depth)
         hint_area = hint_width * hint_depth
         for footprint_index, footprint in enumerate(valid_footprints):
+            if not _furniture_categories_compatible(
+                footprint.category,
+                category,
+            ):
+                continue
             local_diagonal = math.hypot(footprint.width_px, footprint.depth_px)
             max_distance = max(12.0, min(basis * 0.06, max(local_diagonal, hint_diagonal) * 0.70))
             distance = center.distance_to(footprint.center)
