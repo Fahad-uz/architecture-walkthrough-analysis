@@ -8,6 +8,7 @@ import pytest
 import architecture_walkthrough.pipeline as pipeline
 from architecture_walkthrough.config import AppConfig, ExportSettings, OptimizeSettings
 from architecture_walkthrough.geometry.models import (
+    BalconyPolygon,
     DoorOpening,
     FloorPlanModel,
     Point2D,
@@ -127,6 +128,77 @@ def test_overlapping_openings_are_errors() -> None:
     )
     issues = opening_interval_issues(model)
     assert any(issue.code == "openings_overlap" for issue in issues)
+
+
+def test_room_balcony_overlap_is_reported() -> None:
+    model = _square_model(
+        balconies=[
+            BalconyPolygon(
+                id="balcony_0",
+                points=[
+                    Point2D(x=1, y=0),
+                    Point2D(x=3, y=0),
+                    Point2D(x=3, y=1),
+                    Point2D(x=1, y=1),
+                ],
+            )
+        ]
+    )
+
+    issues = validate_reconstruction(model)
+
+    assert any(issue.code == "room_balcony_overlap" for issue in issues)
+
+
+def test_overlapping_balconies_are_reported() -> None:
+    model = _square_model(
+        rooms=[],
+        balconies=[
+            BalconyPolygon(
+                id="balcony_a",
+                points=[
+                    Point2D(x=0, y=0),
+                    Point2D(x=3, y=0),
+                    Point2D(x=3, y=1),
+                    Point2D(x=0, y=1),
+                ],
+            ),
+            BalconyPolygon(
+                id="balcony_b",
+                points=[
+                    Point2D(x=1, y=0),
+                    Point2D(x=4, y=0),
+                    Point2D(x=4, y=1),
+                    Point2D(x=1, y=1),
+                ],
+            ),
+        ],
+    )
+
+    issues = validate_reconstruction(model)
+
+    assert any(issue.code == "balcony_polygons_overlap" for issue in issues)
+
+
+def test_invalid_balcony_polygon_is_reported() -> None:
+    model = _square_model(
+        rooms=[],
+        balconies=[
+            BalconyPolygon(
+                id="bow_tie",
+                points=[
+                    Point2D(x=0, y=0),
+                    Point2D(x=2, y=2),
+                    Point2D(x=0, y=2),
+                    Point2D(x=2, y=0),
+                ],
+            )
+        ],
+    )
+
+    issues = validate_reconstruction(model)
+
+    assert any(issue.code == "invalid_balcony_polygon" for issue in issues)
 
 
 def test_crossing_walls_without_junction_reported() -> None:
