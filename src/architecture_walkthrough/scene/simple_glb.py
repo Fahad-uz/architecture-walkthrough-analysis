@@ -18,7 +18,11 @@ from architecture_walkthrough.geometry.models import (
 )
 from architecture_walkthrough.scene.ceiling_builder import ceiling_meshes
 from architecture_walkthrough.scene.door_builder import door_meshes
-from architecture_walkthrough.scene.floor_builder import fallback_floor_mesh, polygon_floor_mesh, room_floor_meshes
+from architecture_walkthrough.scene.floor_builder import (
+    fallback_floor_mesh,
+    polygon_floor_mesh,
+    room_floor_meshes,
+)
 from architecture_walkthrough.scene.opening_builder import nearest_wall_index, openings_for_wall
 from architecture_walkthrough.scene.trim_builder import skirting_meshes
 from architecture_walkthrough.scene.uv_mapping import apply_planar_uv
@@ -37,9 +41,11 @@ COLORS: dict[str, RGBA] = {
     "floor_lift": (88, 89, 88, 255),
     "wall": (230, 226, 218, 255),
     "wall_cap": (105, 108, 108, 255),
-    "bed": (116, 116, 63, 255),
-    "sofa": (119, 117, 63, 255),
-    "chair": (138, 120, 87, 255),
+    "bed": (204, 198, 181, 255),
+    "bed_accent": (174, 169, 151, 255),
+    "sofa": (61, 103, 128, 255),
+    "sofa_cushion": (86, 132, 151, 255),
+    "chair": (82, 119, 137, 255),
     "dining_table": (118, 72, 42, 255),
     "side_table": (112, 67, 39, 255),
     "coffee_table": (116, 72, 41, 255),
@@ -54,6 +60,9 @@ COLORS: dict[str, RGBA] = {
     "step": (196, 181, 158, 255),
     "dark": (48, 48, 44, 255),
     "pot": (104, 69, 43, 255),
+    "wood": (91, 51, 27, 255),
+    "wood_light": (151, 100, 56, 255),
+    "cabinet_front": (111, 66, 35, 255),
 }
 
 
@@ -65,13 +74,29 @@ def _paint(mesh: trimesh.Trimesh, color: RGBA) -> trimesh.Trimesh:
     return mesh
 
 
-def _box(extents: list[float], center: list[float], color: RGBA, rotation_deg: float = 0.0) -> trimesh.Trimesh:
+def _named(mesh: trimesh.Trimesh, part_name: str) -> trimesh.Trimesh:
+    mesh.metadata["part_name"] = part_name
+    return mesh
+
+
+def _safe_name(value: object) -> str:
+    cleaned = "".join(
+        character if character.isalnum() else "_" for character in str(value or "unknown")
+    )
+    return cleaned.strip("_") or "unknown"
+
+
+def _box(
+    extents: list[float], center: list[float], color: RGBA, rotation_deg: float = 0.0
+) -> trimesh.Trimesh:
     transform = trimesh.transformations.rotation_matrix(math.radians(rotation_deg), [0, 0, 1])
     transform[:3, 3] = center
     return _paint(trimesh.creation.box(extents=extents, transform=transform), color)
 
 
-def _oriented_offset(item: FurniturePlacement, local_x: float, local_y: float) -> tuple[float, float]:
+def _oriented_offset(
+    item: FurniturePlacement, local_x: float, local_y: float
+) -> tuple[float, float]:
     angle = math.radians(item.rotation_deg)
     return (
         item.center.x + local_x * math.cos(angle) - local_y * math.sin(angle),
@@ -79,9 +104,74 @@ def _oriented_offset(item: FurniturePlacement, local_x: float, local_y: float) -
     )
 
 
-def _part(item: FurniturePlacement, local_x: float, local_y: float, width: float, depth: float, height: float, color: RGBA, z: float | None = None) -> trimesh.Trimesh:
+def _part(
+    item: FurniturePlacement,
+    local_x: float,
+    local_y: float,
+    width: float,
+    depth: float,
+    height: float,
+    color: RGBA,
+    z: float | None = None,
+) -> trimesh.Trimesh:
     x, y = _oriented_offset(item, local_x, local_y)
-    return _box([width, depth, height], [x, y, height / 2 if z is None else z], color, item.rotation_deg)
+    return _box(
+        [width, depth, height], [x, y, height / 2 if z is None else z], color, item.rotation_deg
+    )
+
+
+def _cylinder_part(
+    item: FurniturePlacement,
+    local_x: float,
+    local_y: float,
+    width: float,
+    depth: float,
+    height: float,
+    color: RGBA,
+    z: float,
+    sections: int = 12,
+) -> trimesh.Trimesh:
+    """Return a footprint-oriented low-poly elliptical cylinder."""
+
+    mesh = trimesh.creation.cylinder(
+        radius=0.5,
+        height=height,
+        sections=max(8, min(24, int(sections))),
+    )
+    mesh.apply_scale([width, depth, 1.0])
+    x, y = _oriented_offset(item, local_x, local_y)
+    transform = trimesh.transformations.rotation_matrix(
+        math.radians(item.rotation_deg),
+        [0, 0, 1],
+    )
+    transform[:3, 3] = [x, y, z]
+    mesh.apply_transform(transform)
+    return _paint(mesh, color)
+
+
+def _ellipsoid_part(
+    item: FurniturePlacement,
+    local_x: float,
+    local_y: float,
+    width: float,
+    depth: float,
+    height: float,
+    color: RGBA,
+    z: float,
+    local_rotation_deg: float = 0.0,
+) -> trimesh.Trimesh:
+    """Return a smooth, bounded soft-form primitive with only 42 vertices."""
+
+    mesh = trimesh.creation.icosphere(subdivisions=1, radius=1.0)
+    mesh.apply_scale([width / 2, depth / 2, height / 2])
+    x, y = _oriented_offset(item, local_x, local_y)
+    transform = trimesh.transformations.rotation_matrix(
+        math.radians(item.rotation_deg + local_rotation_deg),
+        [0, 0, 1],
+    )
+    transform[:3, 3] = [x, y, z]
+    mesh.apply_transform(transform)
+    return _paint(mesh, color)
 
 
 def _wall_mesh(wall: WallSegment) -> trimesh.Trimesh:
@@ -127,7 +217,9 @@ def _floor_mesh(model: FloorPlanModel) -> trimesh.Trimesh:
     depth = max(max_y - min_y + padding * 2, 1.0)
     transform = np.eye(4)
     transform[:3, 3] = [(min_x + max_x) / 2, (min_y + max_y) / 2, -0.05]
-    return _paint(trimesh.creation.box(extents=[width, depth, 0.1], transform=transform), COLORS["floor"])
+    return _paint(
+        trimesh.creation.box(extents=[width, depth, 0.1], transform=transform), COLORS["floor"]
+    )
 
 
 def _merged_room_floors(model: FloorPlanModel) -> list[RoomPolygon]:
@@ -146,14 +238,18 @@ def _merged_room_floors(model: FloorPlanModel) -> list[RoomPolygon]:
     else:
         return []
     rooms: list[RoomPolygon] = []
-    for index, polygon in enumerate(sorted(merged_polygons, key=lambda item: item.area, reverse=True)):
+    for index, polygon in enumerate(
+        sorted(merged_polygons, key=lambda item: item.area, reverse=True)
+    ):
         if polygon.area <= 0.05:
             continue
         rooms.append(
             RoomPolygon(
                 id=f"floor_union_{index:03d}",
                 name="floor",
-                points=[Point2D(x=float(x), y=float(y)) for x, y in list(polygon.exterior.coords)[:-1]],
+                points=[
+                    Point2D(x=float(x), y=float(y)) for x, y in list(polygon.exterior.coords)[:-1]
+                ],
                 confidence=0.7,
                 evidence_source="room_floor_union",
             )
@@ -199,7 +295,9 @@ def _floor_meshes_for_model(model: FloorPlanModel) -> list[trimesh.Trimesh]:
     return [fallback_floor_mesh(model, 0.10, COLORS["floor"])]
 
 
-def _wall_index_for_opening(model: FloorPlanModel, wall_id: str | None, center: Point2D) -> int | None:
+def _wall_index_for_opening(
+    model: FloorPlanModel, wall_id: str | None, center: Point2D
+) -> int | None:
     if wall_id:
         for index, wall in enumerate(model.walls):
             if wall.id == wall_id:
@@ -212,49 +310,290 @@ def _wall_index_for_opening(model: FloorPlanModel, wall_id: str | None, center: 
 
 
 def _chair_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
-    width = min(item.width_m, 0.7)
-    depth = min(item.depth_m, 0.7)
-    return [
-        _part(item, 0, 0, width, depth, 0.18, COLORS["chair"], 0.35),
-        _part(item, 0, depth * 0.42, width, 0.08, 0.75, COLORS["chair"], 0.45),
+    width = item.width_m
+    depth = item.depth_m
+    meshes = [
+        _named(
+            _ellipsoid_part(
+                item,
+                0,
+                -depth * 0.03,
+                width * 0.92,
+                depth * 0.82,
+                0.11,
+                COLORS["sofa_cushion"],
+                0.45,
+            ),
+            "Seat",
+        ),
+        _named(
+            _part(
+                item,
+                0,
+                depth * 0.445,
+                width * 0.86,
+                depth * 0.09,
+                0.46,
+                COLORS["chair"],
+                0.69,
+            ),
+            "Back",
+        ),
     ]
+    leg_width = max(0.015, min(0.038, min(width, depth) * 0.09))
+    for x_sign in (-1.0, 1.0):
+        for y_sign in (-1.0, 1.0):
+            meshes.append(
+                _named(
+                    _cylinder_part(
+                        item,
+                        x_sign * width * 0.37,
+                        y_sign * depth * 0.34,
+                        leg_width,
+                        leg_width,
+                        0.40,
+                        COLORS["wood"],
+                        0.20,
+                        sections=10,
+                    ),
+                    f"Leg_{int(x_sign)}_{int(y_sign)}",
+                )
+            )
+    return meshes
 
 
 def _table_meshes(item: FurniturePlacement, color: RGBA) -> list[trimesh.Trimesh]:
-    top_height = 0.10
-    leg_w = min(item.width_m, item.depth_m) * 0.10
-    leg_w = max(min(leg_w, 0.12), 0.04)
-    meshes = [_part(item, 0, 0, item.width_m, item.depth_m, top_height, color, 0.76)]
+    coffee = "coffee" in item.category.lower() or "side" in item.category.lower()
+    surface_z = 0.42 if coffee else 0.76
+    top_height = 0.07
+    top_bottom = surface_z - top_height
+    leg_w = max(0.025, min(0.08, min(item.width_m, item.depth_m) * 0.08))
+    meshes = [
+        _named(
+            _part(
+                item,
+                0,
+                0,
+                item.width_m,
+                item.depth_m,
+                top_height,
+                color,
+                surface_z - top_height / 2,
+            ),
+            "Top",
+        )
+    ]
+    apron_height = min(0.12, top_bottom * 0.22)
+    apron_thickness = max(
+        0.018,
+        min(0.035, min(item.width_m, item.depth_m) * 0.08),
+    )
+    apron_x = max(0.0, item.width_m / 2 - apron_thickness / 2)
+    apron_y = max(0.0, item.depth_m / 2 - apron_thickness / 2)
+    apron_z = top_bottom - apron_height / 2
+    meshes.extend(
+        [
+            _named(
+                _part(
+                    item,
+                    0,
+                    -apron_y,
+                    item.width_m * 0.78,
+                    apron_thickness,
+                    apron_height,
+                    COLORS["wood"],
+                    apron_z,
+                ),
+                "Apron_Front",
+            ),
+            _named(
+                _part(
+                    item,
+                    0,
+                    apron_y,
+                    item.width_m * 0.78,
+                    apron_thickness,
+                    apron_height,
+                    COLORS["wood"],
+                    apron_z,
+                ),
+                "Apron_Back",
+            ),
+            _named(
+                _part(
+                    item,
+                    -apron_x,
+                    0,
+                    apron_thickness,
+                    item.depth_m * 0.72,
+                    apron_height,
+                    COLORS["wood"],
+                    apron_z,
+                ),
+                "Apron_Left",
+            ),
+            _named(
+                _part(
+                    item,
+                    apron_x,
+                    0,
+                    apron_thickness,
+                    item.depth_m * 0.72,
+                    apron_height,
+                    COLORS["wood"],
+                    apron_z,
+                ),
+                "Apron_Right",
+            ),
+        ]
+    )
     for sx in (-1, 1):
         for sy in (-1, 1):
-            meshes.append(_part(item, sx * item.width_m * 0.38, sy * item.depth_m * 0.36, leg_w, leg_w, 0.72, COLORS["dark"], 0.36))
+            meshes.append(
+                _named(
+                    _cylinder_part(
+                        item,
+                        sx * item.width_m * 0.38,
+                        sy * item.depth_m * 0.36,
+                        leg_w,
+                        leg_w,
+                        top_bottom,
+                        COLORS["wood"],
+                        top_bottom / 2,
+                        sections=10,
+                    ),
+                    f"Leg_{sx}_{sy}",
+                )
+            )
     return meshes
 
 
 def _sofa_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
-    arm = min(item.depth_m * 0.18, 0.18)
+    width = item.width_m
+    depth = item.depth_m
+    arm_width = max(0.04, min(width * 0.105, 0.16))
+    inner_width = max(width - arm_width * 2.0, width * 0.62)
+    cushion_count = 1 if width < 1.15 else 2 if width < 2.10 else 3
+    cushion_gap = min(0.025, inner_width * 0.025)
+    cushion_width = (inner_width - cushion_gap * (cushion_count - 1)) / cushion_count
     meshes = [
-        _part(item, 0, 0, item.width_m, item.depth_m, 0.32, COLORS["sofa"], 0.28),
-        _part(item, 0, item.depth_m * 0.44, item.width_m, arm, 0.82, COLORS["sofa"], 0.42),
-        _part(item, -item.width_m * 0.48, 0, arm, item.depth_m, 0.62, COLORS["sofa"], 0.34),
-        _part(item, item.width_m * 0.48, 0, arm, item.depth_m, 0.62, COLORS["sofa"], 0.34),
+        _named(_part(item, 0, 0, width * 0.92, depth * 0.82, 0.16, COLORS["sofa"], 0.16), "Base"),
+        _named(
+            _part(item, 0, depth * 0.45, width * 0.88, depth * 0.10, 0.58, COLORS["sofa"], 0.47),
+            "Back",
+        ),
     ]
-    cushion_count = max(1, min(4, round(item.width_m / 0.6)))
     for index in range(cushion_count):
-        local_x = (index - (cushion_count - 1) / 2) * (item.width_m / cushion_count)
-        meshes.append(_part(item, local_x, -item.depth_m * 0.04, item.width_m / cushion_count * 0.82, item.depth_m * 0.55, 0.08, COLORS["bed"], 0.48))
+        local_x = -inner_width / 2 + cushion_width / 2 + index * (cushion_width + cushion_gap)
+        meshes.extend(
+            [
+                _named(
+                    _ellipsoid_part(
+                        item,
+                        local_x,
+                        -depth * 0.08,
+                        cushion_width * 0.96,
+                        depth * 0.60,
+                        0.17,
+                        COLORS["sofa_cushion"],
+                        0.325,
+                    ),
+                    f"Seat_Cushion_{index + 1:02d}",
+                ),
+                _named(
+                    _ellipsoid_part(
+                        item,
+                        local_x,
+                        depth * 0.37,
+                        cushion_width * 0.96,
+                        depth * 0.17,
+                        0.43,
+                        COLORS["sofa_cushion"],
+                        0.575,
+                    ),
+                    f"Back_Cushion_{index + 1:02d}",
+                ),
+            ]
+        )
+    for side in (-1.0, 1.0):
+        meshes.append(
+            _named(
+                _part(
+                    item,
+                    side * (width - arm_width) / 2,
+                    0,
+                    arm_width,
+                    depth * 0.88,
+                    0.46,
+                    COLORS["sofa"],
+                    0.31,
+                ),
+                f"Arm_{int(side)}",
+            )
+        )
     return meshes
 
 
 def _bed_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
-    pillow_depth = min(item.depth_m * 0.22, 0.45)
+    width = item.width_m
+    depth = item.depth_m
     meshes = [
-        _part(item, 0, 0, item.width_m, item.depth_m, 0.35, COLORS["bed"], 0.32),
-        _part(item, 0, item.depth_m * 0.18, item.width_m * 0.86, item.depth_m * 0.55, 0.12, COLORS["bed"], 0.58),
-        _part(item, -item.width_m * 0.24, item.depth_m * 0.40, item.width_m * 0.34, pillow_depth, 0.12, COLORS["pillow"], 0.62),
-        _part(item, item.width_m * 0.24, item.depth_m * 0.40, item.width_m * 0.34, pillow_depth, 0.12, COLORS["pillow"], 0.62),
-        _part(item, 0, item.depth_m * 0.50, item.width_m, 0.12, 0.85, COLORS["dark"], 0.42),
+        _named(_part(item, 0, 0, width, depth, 0.18, COLORS["wood"], 0.13), "Frame"),
+        _named(
+            _part(item, 0, -depth * 0.035, width * 0.93, depth * 0.82, 0.21, COLORS["bed"], 0.315),
+            "Mattress",
+        ),
+        _named(
+            _part(
+                item,
+                0,
+                -depth * 0.15,
+                width * 0.88,
+                depth * 0.54,
+                0.065,
+                COLORS["bed_accent"],
+                0.448,
+            ),
+            "Duvet",
+        ),
     ]
+    headboard_depth = max(0.018, depth * 0.07)
+    meshes.append(
+        _named(
+            _part(
+                item,
+                0,
+                max(0.0, depth / 2 - headboard_depth / 2),
+                width * 0.96,
+                headboard_depth,
+                0.74,
+                COLORS["wood"],
+                0.40,
+            ),
+            "Headboard",
+        )
+    )
+    pillow_count = 2 if width >= 1.05 else 1
+    pillow_width = width * (0.36 if pillow_count == 2 else 0.56)
+    for pillow_index in range(pillow_count):
+        pillow_x = (
+            (pillow_index - (pillow_count - 1) / 2) * width * 0.43 if pillow_count > 1 else 0.0
+        )
+        meshes.append(
+            _named(
+                _ellipsoid_part(
+                    item,
+                    pillow_x,
+                    depth * 0.29,
+                    pillow_width,
+                    depth * 0.16,
+                    0.12,
+                    COLORS["pillow"],
+                    0.49,
+                ),
+                f"Pillow_{pillow_index + 1:02d}",
+            )
+        )
     return meshes
 
 
@@ -322,7 +661,11 @@ def _lamp_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
     shade.apply_translation([item.center.x, item.center.y, 0.78])
     bulb = trimesh.creation.icosphere(subdivisions=1, radius=radius * 0.35)
     bulb.apply_translation([item.center.x, item.center.y, 0.72])
-    return [_paint(pole, COLORS["metal"]), _paint(shade, (246, 226, 180, 255)), _paint(bulb, (255, 238, 180, 255))]
+    return [
+        _paint(pole, COLORS["metal"]),
+        _paint(shade, (246, 226, 180, 255)),
+        _paint(bulb, (255, 238, 180, 255)),
+    ]
 
 
 def _tv_unit_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
@@ -333,30 +676,191 @@ def _tv_unit_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
 
 
 def _counter_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
+    width = item.width_m
+    depth = item.depth_m
     meshes = [
-        _part(item, 0, 0, item.width_m, item.depth_m, 0.9, COLORS["kitchen_counter"], 0.45),
-        _part(item, 0, 0, item.width_m, item.depth_m, 0.08, COLORS["fixture"], 0.94),
+        _named(
+            _part(
+                item,
+                0,
+                depth * 0.025,
+                width * 0.96,
+                depth * 0.90,
+                0.84,
+                COLORS["kitchen_counter"],
+                0.45,
+            ),
+            "Cabinet",
+        ),
+        _named(_part(item, 0, 0, width, depth, 0.07, COLORS["fixture"], 0.905), "Worktop"),
+        _named(
+            _part(item, 0, -depth * 0.425, width * 0.90, depth * 0.08, 0.12, COLORS["dark"], 0.06),
+            "ToeKick",
+        ),
     ]
-    sink_w = min(item.width_m * 0.28, 0.6)
-    meshes.append(_part(item, item.width_m * 0.22, 0, sink_w, item.depth_m * 0.5, 0.05, COLORS["dark"], 1.0))
+    module_count = max(1, min(6, round(width / 0.58)))
+    module_span = width * 0.90 / module_count
+    front_depth = min(0.025, depth)
+    handle_depth = min(0.025, depth)
+    fronts: dict[float, list[trimesh.Trimesh]] = {-1.0: [], 1.0: []}
+    handles: dict[float, list[trimesh.Trimesh]] = {-1.0: [], 1.0: []}
+    for module_index in range(module_count):
+        module_x = -width * 0.45 + module_span * (module_index + 0.5)
+        for face_sign in (-1.0, 1.0):
+            fronts[face_sign].append(
+                _part(
+                    item,
+                    module_x,
+                    face_sign * max(0.0, depth / 2 - front_depth / 2),
+                    max(0.04, module_span - 0.014),
+                    front_depth,
+                    0.62,
+                    COLORS["cabinet_front"],
+                    0.49,
+                )
+            )
+            handles[face_sign].append(
+                _part(
+                    item,
+                    module_x,
+                    face_sign * max(0.0, depth / 2 - handle_depth / 2),
+                    min(0.16, module_span * 0.34),
+                    handle_depth,
+                    0.022,
+                    COLORS["metal"],
+                    0.72,
+                )
+            )
+    for face_name, face_sign in (("A", -1.0), ("B", 1.0)):
+        meshes.append(
+            _named(
+                trimesh.util.concatenate(fronts[face_sign]),
+                f"Front_{face_name}",
+            )
+        )
+        meshes.append(
+            _named(
+                trimesh.util.concatenate(handles[face_sign]),
+                f"Handles_{face_name}",
+            )
+        )
     return meshes
 
 
 def _stove_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
-    meshes = [_part(item, 0, 0, item.width_m, item.depth_m, 0.08, COLORS["dark"], 1.0)]
-    for sx in (-0.22, 0.22):
-        for sy in (-0.22, 0.22):
-            burner = trimesh.creation.torus(major_radius=0.10, minor_radius=0.012)
-            x, y = _oriented_offset(item, sx * item.width_m, sy * item.depth_m)
-            burner.apply_translation([x, y, 1.06])
-            meshes.append(_paint(burner, COLORS["metal"]))
+    width = item.width_m
+    depth = item.depth_m
+    door_depth = min(0.026, depth)
+    door_y = max(0.0, depth / 2 - door_depth / 2)
+    meshes = [
+        _named(
+            _part(
+                item,
+                0,
+                depth * 0.015,
+                width * 0.96,
+                depth * 0.93,
+                0.86,
+                COLORS["kitchen_counter"],
+                0.43,
+            ),
+            "Body",
+        ),
+        _named(_part(item, 0, 0, width, depth, 0.055, COLORS["dark"], 0.895), "Cooktop"),
+        _named(
+            _part(item, 0, -door_y, width * 0.76, door_depth, 0.46, COLORS["metal"], 0.48),
+            "Oven_Door_A",
+        ),
+        _named(
+            _part(item, 0, door_y, width * 0.76, door_depth, 0.46, COLORS["metal"], 0.48),
+            "Oven_Door_B",
+        ),
+    ]
+    burner_size = min(width, depth) * 0.22
+    for x_sign in (-1.0, 1.0):
+        for y_sign in (-1.0, 1.0):
+            meshes.append(
+                _named(
+                    _cylinder_part(
+                        item,
+                        x_sign * width * 0.24,
+                        y_sign * depth * 0.23,
+                        burner_size,
+                        burner_size,
+                        0.016,
+                        COLORS["fixture"],
+                        0.931,
+                        sections=12,
+                    ),
+                    f"Burner_{int(x_sign)}_{int(y_sign)}",
+                )
+            )
     return meshes
 
 
 def _sink_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
+    width = item.width_m
+    depth = item.depth_m
+    basin_width = width * 0.70
+    basin_depth = depth * 0.58
+    rim_width = max(0.018, min(width, depth) * 0.075)
+    faucet_size = max(0.018, min(width, depth) * 0.065)
+    rim = trimesh.util.concatenate(
+        [
+            _part(
+                item, 0, -depth * 0.355, width * 0.84, rim_width, 0.055, COLORS["fixture"], 0.895
+            ),
+            _part(item, 0, depth * 0.355, width * 0.84, rim_width, 0.055, COLORS["fixture"], 0.895),
+            _part(item, -width * 0.39, 0, rim_width, depth * 0.64, 0.055, COLORS["fixture"], 0.895),
+            _part(item, width * 0.39, 0, rim_width, depth * 0.64, 0.055, COLORS["fixture"], 0.895),
+        ]
+    )
     return [
-        _part(item, 0, 0, item.width_m, item.depth_m, 0.16, COLORS["fixture"], 0.98),
-        _part(item, 0, 0, item.width_m * 0.70, item.depth_m * 0.62, 0.06, COLORS["glass"], 1.08),
+        _named(
+            _part(
+                item,
+                0,
+                depth * 0.015,
+                width * 0.96,
+                depth * 0.93,
+                0.86,
+                COLORS["kitchen_counter"],
+                0.43,
+            ),
+            "Cabinet",
+        ),
+        _named(rim, "Rim"),
+        _named(
+            _part(item, 0, -depth * 0.015, basin_width, basin_depth, 0.025, COLORS["dark"], 0.875),
+            "Basin",
+        ),
+        _named(
+            _cylinder_part(
+                item,
+                0,
+                depth * 0.37,
+                faucet_size,
+                faucet_size,
+                0.25,
+                COLORS["metal"],
+                1.02,
+                sections=10,
+            ),
+            "Faucet_Base",
+        ),
+        _named(
+            _part(
+                item,
+                0,
+                depth * 0.22,
+                faucet_size,
+                depth * 0.30,
+                faucet_size,
+                COLORS["metal"],
+                1.135,
+            ),
+            "Faucet_Spout",
+        ),
     ]
 
 
@@ -370,18 +874,61 @@ def _appliance_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
 def _fixture_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
     return [
         _part(item, 0, 0, item.width_m, item.depth_m, 0.35, COLORS["fixture"], 0.22),
-        _part(item, 0, item.depth_m * 0.18, item.width_m * 0.65, item.depth_m * 0.42, 0.16, COLORS["dark"], 0.46),
+        _part(
+            item,
+            0,
+            item.depth_m * 0.18,
+            item.width_m * 0.65,
+            item.depth_m * 0.42,
+            0.16,
+            COLORS["dark"],
+            0.46,
+        ),
     ]
 
 
 def _plant_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
-    radius = max(min(item.width_m, item.depth_m) * 0.35, 0.08)
-    pot = trimesh.creation.cylinder(radius=radius, height=0.35, sections=16)
-    pot.apply_translation([item.center.x, item.center.y, 0.175])
-    leaf = trimesh.creation.icosphere(subdivisions=2, radius=radius * 1.65)
-    leaf.apply_scale([1.0, 1.0, 0.65])
-    leaf.apply_translation([item.center.x, item.center.y, 0.62])
-    return [_paint(pot, COLORS["pot"]), _paint(leaf, COLORS["plant"])]
+    width = item.width_m
+    depth = item.depth_m
+    meshes = [
+        _named(
+            _cylinder_part(
+                item,
+                0,
+                0,
+                width * 0.52,
+                depth * 0.52,
+                0.32,
+                COLORS["pot"],
+                0.16,
+                sections=12,
+            ),
+            "Pot",
+        )
+    ]
+    leaves = (
+        (-width * 0.15, depth * 0.04, width * 0.38, depth * 0.30, 0.64, -25.0),
+        (width * 0.15, depth * 0.08, width * 0.40, depth * 0.28, 0.72, 28.0),
+        (0.0, -depth * 0.12, width * 0.44, depth * 0.32, 0.79, 4.0),
+    )
+    for local_x, local_y, leaf_width, leaf_depth, leaf_z, leaf_rotation in leaves:
+        meshes.append(
+            _named(
+                _ellipsoid_part(
+                    item,
+                    local_x,
+                    local_y,
+                    leaf_width,
+                    leaf_depth,
+                    0.25,
+                    COLORS["plant"],
+                    leaf_z,
+                    local_rotation_deg=leaf_rotation,
+                ),
+                f"Leaf_{len(meshes):02d}",
+            )
+        )
+    return meshes
 
 
 def _furniture_family(category: str) -> str:
@@ -546,9 +1093,7 @@ def _special_element_meshes(element: ArchitecturalElement) -> list[trimesh.Trime
     if kind in {"balcony", "terrace"}:
         if len(element.polygon) >= 3:
             return [polygon_floor_mesh(element.polygon, 0.08, COLORS["floor_balcony"])]
-        return _floor_patch_meshes(
-            placement.model_copy(update={"category": f"floor_patch_{kind}"})
-        )
+        return _floor_patch_meshes(placement.model_copy(update={"category": f"floor_patch_{kind}"}))
     return []
 
 
@@ -559,7 +1104,9 @@ def export_simple_glb(model: FloorPlanModel, output_glb: Path) -> Path:
     scene = trimesh.Scene()
 
     for index, mesh in enumerate(_floor_meshes_for_model(model)):
-        scene.add_geometry(apply_planar_uv(mesh), node_name=f"Floor_{index:03d}", geom_name=f"Floor_{index:03d}")
+        scene.add_geometry(
+            apply_planar_uv(mesh), node_name=f"Floor_{index:03d}", geom_name=f"Floor_{index:03d}"
+        )
 
     for index, balcony in enumerate(model.balconies):
         mesh = polygon_floor_mesh(balcony.points, 0.08, COLORS["floor_balcony"])
@@ -582,7 +1129,9 @@ def export_simple_glb(model: FloorPlanModel, output_glb: Path) -> Path:
         wall_cap_meshes.append(_wall_cap_mesh(wall))
 
     for index, mesh in enumerate(wall_cap_meshes):
-        scene.add_geometry(mesh, node_name=f"Wall_Cap_{index:03d}", geom_name=f"Wall_Cap_{index:03d}")
+        scene.add_geometry(
+            mesh, node_name=f"Wall_Cap_{index:03d}", geom_name=f"Wall_Cap_{index:03d}"
+        )
 
     for door_index, door in enumerate(model.doors):
         opening_wall_index = _wall_index_for_opening(model, door.wall_id, door.center)
@@ -611,21 +1160,38 @@ def export_simple_glb(model: FloorPlanModel, output_glb: Path) -> Path:
                 COLORS["glass"],
             )
         ):
-            scene.add_geometry(mesh, node_name=f"Window_{window_index:03d}_{part_index:02d}", geom_name=f"Window_{window_index:03d}_{part_index:02d}")
+            scene.add_geometry(
+                mesh,
+                node_name=f"Window_{window_index:03d}_{part_index:02d}",
+                geom_name=f"Window_{window_index:03d}_{part_index:02d}",
+            )
 
     if model.ceiling.enabled and model.rooms:
-        for index, mesh in enumerate(ceiling_meshes(model.rooms, model.ceiling.height_m, model.ceiling.thickness_m, COLORS["wall"])):
-            scene.add_geometry(apply_planar_uv(mesh), node_name=f"Ceiling_{index:03d}", geom_name=f"Ceiling_{index:03d}")
+        for index, mesh in enumerate(
+            ceiling_meshes(
+                model.rooms, model.ceiling.height_m, model.ceiling.thickness_m, COLORS["wall"]
+            )
+        ):
+            scene.add_geometry(
+                apply_planar_uv(mesh),
+                node_name=f"Ceiling_{index:03d}",
+                geom_name=f"Ceiling_{index:03d}",
+            )
 
     for index, mesh in enumerate(skirting_meshes(model.walls, COLORS["wall_cap"])):
-        scene.add_geometry(mesh, node_name=f"Skirting_{index:03d}", geom_name=f"Skirting_{index:03d}")
+        scene.add_geometry(
+            mesh, node_name=f"Skirting_{index:03d}", geom_name=f"Skirting_{index:03d}"
+        )
 
     for index, item in enumerate(model.furniture):
         for part_index, mesh in enumerate(_furniture_meshes(item)):
+            category = _safe_name(item.category)
+            part_name = _safe_name(mesh.metadata.get("part_name") or f"Part_{part_index:02d}")
+            name = f"Furniture_{index:03d}_{part_index:02d}_{category}_{part_name}"
             scene.add_geometry(
                 mesh,
-                node_name=f"Furniture_{index:03d}_{part_index:02d}_{item.category}",
-                geom_name=f"Furniture_{index:03d}_{part_index:02d}_{item.category}",
+                node_name=name,
+                geom_name=name,
             )
 
     for index, element in enumerate(model.special_elements):
@@ -634,6 +1200,11 @@ def export_simple_glb(model: FloorPlanModel, output_glb: Path) -> Path:
             name = f"Special_{index:03d}_{kind}_{part_index:02d}"
             scene.add_geometry(mesh, node_name=name, geom_name=name)
 
+    # Trimesh keeps the source Z-up coordinate system when writing glTF,
+    # unlike Blender's exporter. The browser and the rest of this project use
+    # glTF's Y-up convention: plan (x, y) maps to world (x, -z), with height
+    # on +Y. Apply the same conversion Blender performs before serializing.
+    scene.apply_transform(trimesh.transformations.rotation_matrix(math.radians(-90.0), [1, 0, 0]))
     exported = scene.export(file_type="glb")
     if isinstance(exported, str):
         output_glb.write_text(exported, encoding="utf-8")
