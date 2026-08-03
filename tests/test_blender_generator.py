@@ -167,6 +167,18 @@ def test_blender_generates_glb_in_none_mode(tmp_path: Path) -> None:
                     width_m=1.60,
                     depth_m=0.80,
                 ),
+                FurniturePlacement(
+                    category="kitchen_counter",
+                    center=Point2D(x=6.7, y=4.4),
+                    width_m=1.20,
+                    depth_m=0.55,
+                ),
+                FurniturePlacement(
+                    category="plant",
+                    center=Point2D(x=6.7, y=5.4),
+                    width_m=0.45,
+                    depth_m=0.45,
+                ),
             ],
             "special_elements": [
                 ArchitecturalElement(
@@ -191,10 +203,19 @@ def test_blender_generates_glb_in_none_mode(tmp_path: Path) -> None:
     assert sum("bed_Pillow_" in name for name in nodes) == 2
     assert sum("sofa_Seat_Cushion_" in name for name in nodes) == 2
     assert sum("sofa_Back_Cushion_" in name for name in nodes) == 2
+    assert any(name.endswith("sofa_Back") for name in nodes)
     assert any("dining_table_Top" in name for name in nodes)
     assert sum("dining_table_Leg_" in name for name in nodes) == 4
     assert any("kitchen_sink_Rim" in name for name in nodes)
+    assert any("kitchen_sink_Basin" in name for name in nodes)
+    assert any("kitchen_sink_Faucet_Spout" in name for name in nodes)
     assert any("kitchen_stove_Cooktop" in name for name in nodes)
+    assert sum("kitchen_stove_Burner_" in name for name in nodes) == 4
+    assert any("kitchen_counter_ToeKick" in name for name in nodes)
+    assert sum("kitchen_counter_Front_" in name for name in nodes) == 4
+    assert sum("kitchen_counter_Handle_" in name for name in nodes) == 4
+    assert any("plant_Pot" in name for name in nodes)
+    assert sum("plant_Leaf_" in name for name in nodes) == 4
     assert not any(name.startswith("Ceiling_") for name in nodes)
     binary = output.read_bytes()
     assert b"KHR_lights_punctual" in binary
@@ -203,6 +224,180 @@ def test_blender_generates_glb_in_none_mode(tmp_path: Path) -> None:
     exported_lights = gltf["extensions"]["KHR_lights_punctual"]["lights"]
     assert exported_lights
     assert max(float(light["intensity"]) for light in exported_lights) <= 6_000
+
+
+@pytest.mark.integration
+def test_blender_furniture_stays_inside_grounded_footprints(tmp_path: Path) -> None:
+    import math
+    import shutil
+    import subprocess
+
+    blender = shutil.which("blender")
+    if blender is None:
+        pytest.skip("Blender not on PATH")
+
+    model = FloorPlanModel.load_json(FIXTURES / "sample_two_bedroom_flat.json")
+    furniture = [
+        FurniturePlacement(
+            category="bed",
+            center=Point2D(x=1.3, y=1.2),
+            width_m=0.90,
+            depth_m=0.80,
+        ),
+        FurniturePlacement(
+            category="sofa",
+            center=Point2D(x=3.0, y=1.2),
+            width_m=0.90,
+            depth_m=0.40,
+            rotation_deg=90.0,
+        ),
+        FurniturePlacement(
+            category="dining_table",
+            center=Point2D(x=4.8, y=1.2),
+            width_m=1.10,
+            depth_m=0.60,
+            rotation_deg=-30.0,
+        ),
+        FurniturePlacement(
+            category="kitchen_counter",
+            center=Point2D(x=6.7, y=1.2),
+            width_m=1.20,
+            depth_m=0.50,
+            rotation_deg=90.0,
+        ),
+        FurniturePlacement(
+            category="kitchen_sink",
+            center=Point2D(x=1.3, y=4.2),
+            width_m=0.60,
+            depth_m=0.50,
+        ),
+        FurniturePlacement(
+            category="kitchen_stove",
+            center=Point2D(x=3.0, y=4.2),
+            width_m=0.60,
+            depth_m=0.50,
+            rotation_deg=-90.0,
+        ),
+        FurniturePlacement(
+            category="plant",
+            center=Point2D(x=4.5, y=4.2),
+            width_m=0.45,
+            depth_m=0.45,
+        ),
+        FurniturePlacement(
+            category="chair",
+            center=Point2D(x=5.8, y=4.2),
+            width_m=0.45,
+            depth_m=0.45,
+            rotation_deg=25.0,
+        ),
+    ]
+    model = model.model_copy(update={"furniture": furniture})
+    floorplan_path = tmp_path / "footprint-plan.json"
+    output_path = tmp_path / "footprint-building.glb"
+    manifest_path = tmp_path / "furniture-manifest.json"
+    probe_path = tmp_path / "probe-furniture.py"
+    floorplan_path.write_text(model.model_dump_json(indent=2), encoding="utf-8")
+    probe_path.write_text(
+        f"""
+import json
+import runpy
+import sys
+from pathlib import Path
+
+from mathutils import Vector
+
+template = Path({str(TEMPLATE.resolve())!r})
+floorplan = Path({str(floorplan_path)!r})
+output = Path({str(output_path)!r})
+manifest = Path({str(manifest_path)!r})
+sys.argv = [
+    str(template),
+    "--",
+    "--floorplan",
+    str(floorplan),
+    "--output",
+    str(output),
+    "--mode",
+    "none",
+]
+runpy.run_path(str(template), run_name="__main__")
+
+import bpy
+
+parts = {{}}
+for obj in bpy.data.objects:
+    if obj.type != "MESH" or not obj.name.startswith("Furniture_"):
+        continue
+    corners = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
+    parts[obj.name] = {{
+        "corners": [[float(point.x), float(point.y), float(point.z)] for point in corners],
+        "vertices": len(obj.data.vertices),
+        "polygons": len(obj.data.polygons),
+        "minimum_polygon_area": min(
+            (float(polygon.area) for polygon in obj.data.polygons),
+            default=0.0,
+        ),
+    }}
+manifest.write_text(json.dumps(parts, indent=2), encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        [
+            blender,
+            "--background",
+            "--python-exit-code",
+            "1",
+            "--python",
+            str(probe_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert completed.returncode == 0, (completed.stdout + completed.stderr)[-8_000:]
+    parts = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    tolerance = 1e-5
+    for index, placement in enumerate(furniture):
+        prefix = f"Furniture_{index:03d}_"
+        placement_parts = {
+            name: payload for name, payload in parts.items() if name.startswith(prefix)
+        }
+        assert placement_parts, prefix
+        angle = math.radians(placement.rotation_deg)
+        cos_angle = math.cos(angle)
+        sin_angle = math.sin(angle)
+        for name, payload in placement_parts.items():
+            for world_x, world_y, _world_z in payload["corners"]:
+                assert all(
+                    math.isfinite(component)
+                    for component in (world_x, world_y, _world_z)
+                ), name
+                offset_x = world_x - placement.center.x
+                offset_y = world_y - placement.center.y
+                local_x = offset_x * cos_angle + offset_y * sin_angle
+                local_y = -offset_x * sin_angle + offset_y * cos_angle
+                assert abs(local_x) <= placement.width_m / 2 + tolerance, name
+                assert abs(local_y) <= placement.depth_m / 2 + tolerance, name
+
+    curved_parts = {
+        name: payload
+        for name, payload in parts.items()
+        if any(
+            token in name
+            for token in ("Pillow_", "dining_table_Leg_", "Burner_", "plant_Leaf_")
+        )
+    }
+    assert curved_parts
+    assert all(payload["vertices"] > 8 for payload in curved_parts.values())
+    assert all(payload["polygons"] > 6 for payload in curved_parts.values())
+    assert all(
+        payload["minimum_polygon_area"] > 1e-9
+        for payload in curved_parts.values()
+    )
 
 
 @pytest.mark.integration

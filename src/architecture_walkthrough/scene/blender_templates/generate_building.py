@@ -258,6 +258,11 @@ def build_materials() -> None:
     MATERIALS["wood_light"] = make_pbr("Furniture_Wood_Light", (0.62, 0.42, 0.23, 1.0), roughness=0.50)
     MATERIALS["counter"] = make_pbr("Counter_Stone", (0.68, 0.69, 0.66, 1.0), roughness=0.28)
     MATERIALS["cabinet"] = make_pbr("Cabinet_Wood", (0.34, 0.18, 0.09, 1.0), roughness=0.48)
+    MATERIALS["cabinet_front"] = make_pbr(
+        "Cabinet_Front",
+        (0.43, 0.25, 0.13, 1.0),
+        roughness=0.52,
+    )
     MATERIALS["metal"] = make_pbr("Metal_Dark", (0.12, 0.14, 0.16, 1.0), roughness=0.24, metallic=0.72)
     MATERIALS["fixture"] = make_pbr("Fixture_Ceramic", (0.92, 0.94, 0.93, 1.0), roughness=0.22)
     MATERIALS["rug"] = make_pbr("Rug_Fabric", (0.46, 0.20, 0.16, 1.0), roughness=0.92)
@@ -872,7 +877,9 @@ def asset_ellipsoid(
 
 
 def build_table(item: dict, prefix: str, width: float, depth: float, coffee: bool = False) -> None:
-    top_z = 0.42 if coffee else 0.76
+    surface_z = 0.42 if coffee else 0.76
+    top_thickness = 0.07
+    top_bottom = surface_z - top_thickness
     asset_box(
         prefix,
         item,
@@ -881,20 +888,23 @@ def build_table(item: dict, prefix: str, width: float, depth: float, coffee: boo
         0,
         width,
         depth,
-        0.07,
-        top_z,
+        top_thickness,
+        surface_z - top_thickness / 2,
         "wood_light",
         bevel_width=0.035,
         bevel_segments=3,
     )
-    leg_height = top_z - 0.08
+    leg_height = top_bottom
     leg_width = max(0.035, min(width, depth) * 0.08)
     apron_height = min(0.12, leg_height * 0.22)
-    apron_z = top_z - 0.07 - apron_height / 2
-    asset_box(prefix, item, "Apron_Front", 0, -depth * 0.40, width * 0.78, 0.035, apron_height, apron_z, "wood")
-    asset_box(prefix, item, "Apron_Back", 0, depth * 0.40, width * 0.78, 0.035, apron_height, apron_z, "wood")
-    asset_box(prefix, item, "Apron_Left", -width * 0.42, 0, 0.035, depth * 0.72, apron_height, apron_z, "wood")
-    asset_box(prefix, item, "Apron_Right", width * 0.42, 0, 0.035, depth * 0.72, apron_height, apron_z, "wood")
+    apron_z = top_bottom - apron_height / 2
+    apron_thickness = max(0.025, min(0.035, min(width, depth) * 0.08))
+    apron_y = max(0.0, depth / 2 - apron_thickness / 2)
+    apron_x = max(0.0, width / 2 - apron_thickness / 2)
+    asset_box(prefix, item, "Apron_Front", 0, -apron_y, width * 0.78, apron_thickness, apron_height, apron_z, "wood")
+    asset_box(prefix, item, "Apron_Back", 0, apron_y, width * 0.78, apron_thickness, apron_height, apron_z, "wood")
+    asset_box(prefix, item, "Apron_Left", -apron_x, 0, apron_thickness, depth * 0.72, apron_height, apron_z, "wood")
+    asset_box(prefix, item, "Apron_Right", apron_x, 0, apron_thickness, depth * 0.72, apron_height, apron_z, "wood")
     for x_sign in (-1.0, 1.0):
         for y_sign in (-1.0, 1.0):
             asset_cylinder(
@@ -958,8 +968,8 @@ def build_procedural_asset(item: dict, prefix: str, category: str) -> None:
     if family == "bed":
         # Keep every visible part inside the grounded footprint. Expanding a
         # detected bed in the renderer can push it through an adjacent wall.
-        width, depth = max(width, 0.55), max(depth, 0.85)
         asset_box(prefix, item, "Frame", 0, 0, width, depth, 0.18, 0.13, "wood", bevel_width=0.018)
+        headboard_depth = max(0.025, depth * 0.07)
         asset_box(
             prefix,
             item,
@@ -993,9 +1003,9 @@ def build_procedural_asset(item: dict, prefix: str, category: str) -> None:
             item,
             "Headboard",
             0,
-            depth * 0.465,
+            max(0.0, depth / 2 - headboard_depth / 2),
             width * 0.96,
-            max(0.045, depth * 0.07),
+            headboard_depth,
             0.74,
             0.40,
             "wood",
@@ -1026,7 +1036,6 @@ def build_procedural_asset(item: dict, prefix: str, category: str) -> None:
     if family == "sofa":
         # Small sofa footprints often represent single modules in a sectional.
         # Preserve those modules and let cushion count communicate their scale.
-        width, depth = max(width, 0.55), max(depth, 0.34)
         arm_width = max(0.065, min(width * 0.105, 0.16))
         inner_width = max(width - arm_width * 2.0, width * 0.62)
         cushion_count = 1 if width < 1.15 else 2 if width < 2.10 else 3
@@ -1047,6 +1056,20 @@ def build_procedural_asset(item: dict, prefix: str, category: str) -> None:
             "upholstery",
             bevel_width=0.025,
         )
+        asset_box(
+            prefix,
+            item,
+            "Back",
+            0,
+            depth * 0.45,
+            width * 0.88,
+            depth * 0.10,
+            0.58,
+            0.47,
+            "upholstery",
+            bevel_width=0.025,
+            bevel_segments=3,
+        )
         for cushion_index in range(cushion_count):
             cushion_x = (
                 -inner_width / 2
@@ -1062,7 +1085,7 @@ def build_procedural_asset(item: dict, prefix: str, category: str) -> None:
                 cushion_width * 0.96,
                 depth * 0.60,
                 0.17,
-                0.35,
+                0.325,
                 "upholstery_cushion",
                 bevel_width=0.05,
                 bevel_segments=3,
@@ -1076,7 +1099,7 @@ def build_procedural_asset(item: dict, prefix: str, category: str) -> None:
                 cushion_width * 0.96,
                 depth * 0.17,
                 0.43,
-                0.61,
+                0.575,
                 "upholstery_cushion",
                 bevel_width=0.05,
                 bevel_segments=3,
@@ -1114,50 +1137,234 @@ def build_procedural_asset(item: dict, prefix: str, category: str) -> None:
         return
 
     if family == "chair":
-        width, depth = max(width, 0.42), max(depth, 0.42)
-        asset_box(prefix, item, "Seat", 0, 0, width, depth, 0.10, 0.45, "upholstery")
-        asset_box(prefix, item, "Back", 0, depth * 0.44, width, 0.07, 0.52, 0.70, "upholstery")
+        asset_box(
+            prefix,
+            item,
+            "Seat",
+            0,
+            -depth * 0.03,
+            width * 0.92,
+            depth * 0.82,
+            0.11,
+            0.45,
+            "upholstery_cushion",
+            bevel_width=0.035,
+            bevel_segments=3,
+        )
+        asset_box(
+            prefix,
+            item,
+            "Back",
+            0,
+            depth * 0.445,
+            width * 0.86,
+            depth * 0.09,
+            0.46,
+            0.69,
+            "upholstery",
+            bevel_width=0.03,
+            bevel_segments=3,
+        )
         for x_sign in (-1.0, 1.0):
             for y_sign in (-1.0, 1.0):
-                asset_box(prefix, item, f"Leg_{int(x_sign)}_{int(y_sign)}", x_sign * width * 0.40, y_sign * depth * 0.38, 0.04, 0.04, 0.42, 0.21, "wood")
+                asset_cylinder(
+                    prefix,
+                    item,
+                    f"Leg_{int(x_sign)}_{int(y_sign)}",
+                    x_sign * width * 0.37,
+                    y_sign * depth * 0.34,
+                    0.038,
+                    0.038,
+                    0.40,
+                    0.20,
+                    "wood",
+                    segments=10,
+                    top_scale=1.18,
+                )
         return
 
     if family == "table":
         coffee = "coffee" in category or "side" in category
-        width = max(width, 0.38 if coffee else 0.55)
-        depth = max(depth, 0.32 if coffee else 0.45)
         build_table(item, prefix, width, depth, coffee=coffee)
         return
 
     if family == "wardrobe":
-        width, depth = max(width, 0.70), max(depth, 0.38)
         asset_box(prefix, item, "Carcass", 0, 0, width, depth, 1.85, 0.925, "cabinet")
-        asset_box(prefix, item, "Door_Left", -width * 0.24, -depth * 0.51, width * 0.46, 0.035, 1.66, 0.93, "wood_light")
-        asset_box(prefix, item, "Door_Right", width * 0.24, -depth * 0.51, width * 0.46, 0.035, 1.66, 0.93, "wood_light")
+        door_depth = min(0.035, depth)
+        door_y = -max(0.0, depth / 2 - door_depth / 2)
+        asset_box(prefix, item, "Door_Left", -width * 0.24, door_y, width * 0.46, door_depth, 1.66, 0.93, "wood_light")
+        asset_box(prefix, item, "Door_Right", width * 0.24, door_y, width * 0.46, door_depth, 1.66, 0.93, "wood_light")
         return
 
     if family == "stove":
-        width, depth = max(width, 0.48), max(depth, 0.44)
-        asset_box(prefix, item, "Cooktop", 0, 0, width, depth, 0.06, 0.92, "metal")
+        asset_box(prefix, item, "Body", 0, depth * 0.015, width * 0.96, depth * 0.93, 0.86, 0.43, "cabinet")
+        oven_door_depth = min(0.026, depth)
+        oven_door_y = max(0.0, depth / 2 - oven_door_depth / 2)
+        for face_name, face_sign in (("A", -1.0), ("B", 1.0)):
+            asset_box(
+                prefix,
+                item,
+                f"Oven_Door_{face_name}",
+                0,
+                face_sign * oven_door_y,
+                width * 0.76,
+                oven_door_depth,
+                0.46,
+                0.48,
+                "metal",
+                bevel_width=0.012,
+            )
+        asset_box(
+            prefix,
+            item,
+            "Cooktop",
+            0,
+            0,
+            width,
+            depth,
+            0.055,
+            0.895,
+            "metal",
+            bevel_width=0.014,
+        )
         for x_sign in (-1.0, 1.0):
             for y_sign in (-1.0, 1.0):
-                asset_box(prefix, item, f"Burner_{int(x_sign)}_{int(y_sign)}", x_sign * width * 0.23, y_sign * depth * 0.23, width * 0.22, depth * 0.22, 0.018, 0.96, "fixture")
+                asset_cylinder(
+                    prefix,
+                    item,
+                    f"Burner_{int(x_sign)}_{int(y_sign)}",
+                    x_sign * width * 0.24,
+                    y_sign * depth * 0.23,
+                    min(width, depth) * 0.22,
+                    min(width, depth) * 0.22,
+                    0.016,
+                    0.931,
+                    "fixture",
+                    segments=14,
+                )
         return
 
     if family == "sink":
-        width, depth = max(width, 0.50), max(depth, 0.42)
-        asset_box(prefix, item, "Rim", 0, 0, width, depth, 0.08, 0.90, "fixture")
-        asset_box(prefix, item, "Basin", 0, 0, width * 0.72, depth * 0.64, 0.12, 0.84, "metal")
+        asset_box(prefix, item, "Cabinet", 0, depth * 0.015, width * 0.96, depth * 0.93, 0.86, 0.43, "cabinet")
+        basin_width = width * 0.70
+        basin_depth = depth * 0.58
+        rim_width = max(0.035, min(width, depth) * 0.075)
+        asset_box(prefix, item, "Rim_Front", 0, -depth * 0.355, width * 0.84, rim_width, 0.055, 0.895, "fixture", bevel_width=0.012)
+        asset_box(prefix, item, "Rim_Back", 0, depth * 0.355, width * 0.84, rim_width, 0.055, 0.895, "fixture", bevel_width=0.012)
+        asset_box(prefix, item, "Rim_Left", -width * 0.39, 0, rim_width, depth * 0.64, 0.055, 0.895, "fixture", bevel_width=0.012)
+        asset_box(prefix, item, "Rim_Right", width * 0.39, 0, rim_width, depth * 0.64, 0.055, 0.895, "fixture", bevel_width=0.012)
+        # A low dark insert below the four rim rails reads as a recessed basin
+        # without a fragile boolean or a convex "metal mound".
+        asset_box(
+            prefix,
+            item,
+            "Basin",
+            0,
+            -depth * 0.015,
+            basin_width,
+            basin_depth,
+            0.025,
+            0.875,
+            "metal",
+            bevel_width=0.045,
+            bevel_segments=3,
+        )
+        faucet_size = max(0.03, min(width, depth) * 0.065)
+        asset_cylinder(
+            prefix,
+            item,
+            "Faucet_Base",
+            0,
+            depth * 0.37,
+            faucet_size,
+            faucet_size,
+            0.25,
+            1.02,
+            "metal",
+            segments=12,
+        )
+        asset_box(
+            prefix,
+            item,
+            "Faucet_Spout",
+            0,
+            depth * 0.22,
+            faucet_size,
+            depth * 0.30,
+            faucet_size,
+            1.135,
+            "metal",
+            bevel_width=0.012,
+        )
         return
 
     if family == "counter":
-        width, depth = max(width, 0.60), max(depth, 0.52)
-        asset_box(prefix, item, "Cabinet", 0, 0, width, depth, 0.86, 0.43, "cabinet")
-        asset_box(prefix, item, "Worktop", 0, 0, width * 1.04, depth * 1.06, 0.07, 0.895, "counter")
+        asset_box(prefix, item, "Cabinet", 0, depth * 0.025, width * 0.96, depth * 0.90, 0.84, 0.45, "cabinet")
+        asset_box(
+            prefix,
+            item,
+            "Worktop",
+            0,
+            0,
+            width,
+            depth,
+            0.07,
+            0.905,
+            "counter",
+            bevel_width=0.016,
+        )
+        asset_box(
+            prefix,
+            item,
+            "ToeKick",
+            0,
+            -depth * 0.425,
+            width * 0.90,
+            depth * 0.08,
+            0.12,
+            0.06,
+            "metal",
+            bevel_width=0.006,
+        )
+        module_count = max(1, min(6, round(width / 0.58)))
+        module_span = width * 0.90 / module_count
+        front_depth = min(0.025, depth)
+        handle_depth = min(0.025, depth)
+        for module_index in range(module_count):
+            module_x = -width * 0.45 + module_span * (module_index + 0.5)
+            # The source gives a long-axis rotation but not which side faces
+            # the room. Detail both long faces so wall-side hardware is hidden
+            # naturally and the visible side is never left blank.
+            for face_name, face_sign in (("A", -1.0), ("B", 1.0)):
+                asset_box(
+                    prefix,
+                    item,
+                    f"Front_{face_name}_{module_index + 1:02d}",
+                    module_x,
+                    face_sign * max(0.0, depth / 2 - front_depth / 2),
+                    max(0.05, module_span - 0.014),
+                    front_depth,
+                    0.62,
+                    0.49,
+                    "cabinet_front",
+                    bevel_width=0.008,
+                )
+                asset_box(
+                    prefix,
+                    item,
+                    f"Handle_{face_name}_{module_index + 1:02d}",
+                    module_x,
+                    face_sign * max(0.0, depth / 2 - handle_depth / 2),
+                    min(0.16, module_span * 0.34),
+                    handle_depth,
+                    0.022,
+                    0.72,
+                    "metal",
+                    bevel_width=0.006,
+                )
         return
 
     if family == "fixture":
-        width, depth = max(width, 0.58), max(depth, 1.10 if "bath" in category else 0.62)
         asset_box(prefix, item, "Body", 0, 0, width, depth, 0.38, 0.22, "fixture")
         asset_box(prefix, item, "Inset", 0, -depth * 0.05, width * 0.68, depth * 0.67, 0.08, 0.43, "metal")
         return
@@ -1167,14 +1374,68 @@ def build_procedural_asset(item: dict, prefix: str, category: str) -> None:
         return
 
     if family == "tv":
-        width, depth = max(width, 0.75), max(depth, 0.25)
         asset_box(prefix, item, "Console", 0, 0, width, depth, 0.42, 0.21, "wood")
         asset_box(prefix, item, "Screen", 0, 0, width * 0.78, 0.035, 0.78, 0.92, "metal")
         return
 
     if family == "plant":
-        asset_box(prefix, item, "Pot", 0, 0, width * 0.55, depth * 0.55, 0.35, 0.175, "pot")
-        asset_box(prefix, item, "Leaves", 0, 0, width, depth, 0.70, 0.72, "plant")
+        asset_cylinder(
+            prefix,
+            item,
+            "Pot",
+            0,
+            0,
+            width * 0.52,
+            depth * 0.52,
+            0.32,
+            0.16,
+            "pot",
+            segments=14,
+            top_scale=1.28,
+        )
+        stem_height = 0.44
+        for stem_index, (stem_x, stem_y) in enumerate(
+            ((-width * 0.10, 0.0), (width * 0.09, depth * 0.04), (0.0, -depth * 0.08)),
+            start=1,
+        ):
+            asset_cylinder(
+                prefix,
+                item,
+                f"Stem_{stem_index:02d}",
+                stem_x,
+                stem_y,
+                0.022,
+                0.022,
+                stem_height,
+                0.49,
+                "plant",
+                segments=10,
+            )
+        for leaf_index, leaf in enumerate(
+            (
+                (-width * 0.15, depth * 0.04, width * 0.38, depth * 0.30, 0.24, 0.64, -25.0),
+                (width * 0.15, depth * 0.08, width * 0.40, depth * 0.28, 0.25, 0.72, 28.0),
+                (0.0, -depth * 0.12, width * 0.44, depth * 0.32, 0.27, 0.79, 4.0),
+                (-width * 0.06, depth * 0.02, width * 0.34, depth * 0.26, 0.24, 0.88, 52.0),
+            ),
+            start=1,
+        ):
+            leaf_x, leaf_y, leaf_width, leaf_depth, leaf_height, leaf_z, leaf_rotation = leaf
+            asset_ellipsoid(
+                prefix,
+                item,
+                f"Leaf_{leaf_index:02d}",
+                leaf_x,
+                leaf_y,
+                leaf_width,
+                leaf_depth,
+                leaf_height,
+                leaf_z,
+                "plant",
+                longitude_segments=12,
+                latitude_segments=6,
+                local_rotation_deg=leaf_rotation,
+            )
         return
 
     asset_box(prefix, item, "Body", 0, 0, width, depth, 0.55, 0.275, "wood_light")
