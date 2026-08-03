@@ -103,6 +103,12 @@ def test_simple_glb_export_converts_z_up_geometry_to_gltf_y_up(
     assert floor.extents[0] > 1.0
     assert floor.extents[2] > 1.0
     assert floor.extents[1] == pytest.approx(0.10, abs=1e-5)
+    assert floor.bounds[1][1] == pytest.approx(0.0, abs=1e-5)
+    wall_transform, wall_geometry_name = loaded.graph.get("Wall_000_00")
+    wall = loaded.geometry[wall_geometry_name].copy()
+    wall.apply_transform(wall_transform)
+    assert wall.bounds[0][1] >= -1e-5
+    assert wall.bounds[1][1] > 2.0
     assert loaded.bounds[1][1] <= max(wall.height_m for wall in model.walls) + 0.5
 
 
@@ -166,7 +172,10 @@ def test_simple_glb_export_builds_multi_part_furniture(tmp_path: Path) -> None:
         ("kitchen_sink", 0.60, 0.50, 0.0, 5),
         ("kitchen_stove", 0.60, 0.50, -90.0, 8),
         ("plant", 0.35, 0.55, 0.0, 4),
+        ("plant", 5.00, 0.20, 33.0, 4),
+        ("plant", 0.20, 5.00, -17.0, 4),
         ("chair", 0.45, 0.45, 25.0, 6),
+        ("dining_table", 0.01, 0.01, 12.0, 9),
     ],
 )
 def test_simple_furniture_is_bounded_and_lightweight(

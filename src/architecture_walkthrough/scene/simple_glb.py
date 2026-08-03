@@ -340,7 +340,7 @@ def _chair_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
             "Back",
         ),
     ]
-    leg_width = max(0.015, min(0.038, min(width, depth) * 0.09))
+    leg_width = min(0.038, min(width, depth) * 0.09)
     for x_sign in (-1.0, 1.0):
         for y_sign in (-1.0, 1.0):
             meshes.append(
@@ -367,7 +367,7 @@ def _table_meshes(item: FurniturePlacement, color: RGBA) -> list[trimesh.Trimesh
     surface_z = 0.42 if coffee else 0.76
     top_height = 0.07
     top_bottom = surface_z - top_height
-    leg_w = max(0.025, min(0.08, min(item.width_m, item.depth_m) * 0.08))
+    leg_w = min(0.08, min(item.width_m, item.depth_m) * 0.08)
     meshes = [
         _named(
             _part(
@@ -384,10 +384,7 @@ def _table_meshes(item: FurniturePlacement, color: RGBA) -> list[trimesh.Trimesh
         )
     ]
     apron_height = min(0.12, top_bottom * 0.22)
-    apron_thickness = max(
-        0.018,
-        min(0.035, min(item.width_m, item.depth_m) * 0.08),
-    )
+    apron_thickness = min(0.035, min(item.width_m, item.depth_m) * 0.08)
     apron_x = max(0.0, item.width_m / 2 - apron_thickness / 2)
     apron_y = max(0.0, item.depth_m / 2 - apron_thickness / 2)
     apron_z = top_bottom - apron_height / 2
@@ -471,7 +468,7 @@ def _table_meshes(item: FurniturePlacement, color: RGBA) -> list[trimesh.Trimesh
 def _sofa_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
     width = item.width_m
     depth = item.depth_m
-    arm_width = max(0.04, min(width * 0.105, 0.16))
+    arm_width = min(width * 0.105, 0.16)
     inner_width = max(width - arm_width * 2.0, width * 0.62)
     cushion_count = 1 if width < 1.15 else 2 if width < 2.10 else 3
     cushion_gap = min(0.025, inner_width * 0.025)
@@ -557,7 +554,7 @@ def _bed_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
             "Duvet",
         ),
     ]
-    headboard_depth = max(0.018, depth * 0.07)
+    headboard_depth = depth * 0.07
     meshes.append(
         _named(
             _part(
@@ -712,7 +709,7 @@ def _counter_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
                     item,
                     module_x,
                     face_sign * max(0.0, depth / 2 - front_depth / 2),
-                    max(0.04, module_span - 0.014),
+                    module_span - min(0.014, module_span * 0.08),
                     front_depth,
                     0.62,
                     COLORS["cabinet_front"],
@@ -803,8 +800,8 @@ def _sink_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
     depth = item.depth_m
     basin_width = width * 0.70
     basin_depth = depth * 0.58
-    rim_width = max(0.018, min(width, depth) * 0.075)
-    faucet_size = max(0.018, min(width, depth) * 0.065)
+    rim_width = min(width, depth) * 0.075
+    faucet_size = min(width, depth) * 0.065
     rim = trimesh.util.concatenate(
         [
             _part(
@@ -912,14 +909,29 @@ def _plant_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
         (0.0, -depth * 0.12, width * 0.44, depth * 0.32, 0.79, 4.0),
     )
     for local_x, local_y, leaf_width, leaf_depth, leaf_z, leaf_rotation in leaves:
+        # Rotating an ellipse increases its axis-aligned extent. Scale it to
+        # the remaining local footprint so extreme rectangular planters stay
+        # inside the geometry already cleared by room fitting.
+        angle = math.radians(leaf_rotation)
+        radius_x = leaf_width / 2
+        radius_y = leaf_depth / 2
+        extent_x = math.hypot(radius_x * math.cos(angle), radius_y * math.sin(angle))
+        extent_y = math.hypot(radius_x * math.sin(angle), radius_y * math.cos(angle))
+        available_x = max(0.0, width / 2 - abs(local_x))
+        available_y = max(0.0, depth / 2 - abs(local_y))
+        scale = min(
+            1.0,
+            available_x / max(extent_x, 1e-9),
+            available_y / max(extent_y, 1e-9),
+        )
         meshes.append(
             _named(
                 _ellipsoid_part(
                     item,
                     local_x,
                     local_y,
-                    leaf_width,
-                    leaf_depth,
+                    leaf_width * scale,
+                    leaf_depth * scale,
                     0.25,
                     COLORS["plant"],
                     leaf_z,
