@@ -37,6 +37,10 @@ ai:
   gemini_enabled: true
   gemini_model: gemini-2.5-flash
   gemini_min_confidence: 0.55
+  gemini_sanity_check_enabled: true
+  gemini_request_timeout_seconds: 20
+  gemini_retry_attempts: 2
+  gemini_retry_base_delay_seconds: 2.0
 roi_detection:
   enabled: true
   padding_ratio: 0.02

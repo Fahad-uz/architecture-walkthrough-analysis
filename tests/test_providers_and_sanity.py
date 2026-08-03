@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from architecture_walkthrough.ai.sanity_check import (
@@ -93,6 +94,54 @@ def test_sanity_checker_without_key_is_soft_failure(monkeypatch) -> None:
     result = GeminiLayoutSanityChecker(AppConfig().ai).check(Path("missing.png"), _model(), 400, 300)
     assert result.attempted and not result.succeeded
     assert result.warnings == []
+
+
+def test_sanity_request_uses_one_bounded_attempt(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeModels:
+        def generate_content(self, **_kwargs):
+            return SimpleNamespace(text='{"warnings": []}')
+
+    class FakeClient:
+        def __init__(self, *, api_key, http_options) -> None:
+            captured["api_key"] = api_key
+            captured["http_options"] = http_options
+            self.models = FakeModels()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            captured["closed"] = True
+
+    def fake_backoff(operation, *, attempts, base_delay_seconds):
+        captured["attempts"] = attempts
+        captured["base_delay_seconds"] = base_delay_seconds
+        return operation()
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr("google.genai.Client", FakeClient)
+    monkeypatch.setattr("architecture_walkthrough.ai.retry.call_with_backoff", fake_backoff)
+    image_path = tmp_path / "plan.png"
+    image_path.write_bytes(b"test-image")
+    checker = GeminiLayoutSanityChecker(
+        AppConfig().ai.model_copy(
+            update={
+                "gemini_request_timeout_seconds": 9,
+                "gemini_retry_attempts": 2,
+                "gemini_retry_base_delay_seconds": 1.25,
+            }
+        )
+    )
+
+    assert checker._request(image_path, _model(), 400, 300) == []
+    options = captured["http_options"]
+    assert options.timeout == 9_000
+    assert options.retry_options.attempts == 1
+    assert captured["attempts"] == 1
+    assert captured["base_delay_seconds"] == 1.25
+    assert captured["closed"] is True
 
 
 def test_sanity_checker_parses_mocked_warnings(monkeypatch, tmp_path: Path) -> None:

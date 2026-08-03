@@ -56,6 +56,11 @@ class AISettings(BaseModel):
     gemini_model: str = "gemini-2.5-flash"
     gemini_min_confidence: float = Field(default=0.55, ge=0.0, le=1.0)
     gemini_sanity_check_enabled: bool = True
+    # Gemini is optional enrichment. Keep its complete retry budget well below
+    # the 120-second analysis-worker deadline so local geometry always wins.
+    gemini_request_timeout_seconds: int = Field(default=20, ge=5, le=20)
+    gemini_retry_attempts: int = Field(default=2, ge=1, le=2)
+    gemini_retry_base_delay_seconds: float = Field(default=2.0, ge=0.0, le=2.0)
 
 
 class ROIDetectionSettings(BaseModel):

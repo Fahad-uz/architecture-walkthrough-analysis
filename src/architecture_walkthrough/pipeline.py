@@ -13,8 +13,9 @@ from architecture_walkthrough.ai.floorplan_vision import (
     FloorPlanVisionAnalysis,
     FloorPlanVisionHints,
     GeminiFloorPlanVisionAnalyzer,
+    GeminiFloorPlanVisionError,
 )
-from architecture_walkthrough.ai.sanity_check import GeminiLayoutSanityChecker
+from architecture_walkthrough.ai.sanity_check import GeminiLayoutSanityChecker, SanityCheckResult
 from architecture_walkthrough.config import AppConfig
 from architecture_walkthrough.geometry.models import (
     ArchitecturalElement,
@@ -77,6 +78,8 @@ from architecture_walkthrough.walkthrough.render_video import encode_frames_to_m
 
 LOGGER = logging.getLogger(__name__)
 FLOORPLAN_VISION_CACHE_VERSION = "2026-07-grounded-hints-v2"
+MIN_GEMINI_REQUEST_TIMEOUT_SECONDS = 5
+LOCAL_ANALYSIS_RESERVE_SECONDS = 15
 
 
 class StageLogger:
@@ -106,6 +109,7 @@ def _floorplan_vision_analysis(
     output_dir: Path,
     config: AppConfig,
     require_success: bool,
+    skip_request_error: str | None = None,
 ) -> tuple[FloorPlanVisionAnalysis, bool]:
     """Reuse validated semantic hints for the same ROI/model when available."""
 
@@ -124,6 +128,11 @@ def _floorplan_vision_analysis(
         except (OSError, ValueError, TypeError):
             LOGGER.warning("ignoring invalid cached floor-plan vision hints at %s", cache_path)
 
+    if skip_request_error is not None:
+        if require_success:
+            raise GeminiFloorPlanVisionError(skip_request_error)
+        return FloorPlanVisionAnalysis(error=skip_request_error), False
+
     analysis = GeminiFloorPlanVisionAnalyzer(config.ai).analyze_with_diagnostics(
         image_path,
         require_success=require_success,
@@ -139,6 +148,40 @@ def _floorplan_vision_analysis(
             },
         )
     return analysis, False
+
+
+def _runtime_ai_config(config: AppConfig) -> tuple[AppConfig, str | None]:
+    """Fit optional Gemini calls inside the configured worker lifetime."""
+
+    if not config.ai.gemini_enabled:
+        return config, None
+    attempts = config.ai.gemini_retry_attempts
+    retry_delay = sum(
+        config.ai.gemini_retry_base_delay_seconds * (2**attempt)
+        for attempt in range(attempts - 1)
+    )
+    available_seconds = config.limits.processing_timeout_seconds - LOCAL_ANALYSIS_RESERVE_SECONDS
+    # The semantic pass may consume every configured attempt; one additional
+    # slot covers sanity when semantics succeeds. This keeps the local pipeline
+    # and artifact publication outside the optional-provider budget.
+    request_slots = attempts + 1
+    max_request_seconds = int((available_seconds - retry_delay) / request_slots)
+    if max_request_seconds < MIN_GEMINI_REQUEST_TIMEOUT_SECONDS:
+        return (
+            config,
+            "Gemini skipped because the configured analysis timeout leaves "
+            "insufficient time for local reconstruction",
+        )
+    effective_timeout = min(
+        config.ai.gemini_request_timeout_seconds,
+        max_request_seconds,
+    )
+    if effective_timeout == config.ai.gemini_request_timeout_seconds:
+        return config, None
+    runtime_ai = config.ai.model_copy(
+        update={"gemini_request_timeout_seconds": effective_timeout}
+    )
+    return config.model_copy(update={"ai": runtime_ai}), None
 
 
 def _convert_walls_to_metres(
@@ -697,11 +740,13 @@ def analyze_image(
     # coordinates by the ROI dimensions shifted every semantic label,
     # dimension, furniture footprint and warning marker whenever a page had a
     # margin or title block.
+    runtime_config, ai_budget_error = _runtime_ai_config(config)
     ai_analysis, ai_hints_cached = _floorplan_vision_analysis(
         analysis_image_path,
         output_dir,
-        config,
+        runtime_config,
         require_ai_success,
+        skip_request_error=ai_budget_error,
     )
     ai_hints = ai_analysis.hints
     stages.record(
@@ -710,6 +755,7 @@ def analyze_image(
         attempted=ai_analysis.attempted,
         succeeded=ai_analysis.succeeded,
         cached=ai_hints_cached,
+        request_timeout_seconds=runtime_config.ai.gemini_request_timeout_seconds,
     )
 
     started = time.perf_counter()
@@ -1106,7 +1152,20 @@ def analyze_image(
         issues.append(ValidationIssue(code="unclosed_wall_gap", severity="warning", message=gap_report))
 
     started = time.perf_counter()
-    sanity = GeminiLayoutSanityChecker(config.ai).check(analysis_image_path, model, resized_width, resized_height)
+    if ai_budget_error is not None:
+        sanity = SanityCheckResult(error=ai_budget_error)
+    elif ai_analysis.attempted and not ai_analysis.succeeded:
+        # A second call to the same unavailable provider only delays delivery of
+        # the complete local reconstruction. The semantic error is already
+        # recorded, so preserve that result and skip the advisory sanity pass.
+        sanity = SanityCheckResult(error="skipped after Gemini semantic analysis failed")
+    else:
+        sanity = GeminiLayoutSanityChecker(runtime_config.ai).check(
+            analysis_image_path,
+            model,
+            resized_width,
+            resized_height,
+        )
     for warning in sanity.warnings:
         issues.append(
             ValidationIssue(

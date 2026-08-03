@@ -193,9 +193,8 @@ class GeminiLayoutSanityChecker:
 
         mime_type = mimetypes.guess_type(image_path.name)[0] or "image/png"
         prompt = _sanity_prompt(model, image_width_px, image_height_px)
-        from architecture_walkthrough.ai.retry import call_with_backoff
+        from architecture_walkthrough.ai.retry import bounded_http_options, call_with_backoff
 
-        client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
         contents = types.Content(
             role="user",
             parts=[
@@ -203,16 +202,27 @@ class GeminiLayoutSanityChecker:
                 types.Part.from_bytes(data=image_path.read_bytes(), mime_type=mime_type),
             ],
         )
-        response = call_with_backoff(
-            lambda: client.models.generate_content(
-                model=self.settings.gemini_model,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=_warning_schema(),
+        with genai.Client(
+            api_key=os.environ["GEMINI_API_KEY"],
+            http_options=bounded_http_options(
+                types,
+                self.settings.gemini_request_timeout_seconds,
+            ),
+        ) as client:
+            response = call_with_backoff(
+                lambda: client.models.generate_content(
+                    model=self.settings.gemini_model,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=_warning_schema(),
+                    ),
                 ),
+                # The semantic pass owns the one useful retry. Sanity checking is
+                # advisory, so a single bounded attempt preserves the worker budget.
+                attempts=1,
+                base_delay_seconds=self.settings.gemini_retry_base_delay_seconds,
             )
-        )
         content = getattr(response, "text", None)
         if not content:
             raise ValueError("Gemini sanity check returned no text")
