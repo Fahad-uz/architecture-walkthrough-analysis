@@ -1,13 +1,34 @@
 from __future__ import annotations
 
+import httpx
+from google.genai import types
+from google.genai.errors import ClientError, ServerError
 import pytest
 
-from architecture_walkthrough.ai.retry import call_with_backoff, is_transient_error
+from architecture_walkthrough.ai.retry import (
+    bounded_http_options,
+    call_with_backoff,
+    is_transient_error,
+)
+
+
+def test_http_options_bound_transport_and_disable_sdk_retries() -> None:
+    options = bounded_http_options(types, timeout_seconds=12.5)
+
+    assert options.timeout == 12_500
+    assert options.retry_options is not None
+    assert options.retry_options.attempts == 1
 
 
 def test_transient_errors_are_recognized() -> None:
     assert is_transient_error(RuntimeError("503 UNAVAILABLE: high demand"))
     assert is_transient_error(RuntimeError("429 RESOURCE_EXHAUSTED"))
+    assert is_transient_error(RuntimeError("request timed out"))
+    assert is_transient_error(httpx.ReadTimeout(""))
+    assert is_transient_error(httpx.ConnectError(""))
+    assert is_transient_error(ServerError(504, {"error": {"message": "deadline"}}))
+    assert not is_transient_error(ClientError(401, {"error": {"message": "invalid key"}}))
+    assert not is_transient_error(RuntimeError("processed 500 wall candidates"))
     assert not is_transient_error(RuntimeError("401 UNAUTHENTICATED"))
 
 

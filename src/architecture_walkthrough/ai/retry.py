@@ -3,19 +3,48 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
-from typing import TypeVar
+from typing import Any, TypeVar
+
+import httpx
+from google.genai.errors import APIError
 
 LOGGER = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-# Free-tier Gemini regularly sheds load with 503 UNAVAILABLE / 429 rate limits;
-# these are transient and worth a couple of patient retries.
-TRANSIENT_MARKERS = ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "high demand")
+# Free-tier Gemini regularly sheds load with transient HTTP failures; these are
+# worth one bounded application-level retry.
+TRANSIENT_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
+TRANSIENT_MARKERS = (
+    "unavailable",
+    "resource_exhausted",
+    "high demand",
+    "bad gateway",
+    "gateway timeout",
+    "timed out",
+    "timeout",
+)
+
+
+def bounded_http_options(types_module: Any, timeout_seconds: float) -> Any:
+    """Build google-genai options with one bounded transport attempt.
+
+    Pinning SDK attempts to one keeps application-level backoff as the single
+    retry authority and protects against nested retries in future SDK behavior.
+    """
+
+    return types_module.HttpOptions(
+        timeout=max(1, round(timeout_seconds * 1000)),
+        retry_options=types_module.HttpRetryOptions(attempts=1),
+    )
 
 
 def is_transient_error(exc: Exception) -> bool:
-    text = str(exc)
+    if isinstance(exc, (TimeoutError, httpx.TimeoutException, httpx.ConnectError)):
+        return True
+    if isinstance(exc, APIError):
+        return exc.code in TRANSIENT_STATUS_CODES
+    text = str(exc).lower()
     return any(marker in text for marker in TRANSIENT_MARKERS)
 
 

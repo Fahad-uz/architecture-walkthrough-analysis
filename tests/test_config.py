@@ -1,6 +1,9 @@
 from pathlib import Path
 
-from architecture_walkthrough.config import load_config
+from pydantic import ValidationError
+import pytest
+
+from architecture_walkthrough.config import AISettings, load_config
 
 
 def test_environment_selects_default_config_file(tmp_path: Path, monkeypatch) -> None:
@@ -37,6 +40,21 @@ def test_runtime_tool_and_gemini_environment_overrides(tmp_path: Path, monkeypat
     assert config.paths.ffmpeg_executable == "C:/tools/ffmpeg.exe"
     assert config.ai.gemini_enabled is False
     assert config.ai.gemini_model == "gemini-test"
+
+
+def test_gemini_latency_budget_has_safe_defaults_and_bounds() -> None:
+    settings = AISettings()
+
+    assert settings.gemini_request_timeout_seconds == 20
+    assert settings.gemini_retry_attempts == 2
+    assert settings.gemini_retry_base_delay_seconds == 2.0
+
+    with pytest.raises(ValidationError):
+        AISettings(gemini_request_timeout_seconds=21)
+    with pytest.raises(ValidationError):
+        AISettings(gemini_retry_attempts=3)
+    with pytest.raises(ValidationError):
+        AISettings(gemini_retry_base_delay_seconds=2.1)
 
 
 def test_analysis_capacity_and_timeout_are_loaded_from_yaml(tmp_path: Path) -> None:
