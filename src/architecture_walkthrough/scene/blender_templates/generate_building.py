@@ -55,7 +55,7 @@ WALL_HEIGHT_DEFAULT = 2.8
 FLOOR_THICKNESS = 0.1
 CEILING_THICKNESS = 0.08
 BASEBOARD_HEIGHT = 0.1
-DOOR_LEAF_OPEN_DEG = 25.0
+DOOR_LEAF_OPEN_DEG = 90.0
 MIN_OPENING_WIDTH = 0.18
 MIN_ROOM_FLOOR_COVERAGE = 0.45
 
@@ -243,11 +243,26 @@ def build_materials() -> None:
     MATERIALS["frame"] = make_pbr("Frame_Paint", (0.93, 0.92, 0.89, 1.0), roughness=0.45)
     MATERIALS["glass"] = make_pbr("Window_Glass", (0.8, 0.9, 0.95, 1.0), roughness=0.05, transmission=1.0)
     MATERIALS["upholstery"] = make_pbr("Furniture_Upholstery", (0.24, 0.43, 0.55, 1.0), roughness=0.78)
+    MATERIALS["upholstery_cushion"] = make_pbr(
+        "Furniture_Upholstery_Cushion",
+        (0.34, 0.54, 0.63, 1.0),
+        roughness=0.84,
+    )
     MATERIALS["fabric_light"] = make_pbr("Furniture_Fabric_Light", (0.82, 0.78, 0.69, 1.0), roughness=0.86)
+    MATERIALS["fabric_accent"] = make_pbr(
+        "Furniture_Fabric_Accent",
+        (0.69, 0.66, 0.58, 1.0),
+        roughness=0.9,
+    )
     MATERIALS["wood"] = make_pbr("Furniture_Wood", (0.39, 0.22, 0.11, 1.0), roughness=0.52)
     MATERIALS["wood_light"] = make_pbr("Furniture_Wood_Light", (0.62, 0.42, 0.23, 1.0), roughness=0.50)
     MATERIALS["counter"] = make_pbr("Counter_Stone", (0.68, 0.69, 0.66, 1.0), roughness=0.28)
     MATERIALS["cabinet"] = make_pbr("Cabinet_Wood", (0.34, 0.18, 0.09, 1.0), roughness=0.48)
+    MATERIALS["cabinet_front"] = make_pbr(
+        "Cabinet_Front",
+        (0.43, 0.25, 0.13, 1.0),
+        roughness=0.52,
+    )
     MATERIALS["metal"] = make_pbr("Metal_Dark", (0.12, 0.14, 0.16, 1.0), roughness=0.24, metallic=0.72)
     MATERIALS["fixture"] = make_pbr("Fixture_Ceramic", (0.92, 0.94, 0.93, 1.0), roughness=0.22)
     MATERIALS["rug"] = make_pbr("Rug_Fabric", (0.46, 0.20, 0.16, 1.0), roughness=0.92)
@@ -279,7 +294,18 @@ def new_box(name: str, size: Vector, location: Vector, z_rotation: float, materi
         (-hx, -hy, -hz), (hx, -hy, -hz), (hx, hy, -hz), (-hx, hy, -hz),
         (-hx, -hy, hz), (hx, -hy, hz), (hx, hy, hz), (-hx, hy, hz),
     ]
-    faces = [(0, 1, 2, 3), (4, 7, 6, 5), (0, 4, 5, 1), (1, 5, 6, 2), (2, 6, 7, 3), (3, 7, 4, 0)]
+    # Keep every face counter-clockwise from outside the box.  Cycles does not
+    # bake useful direct/indirect light onto backfaces; the former inward
+    # winding therefore produced black wall and trim lightmaps even though
+    # double-sided realtime glTF materials looked acceptable in no-bake mode.
+    faces = [
+        (0, 3, 2, 1),
+        (4, 5, 6, 7),
+        (0, 1, 5, 4),
+        (1, 2, 6, 5),
+        (2, 3, 7, 6),
+        (3, 0, 4, 7),
+    ]
     mesh.from_pydata(verts, [], faces)
     mesh.update()
     obj = bpy.data.objects.new(name, mesh)
@@ -416,13 +442,25 @@ def build_polygon_slab(name: str, points: list[dict], z: float, thickness: float
     bottom = [(c.x, c.y, z - thickness) for c in coords]
     verts = top + bottom
     n = len(coords)
+    clockwise = sum(
+        coords[index].x * coords[(index + 1) % n].y
+        - coords[(index + 1) % n].x * coords[index].y
+        for index in range(n)
+    ) < 0
     faces: list[tuple[int, ...]] = []
     for tri in triangles:
-        faces.append(tuple(tri))
-        faces.append(tuple(reversed([i + n for i in tri])))
+        # tessellate_polygon follows the source loop's winding, which is
+        # commonly clockwise in reconstructed plans.  Normalize the top to
+        # counter-clockwise and make the bottom its exact opposite.
+        top_face = tuple(reversed(tri)) if clockwise else tuple(tri)
+        faces.append(top_face)
+        faces.append(tuple(index + n for index in reversed(top_face)))
     for i in range(n):
         j = (i + 1) % n
-        faces.append((i, j, j + n, i + n))
+        if clockwise:
+            faces.append((i, j, j + n, i + n))
+        else:
+            faces.append((i, i + n, j + n, j))
     mesh.from_pydata(verts, [], faces)
     mesh.update()
     obj = bpy.data.objects.new(name, mesh)
@@ -687,6 +725,8 @@ def asset_box(
     height: float,
     z_center: float,
     material: str,
+    bevel_width: float | None = None,
+    bevel_segments: int = 2,
 ) -> bpy.types.Object:
     x, y = oriented_xy(item, local_x, local_y)
     obj = new_box(
@@ -697,19 +737,200 @@ def asset_box(
         MATERIALS[material],
     )
     bevel = obj.modifiers.new("Soft_Edges", "BEVEL")
-    bevel.width = min(0.025, max(0.004, min(width, depth, height) * 0.08))
+    shortest_side = max(0.025, min(width, depth, height))
+    requested_bevel = (
+        min(0.025, max(0.004, shortest_side * 0.08))
+        if bevel_width is None
+        else max(0.002, float(bevel_width))
+    )
+    bevel.width = min(requested_bevel, shortest_side * 0.42)
+    bevel.segments = max(1, int(bevel_segments))
+    return obj
+
+
+def asset_cylinder(
+    prefix: str,
+    item: dict,
+    part: str,
+    local_x: float,
+    local_y: float,
+    width: float,
+    depth: float,
+    height: float,
+    z_center: float,
+    material: str,
+    *,
+    segments: int = 16,
+    top_scale: float = 1.0,
+    local_rotation_deg: float = 0.0,
+) -> bpy.types.Object:
+    """Build a context-free elliptical cylinder or frustum."""
+    width = max(0.025, float(width))
+    depth = max(0.025, float(depth))
+    height = max(0.025, float(height))
+    segments = max(8, int(segments))
+    top_scale = max(0.05, float(top_scale))
+    bottom_rx, bottom_ry = width / 2, depth / 2
+    top_rx, top_ry = bottom_rx * top_scale, bottom_ry * top_scale
+    hz = height / 2
+    verts = []
+    for z, rx, ry in ((-hz, bottom_rx, bottom_ry), (hz, top_rx, top_ry)):
+        verts.extend(
+            (
+                rx * math.cos(math.tau * index / segments),
+                ry * math.sin(math.tau * index / segments),
+                z,
+            )
+            for index in range(segments)
+        )
+    faces = [
+        tuple(reversed(range(segments))),
+        tuple(range(segments, segments * 2)),
+    ]
+    for index in range(segments):
+        next_index = (index + 1) % segments
+        faces.append(
+            (
+                index,
+                next_index,
+                segments + next_index,
+                segments + index,
+            )
+        )
+
+    name = f"{prefix}_{safe_name(part)}"
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(verts, [], faces)
+    mesh.update()
+    for polygon in mesh.polygons:
+        polygon.use_smooth = len(polygon.vertices) == 4
+    x, y = oriented_xy(item, local_x, local_y)
+    obj = bpy.data.objects.new(name, mesh)
+    obj.location = Vector((x, y, z_center))
+    obj.rotation_euler = (
+        0.0,
+        0.0,
+        math.radians(float(item.get("rotation_deg") or 0.0) + local_rotation_deg),
+    )
+    obj.data.materials.append(MATERIALS[material])
+    link(obj)
+    bevel = obj.modifiers.new("Soft_Rims", "BEVEL")
+    bevel.width = min(0.008, min(width, depth, height) * 0.12)
     bevel.segments = 2
     return obj
 
 
+def asset_ellipsoid(
+    prefix: str,
+    item: dict,
+    part: str,
+    local_x: float,
+    local_y: float,
+    width: float,
+    depth: float,
+    height: float,
+    z_center: float,
+    material: str,
+    *,
+    longitude_segments: int = 16,
+    latitude_segments: int = 8,
+    local_rotation_deg: float = 0.0,
+) -> bpy.types.Object:
+    """Build a smooth low-poly ellipsoid without relying on bpy operators."""
+    width = max(0.025, float(width))
+    depth = max(0.025, float(depth))
+    height = max(0.025, float(height))
+    longitude_segments = max(8, int(longitude_segments))
+    latitude_segments = max(4, int(latitude_segments))
+    rx, ry, rz = width / 2, depth / 2, height / 2
+    verts = [(0.0, 0.0, -rz)]
+    for latitude in range(1, latitude_segments):
+        phi = -math.pi / 2 + math.pi * latitude / latitude_segments
+        ring_radius = math.cos(phi)
+        verts.extend(
+            (
+                rx * ring_radius * math.cos(math.tau * longitude / longitude_segments),
+                ry * ring_radius * math.sin(math.tau * longitude / longitude_segments),
+                rz * math.sin(phi),
+            )
+            for longitude in range(longitude_segments)
+        )
+    top_index = len(verts)
+    verts.append((0.0, 0.0, rz))
+
+    faces = []
+    first_ring = 1
+    for longitude in range(longitude_segments):
+        next_longitude = (longitude + 1) % longitude_segments
+        faces.append((0, first_ring + next_longitude, first_ring + longitude))
+    for latitude in range(latitude_segments - 2):
+        lower_ring = 1 + latitude * longitude_segments
+        upper_ring = lower_ring + longitude_segments
+        for longitude in range(longitude_segments):
+            next_longitude = (longitude + 1) % longitude_segments
+            faces.append(
+                (
+                    lower_ring + longitude,
+                    lower_ring + next_longitude,
+                    upper_ring + next_longitude,
+                    upper_ring + longitude,
+                )
+            )
+    last_ring = 1 + (latitude_segments - 2) * longitude_segments
+    for longitude in range(longitude_segments):
+        next_longitude = (longitude + 1) % longitude_segments
+        faces.append((top_index, last_ring + longitude, last_ring + next_longitude))
+
+    name = f"{prefix}_{safe_name(part)}"
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(verts, [], faces)
+    mesh.update()
+    for polygon in mesh.polygons:
+        polygon.use_smooth = True
+    x, y = oriented_xy(item, local_x, local_y)
+    obj = bpy.data.objects.new(name, mesh)
+    obj.location = Vector((x, y, z_center))
+    obj.rotation_euler = (
+        0.0,
+        0.0,
+        math.radians(float(item.get("rotation_deg") or 0.0) + local_rotation_deg),
+    )
+    obj.data.materials.append(MATERIALS[material])
+    return link(obj)
+
+
 def build_table(item: dict, prefix: str, width: float, depth: float, coffee: bool = False) -> None:
-    top_z = 0.42 if coffee else 0.76
-    asset_box(prefix, item, "Top", 0, 0, width, depth, 0.08, top_z, "wood_light")
-    leg_height = top_z - 0.08
+    surface_z = 0.42 if coffee else 0.76
+    top_thickness = 0.07
+    top_bottom = surface_z - top_thickness
+    asset_box(
+        prefix,
+        item,
+        "Top",
+        0,
+        0,
+        width,
+        depth,
+        top_thickness,
+        surface_z - top_thickness / 2,
+        "wood_light",
+        bevel_width=0.035,
+        bevel_segments=3,
+    )
+    leg_height = top_bottom
     leg_width = max(0.035, min(width, depth) * 0.08)
+    apron_height = min(0.12, leg_height * 0.22)
+    apron_z = top_bottom - apron_height / 2
+    apron_thickness = max(0.025, min(0.035, min(width, depth) * 0.08))
+    apron_y = max(0.0, depth / 2 - apron_thickness / 2)
+    apron_x = max(0.0, width / 2 - apron_thickness / 2)
+    asset_box(prefix, item, "Apron_Front", 0, -apron_y, width * 0.78, apron_thickness, apron_height, apron_z, "wood")
+    asset_box(prefix, item, "Apron_Back", 0, apron_y, width * 0.78, apron_thickness, apron_height, apron_z, "wood")
+    asset_box(prefix, item, "Apron_Left", -apron_x, 0, apron_thickness, depth * 0.72, apron_height, apron_z, "wood")
+    asset_box(prefix, item, "Apron_Right", apron_x, 0, apron_thickness, depth * 0.72, apron_height, apron_z, "wood")
     for x_sign in (-1.0, 1.0):
         for y_sign in (-1.0, 1.0):
-            asset_box(
+            asset_cylinder(
                 prefix,
                 item,
                 f"Leg_{int(x_sign)}_{int(y_sign)}",
@@ -720,6 +941,8 @@ def build_table(item: dict, prefix: str, width: float, depth: float, coffee: boo
                 leg_height,
                 leg_height / 2,
                 "wood",
+                segments=12,
+                top_scale=1.28,
             )
 
 
@@ -766,67 +989,405 @@ def build_procedural_asset(item: dict, prefix: str, category: str) -> None:
     depth = max(0.20, float(item.get("depth_m") or 0.60))
 
     if family == "bed":
-        width, depth = max(width, 0.80), max(depth, 1.35)
-        asset_box(prefix, item, "Frame", 0, 0, width, depth, 0.22, 0.16, "wood")
-        asset_box(prefix, item, "Mattress", 0, -depth * 0.03, width * 0.94, depth * 0.88, 0.22, 0.36, "fabric_light")
-        asset_box(prefix, item, "Headboard", 0, depth * 0.47, width, 0.09, 0.82, 0.43, "wood")
-        for side in (-1.0, 1.0):
-            asset_box(prefix, item, f"Pillow_{int(side)}", side * width * 0.23, depth * 0.31, width * 0.36, depth * 0.17, 0.10, 0.54, "fabric_light")
+        # Keep every visible part inside the grounded footprint. Expanding a
+        # detected bed in the renderer can push it through an adjacent wall.
+        asset_box(prefix, item, "Frame", 0, 0, width, depth, 0.18, 0.13, "wood", bevel_width=0.018)
+        headboard_depth = max(0.025, depth * 0.07)
+        asset_box(
+            prefix,
+            item,
+            "Mattress",
+            0,
+            -depth * 0.035,
+            width * 0.93,
+            depth * 0.82,
+            0.21,
+            0.315,
+            "fabric_light",
+            bevel_width=0.055,
+            bevel_segments=3,
+        )
+        asset_box(
+            prefix,
+            item,
+            "Duvet",
+            0,
+            -depth * 0.15,
+            width * 0.88,
+            depth * 0.54,
+            0.065,
+            0.448,
+            "fabric_accent",
+            bevel_width=0.03,
+            bevel_segments=3,
+        )
+        asset_box(
+            prefix,
+            item,
+            "Headboard",
+            0,
+            max(0.0, depth / 2 - headboard_depth / 2),
+            width * 0.96,
+            headboard_depth,
+            0.74,
+            0.40,
+            "wood",
+            bevel_width=0.018,
+        )
+        pillow_count = 2 if width >= 1.05 else 1
+        pillow_width = width * (0.36 if pillow_count == 2 else 0.56)
+        for pillow_index in range(pillow_count):
+            pillow_x = (
+                (pillow_index - (pillow_count - 1) / 2) * width * 0.43
+                if pillow_count > 1
+                else 0.0
+            )
+            asset_ellipsoid(
+                prefix,
+                item,
+                f"Pillow_{pillow_index + 1:02d}",
+                pillow_x,
+                depth * 0.29,
+                pillow_width,
+                depth * 0.16,
+                0.12,
+                0.49,
+                "fabric_light",
+            )
         return
 
     if family == "sofa":
-        width, depth = max(width, 1.15), max(depth, 0.62)
-        asset_box(prefix, item, "Seat", 0, 0, width, depth, 0.28, 0.28, "upholstery")
-        asset_box(prefix, item, "Back", 0, depth * 0.43, width, depth * 0.14, 0.78, 0.52, "upholstery")
+        # Small sofa footprints often represent single modules in a sectional.
+        # Preserve those modules and let cushion count communicate their scale.
+        arm_width = max(0.065, min(width * 0.105, 0.16))
+        inner_width = max(width - arm_width * 2.0, width * 0.62)
+        cushion_count = 1 if width < 1.15 else 2 if width < 2.10 else 3
+        cushion_gap = min(0.025, inner_width * 0.025)
+        cushion_width = (
+            inner_width - cushion_gap * (cushion_count - 1)
+        ) / cushion_count
+        asset_box(
+            prefix,
+            item,
+            "Base",
+            0,
+            0,
+            width * 0.92,
+            depth * 0.82,
+            0.16,
+            0.16,
+            "upholstery",
+            bevel_width=0.025,
+        )
+        asset_box(
+            prefix,
+            item,
+            "Back",
+            0,
+            depth * 0.45,
+            width * 0.88,
+            depth * 0.10,
+            0.58,
+            0.47,
+            "upholstery",
+            bevel_width=0.025,
+            bevel_segments=3,
+        )
+        for cushion_index in range(cushion_count):
+            cushion_x = (
+                -inner_width / 2
+                + cushion_width / 2
+                + cushion_index * (cushion_width + cushion_gap)
+            )
+            asset_box(
+                prefix,
+                item,
+                f"Seat_Cushion_{cushion_index + 1:02d}",
+                cushion_x,
+                -depth * 0.08,
+                cushion_width * 0.96,
+                depth * 0.60,
+                0.17,
+                0.325,
+                "upholstery_cushion",
+                bevel_width=0.05,
+                bevel_segments=3,
+            )
+            asset_box(
+                prefix,
+                item,
+                f"Back_Cushion_{cushion_index + 1:02d}",
+                cushion_x,
+                depth * 0.37,
+                cushion_width * 0.96,
+                depth * 0.17,
+                0.43,
+                0.575,
+                "upholstery_cushion",
+                bevel_width=0.05,
+                bevel_segments=3,
+            )
         for side in (-1.0, 1.0):
-            asset_box(prefix, item, f"Arm_{int(side)}", side * width * 0.47, 0, width * 0.10, depth, 0.54, 0.36, "upholstery")
+            asset_box(
+                prefix,
+                item,
+                f"Arm_{int(side)}",
+                side * (width - arm_width) / 2,
+                0,
+                arm_width,
+                depth * 0.88,
+                0.46,
+                0.31,
+                "upholstery",
+                bevel_width=0.035,
+                bevel_segments=3,
+            )
+            for y_sign in (-1.0, 1.0):
+                asset_cylinder(
+                    prefix,
+                    item,
+                    f"Foot_{int(side)}_{int(y_sign)}",
+                    side * width * 0.39,
+                    y_sign * depth * 0.31,
+                    0.045,
+                    0.045,
+                    0.09,
+                    0.045,
+                    "wood",
+                    segments=10,
+                    top_scale=1.18,
+                )
         return
 
     if family == "chair":
-        width, depth = max(width, 0.42), max(depth, 0.42)
-        asset_box(prefix, item, "Seat", 0, 0, width, depth, 0.10, 0.45, "upholstery")
-        asset_box(prefix, item, "Back", 0, depth * 0.44, width, 0.07, 0.52, 0.70, "upholstery")
+        asset_box(
+            prefix,
+            item,
+            "Seat",
+            0,
+            -depth * 0.03,
+            width * 0.92,
+            depth * 0.82,
+            0.11,
+            0.45,
+            "upholstery_cushion",
+            bevel_width=0.035,
+            bevel_segments=3,
+        )
+        asset_box(
+            prefix,
+            item,
+            "Back",
+            0,
+            depth * 0.445,
+            width * 0.86,
+            depth * 0.09,
+            0.46,
+            0.69,
+            "upholstery",
+            bevel_width=0.03,
+            bevel_segments=3,
+        )
         for x_sign in (-1.0, 1.0):
             for y_sign in (-1.0, 1.0):
-                asset_box(prefix, item, f"Leg_{int(x_sign)}_{int(y_sign)}", x_sign * width * 0.40, y_sign * depth * 0.38, 0.04, 0.04, 0.42, 0.21, "wood")
+                asset_cylinder(
+                    prefix,
+                    item,
+                    f"Leg_{int(x_sign)}_{int(y_sign)}",
+                    x_sign * width * 0.37,
+                    y_sign * depth * 0.34,
+                    0.038,
+                    0.038,
+                    0.40,
+                    0.20,
+                    "wood",
+                    segments=10,
+                    top_scale=1.18,
+                )
         return
 
     if family == "table":
         coffee = "coffee" in category or "side" in category
-        width = max(width, 0.55 if coffee else 0.90)
-        depth = max(depth, 0.45 if coffee else 0.68)
         build_table(item, prefix, width, depth, coffee=coffee)
         return
 
     if family == "wardrobe":
-        width, depth = max(width, 0.70), max(depth, 0.38)
         asset_box(prefix, item, "Carcass", 0, 0, width, depth, 1.85, 0.925, "cabinet")
-        asset_box(prefix, item, "Door_Left", -width * 0.24, -depth * 0.51, width * 0.46, 0.035, 1.66, 0.93, "wood_light")
-        asset_box(prefix, item, "Door_Right", width * 0.24, -depth * 0.51, width * 0.46, 0.035, 1.66, 0.93, "wood_light")
+        door_depth = min(0.035, depth)
+        door_y = -max(0.0, depth / 2 - door_depth / 2)
+        asset_box(prefix, item, "Door_Left", -width * 0.24, door_y, width * 0.46, door_depth, 1.66, 0.93, "wood_light")
+        asset_box(prefix, item, "Door_Right", width * 0.24, door_y, width * 0.46, door_depth, 1.66, 0.93, "wood_light")
         return
 
     if family == "stove":
-        width, depth = max(width, 0.48), max(depth, 0.44)
-        asset_box(prefix, item, "Cooktop", 0, 0, width, depth, 0.06, 0.92, "metal")
+        asset_box(prefix, item, "Body", 0, depth * 0.015, width * 0.96, depth * 0.93, 0.86, 0.43, "cabinet")
+        oven_door_depth = min(0.026, depth)
+        oven_door_y = max(0.0, depth / 2 - oven_door_depth / 2)
+        for face_name, face_sign in (("A", -1.0), ("B", 1.0)):
+            asset_box(
+                prefix,
+                item,
+                f"Oven_Door_{face_name}",
+                0,
+                face_sign * oven_door_y,
+                width * 0.76,
+                oven_door_depth,
+                0.46,
+                0.48,
+                "metal",
+                bevel_width=0.012,
+            )
+        asset_box(
+            prefix,
+            item,
+            "Cooktop",
+            0,
+            0,
+            width,
+            depth,
+            0.055,
+            0.895,
+            "metal",
+            bevel_width=0.014,
+        )
         for x_sign in (-1.0, 1.0):
             for y_sign in (-1.0, 1.0):
-                asset_box(prefix, item, f"Burner_{int(x_sign)}_{int(y_sign)}", x_sign * width * 0.23, y_sign * depth * 0.23, width * 0.22, depth * 0.22, 0.018, 0.96, "fixture")
+                asset_cylinder(
+                    prefix,
+                    item,
+                    f"Burner_{int(x_sign)}_{int(y_sign)}",
+                    x_sign * width * 0.24,
+                    y_sign * depth * 0.23,
+                    min(width, depth) * 0.22,
+                    min(width, depth) * 0.22,
+                    0.016,
+                    0.931,
+                    "fixture",
+                    segments=14,
+                )
         return
 
     if family == "sink":
-        width, depth = max(width, 0.50), max(depth, 0.42)
-        asset_box(prefix, item, "Rim", 0, 0, width, depth, 0.08, 0.90, "fixture")
-        asset_box(prefix, item, "Basin", 0, 0, width * 0.72, depth * 0.64, 0.12, 0.84, "metal")
+        asset_box(prefix, item, "Cabinet", 0, depth * 0.015, width * 0.96, depth * 0.93, 0.86, 0.43, "cabinet")
+        basin_width = width * 0.70
+        basin_depth = depth * 0.58
+        rim_width = max(0.035, min(width, depth) * 0.075)
+        asset_box(prefix, item, "Rim_Front", 0, -depth * 0.355, width * 0.84, rim_width, 0.055, 0.895, "fixture", bevel_width=0.012)
+        asset_box(prefix, item, "Rim_Back", 0, depth * 0.355, width * 0.84, rim_width, 0.055, 0.895, "fixture", bevel_width=0.012)
+        asset_box(prefix, item, "Rim_Left", -width * 0.39, 0, rim_width, depth * 0.64, 0.055, 0.895, "fixture", bevel_width=0.012)
+        asset_box(prefix, item, "Rim_Right", width * 0.39, 0, rim_width, depth * 0.64, 0.055, 0.895, "fixture", bevel_width=0.012)
+        # A low dark insert below the four rim rails reads as a recessed basin
+        # without a fragile boolean or a convex "metal mound".
+        asset_box(
+            prefix,
+            item,
+            "Basin",
+            0,
+            -depth * 0.015,
+            basin_width,
+            basin_depth,
+            0.025,
+            0.875,
+            "metal",
+            bevel_width=0.045,
+            bevel_segments=3,
+        )
+        faucet_size = max(0.03, min(width, depth) * 0.065)
+        asset_cylinder(
+            prefix,
+            item,
+            "Faucet_Base",
+            0,
+            depth * 0.37,
+            faucet_size,
+            faucet_size,
+            0.25,
+            1.02,
+            "metal",
+            segments=12,
+        )
+        asset_box(
+            prefix,
+            item,
+            "Faucet_Spout",
+            0,
+            depth * 0.22,
+            faucet_size,
+            depth * 0.30,
+            faucet_size,
+            1.135,
+            "metal",
+            bevel_width=0.012,
+        )
         return
 
     if family == "counter":
-        width, depth = max(width, 0.60), max(depth, 0.52)
-        asset_box(prefix, item, "Cabinet", 0, 0, width, depth, 0.86, 0.43, "cabinet")
-        asset_box(prefix, item, "Worktop", 0, 0, width * 1.04, depth * 1.06, 0.07, 0.895, "counter")
+        asset_box(prefix, item, "Cabinet", 0, depth * 0.025, width * 0.96, depth * 0.90, 0.84, 0.45, "cabinet")
+        asset_box(
+            prefix,
+            item,
+            "Worktop",
+            0,
+            0,
+            width,
+            depth,
+            0.07,
+            0.905,
+            "counter",
+            bevel_width=0.016,
+        )
+        asset_box(
+            prefix,
+            item,
+            "ToeKick",
+            0,
+            -depth * 0.425,
+            width * 0.90,
+            depth * 0.08,
+            0.12,
+            0.06,
+            "metal",
+            bevel_width=0.006,
+        )
+        module_count = max(1, min(6, round(width / 0.58)))
+        module_span = width * 0.90 / module_count
+        front_depth = min(0.025, depth)
+        handle_depth = min(0.025, depth)
+        for module_index in range(module_count):
+            module_x = -width * 0.45 + module_span * (module_index + 0.5)
+            # The source gives a long-axis rotation but not which side faces
+            # the room. Detail both long faces so wall-side hardware is hidden
+            # naturally and the visible side is never left blank.
+            for face_name, face_sign in (("A", -1.0), ("B", 1.0)):
+                asset_box(
+                    prefix,
+                    item,
+                    f"Front_{face_name}_{module_index + 1:02d}",
+                    module_x,
+                    face_sign * max(0.0, depth / 2 - front_depth / 2),
+                    max(0.05, module_span - 0.014),
+                    front_depth,
+                    0.62,
+                    0.49,
+                    "cabinet_front",
+                    bevel_width=0.008,
+                )
+                asset_box(
+                    prefix,
+                    item,
+                    f"Handle_{face_name}_{module_index + 1:02d}",
+                    module_x,
+                    face_sign * max(0.0, depth / 2 - handle_depth / 2),
+                    min(0.16, module_span * 0.34),
+                    handle_depth,
+                    0.022,
+                    0.72,
+                    "metal",
+                    bevel_width=0.006,
+                )
         return
 
     if family == "fixture":
-        width, depth = max(width, 0.58), max(depth, 1.10 if "bath" in category else 0.62)
         asset_box(prefix, item, "Body", 0, 0, width, depth, 0.38, 0.22, "fixture")
         asset_box(prefix, item, "Inset", 0, -depth * 0.05, width * 0.68, depth * 0.67, 0.08, 0.43, "metal")
         return
@@ -836,14 +1397,68 @@ def build_procedural_asset(item: dict, prefix: str, category: str) -> None:
         return
 
     if family == "tv":
-        width, depth = max(width, 0.75), max(depth, 0.25)
         asset_box(prefix, item, "Console", 0, 0, width, depth, 0.42, 0.21, "wood")
         asset_box(prefix, item, "Screen", 0, 0, width * 0.78, 0.035, 0.78, 0.92, "metal")
         return
 
     if family == "plant":
-        asset_box(prefix, item, "Pot", 0, 0, width * 0.55, depth * 0.55, 0.35, 0.175, "pot")
-        asset_box(prefix, item, "Leaves", 0, 0, width, depth, 0.70, 0.72, "plant")
+        asset_cylinder(
+            prefix,
+            item,
+            "Pot",
+            0,
+            0,
+            width * 0.52,
+            depth * 0.52,
+            0.32,
+            0.16,
+            "pot",
+            segments=14,
+            top_scale=1.28,
+        )
+        stem_height = 0.44
+        for stem_index, (stem_x, stem_y) in enumerate(
+            ((-width * 0.10, 0.0), (width * 0.09, depth * 0.04), (0.0, -depth * 0.08)),
+            start=1,
+        ):
+            asset_cylinder(
+                prefix,
+                item,
+                f"Stem_{stem_index:02d}",
+                stem_x,
+                stem_y,
+                0.022,
+                0.022,
+                stem_height,
+                0.49,
+                "plant",
+                segments=10,
+            )
+        for leaf_index, leaf in enumerate(
+            (
+                (-width * 0.15, depth * 0.04, width * 0.38, depth * 0.30, 0.24, 0.64, -25.0),
+                (width * 0.15, depth * 0.08, width * 0.40, depth * 0.28, 0.25, 0.72, 28.0),
+                (0.0, -depth * 0.12, width * 0.44, depth * 0.32, 0.27, 0.79, 4.0),
+                (-width * 0.06, depth * 0.02, width * 0.34, depth * 0.26, 0.24, 0.88, 52.0),
+            ),
+            start=1,
+        ):
+            leaf_x, leaf_y, leaf_width, leaf_depth, leaf_height, leaf_z, leaf_rotation = leaf
+            asset_ellipsoid(
+                prefix,
+                item,
+                f"Leaf_{leaf_index:02d}",
+                leaf_x,
+                leaf_y,
+                leaf_width,
+                leaf_depth,
+                leaf_height,
+                leaf_z,
+                "plant",
+                longitude_segments=12,
+                latitude_segments=6,
+                local_rotation_deg=leaf_rotation,
+            )
         return
 
     asset_box(prefix, item, "Body", 0, 0, width, depth, 0.55, 0.275, "wood_light")
@@ -914,13 +1529,13 @@ def build_lighting() -> None:
         sky.sun_elevation = math.radians(40)
         sky.sun_rotation = math.radians(135)
     background = nodes.new("ShaderNodeBackground")
-    background.inputs["Strength"].default_value = 0.9
+    background.inputs["Strength"].default_value = 0.04
     output = nodes.new("ShaderNodeOutputWorld")
     links.new(sky.outputs["Color"], background.inputs["Color"])
     links.new(background.outputs["Background"], output.inputs["Surface"])
 
     sun_data = bpy.data.lights.new("Sun", "SUN")
-    sun_data.energy = 2.5
+    sun_data.energy = 0.1
     sun_data.angle = math.radians(2.0)
     sun = bpy.data.objects.new("Sun", sun_data)
     sun.rotation_euler = (math.radians(50), 0.0, math.radians(135))
@@ -936,9 +1551,10 @@ def build_lighting() -> None:
         ys = [p["y"] for p in points]
         area = abs((max(xs) - min(xs)) * (max(ys) - min(ys)))
         light_data = bpy.data.lights.new(f"RoomLight_{index:03d}", "POINT")
-        # Blender point-light power is measured in watts. The old 25-120 W
-        # range left enclosed rooms and their baked floors almost black.
-        light_data.energy = max(300.0, min(1200.0, area * 55.0))
+        # These are bake-level watts.  The previous 300-1200 W workaround hid
+        # inward geometry normals by clipping most correctly facing texels to
+        # white; ordinary residential powers preserve usable tonal range.
+        light_data.energy = max(25.0, min(120.0, area * 6.0))
         light_data.color = (1.0, 0.82, 0.66)
         light_data.shadow_soft_size = 0.35
         light = bpy.data.objects.new(f"RoomLight_{index:03d}", light_data)
@@ -965,9 +1581,9 @@ def tune_realtime_lights_for_export() -> None:
         if light.type != "POINT":
             continue
         if MODE == "none":
-            light.energy = max(18.0, min(55.0, float(light.energy) * 0.05))
+            light.energy = max(18.0, min(55.0, float(light.energy) * 0.45))
         else:
-            light.energy = max(12.0, min(35.0, float(light.energy) * 0.035))
+            light.energy = max(12.0, min(35.0, float(light.energy) * 0.28))
 
 
 # ---------------------------------------------------------------------------
@@ -1003,9 +1619,12 @@ def bake_object_lightmap(obj: bpy.types.Object, image_name: str, resolution: int
     bpy.ops.object.mode_set(mode="EDIT")
     bpy.ops.mesh.select_all(action="SELECT")
     try:
-        bpy.ops.uv.lightmap_pack(PREF_CONTEXT="ALL_FACES", PREF_MARGIN_DIV=0.2)
+        # Smart Project keeps connected coplanar triangles in one UV island.
+        # Lightmap Pack splits every polygon, which exposed dark filtering
+        # seams along the tessellation diagonals of otherwise flat floors.
+        bpy.ops.uv.smart_project(island_margin=0.01)
     except Exception:
-        bpy.ops.uv.smart_project(island_margin=0.02)
+        bpy.ops.uv.lightmap_pack(PREF_CONTEXT="ALL_FACES", PREF_MARGIN_DIV=0.2)
     bpy.ops.object.mode_set(mode="OBJECT")
     for slot in obj.material_slots:
         material = slot.material
@@ -1041,7 +1660,7 @@ def rewire_to_baked(obj: bpy.types.Object, lightmap: bpy.types.Image) -> None:
         uv_node = nodes.new("ShaderNodeUVMap")
         uv_node.uv_map = "LightmapUV"
         emission = nodes.new("ShaderNodeEmission")
-        emission.inputs["Strength"].default_value = 1.15
+        emission.inputs["Strength"].default_value = 1.0
         output = nodes.new("ShaderNodeOutputMaterial")
         links.new(uv_node.outputs["UV"], image_node.inputs["Vector"])
         links.new(image_node.outputs["Color"], emission.inputs["Color"])

@@ -9,6 +9,9 @@ from architecture_walkthrough.geometry.models import DoorOpening, WallSegment
 from architecture_walkthrough.scene.wall_builder import point_offset_on_wall
 
 
+DOOR_LEAF_OPEN_DEG = 90.0
+
+
 def _paint(mesh: trimesh.Trimesh, color: tuple[int, int, int, int]) -> trimesh.Trimesh:
     mesh.visual = trimesh.visual.ColorVisuals(
         mesh=mesh,
@@ -36,7 +39,9 @@ def door_meshes(wall: WallSegment, door: DoorOpening, color: tuple[int, int, int
     swing = 1.0 if (door.swing_side or "left") == "left" else -1.0
     hinge_x = wall.start.x + hinge_offset * math.cos(angle)
     hinge_y = wall.start.y + hinge_offset * math.sin(angle)
-    leaf_angle = angle + leaf_direction * swing * math.radians(25)
+    # Keep walkthrough doors fully open. A decorative 25-degree leaf blocked
+    # most of the opening and let first-person cameras visually pass through it.
+    leaf_angle = angle + leaf_direction * swing * math.radians(DOOR_LEAF_OPEN_DEG)
     x = hinge_x + math.cos(leaf_angle) * leaf_direction * width / 2
     y = hinge_y + math.sin(leaf_angle) * leaf_direction * width / 2
     transform = trimesh.transformations.rotation_matrix(leaf_angle, [0, 0, 1])

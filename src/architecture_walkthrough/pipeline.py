@@ -72,8 +72,7 @@ from architecture_walkthrough.vision.plan_roi import detect_plan_roi
 from architecture_walkthrough.vision.preprocessing import load_image, preprocess_array
 from architecture_walkthrough.vision.providers import build_geometry_provider
 from architecture_walkthrough.vision.wall_detection import RepetitiveDetailRegion, WallBand
-from architecture_walkthrough.walkthrough.camera_animation import waypoints_from_points
-from architecture_walkthrough.walkthrough.path_planner import manual_or_auto_waypoints
+from architecture_walkthrough.walkthrough.path_planner import camera_waypoints_for_model
 from architecture_walkthrough.walkthrough.render_video import encode_frames_to_mp4
 
 LOGGER = logging.getLogger(__name__)
@@ -1075,10 +1074,10 @@ def analyze_image(
     )
     started = time.perf_counter()
     try:
-        route = manual_or_auto_waypoints(model)
+        route = camera_waypoints_for_model(model)
         model = model.model_copy(
             update={
-                "camera_waypoints": waypoints_from_points(route),
+                "camera_waypoints": route,
                 "metadata": {**model.metadata, "walkthrough_route_error": None},
             }
         )
@@ -1256,8 +1255,8 @@ def convert_image_to_glb(
 
 def prepare_walkthrough_floorplan(floorplan_path: Path, output_path: Path) -> FloorPlanModel:
     model = FloorPlanModel.load_json(_select_floorplan_for_build(floorplan_path))
-    path = manual_or_auto_waypoints(model)
-    updated = model.model_copy(update={"camera_waypoints": waypoints_from_points(path)})
+    waypoints = camera_waypoints_for_model(model)
+    updated = model.model_copy(update={"camera_waypoints": waypoints})
     updated.save_json(output_path)
     return updated
 

@@ -123,6 +123,15 @@ def test_app_exposes_upload_and_download_routes() -> None:
     assert "/gemini-status" in routes
 
 
+def test_job_record_rejects_unknown_glb_bake_mode() -> None:
+    with pytest.raises(ValueError, match="glb_bake_mode"):
+        JobRecord(
+            job_id="invalid-bake-mode-job",
+            status="created",
+            glb_bake_mode="ultra",  # type: ignore[arg-type]
+        )
+
+
 def test_built_frontend_supports_direct_navigation_to_client_route(
     tmp_path: Path,
     monkeypatch,
@@ -287,6 +296,7 @@ def test_saving_corrections_replaces_stale_blender_model_with_current_preview(
             job_id=job_id,
             status="model_generated",
             glb_source="blender",
+            glb_bake_mode="final",
             glb_version=7,
         ).model_dump_json(indent=2),
         encoding="utf-8",
@@ -303,6 +313,7 @@ def test_saving_corrections_replaces_stale_blender_model_with_current_preview(
     record = client.get(f"/jobs/{job_id}").json()
     assert record["status"] == "needs_review"
     assert record["glb_source"] == "preview"
+    assert record["glb_bake_mode"] == "none"
     assert record["glb_version"] > 7
     assert (job_dir / "building.glb").read_bytes()[:4] == b"glTF"
 
@@ -406,7 +417,12 @@ def test_unrenderable_correction_keeps_last_good_json_and_glb(tmp_path: Path, mo
     (job_dir / "debug").mkdir(parents=True)
     Image.new("RGB", (320, 240), "white").save(job_dir / "debug" / "01_original_roi.png")
     (job_dir / "job.json").write_text(
-        JobRecord(job_id=job_id, status="needs_review").model_dump_json(indent=2),
+        JobRecord(
+            job_id=job_id,
+            status="needs_review",
+            glb_source="blender",
+            glb_bake_mode="final",
+        ).model_dump_json(indent=2),
         encoding="utf-8",
     )
     good_json = job_dir / "floorplan.corrected.json"
@@ -419,7 +435,8 @@ def test_unrenderable_correction_keeps_last_good_json_and_glb(tmp_path: Path, mo
 
     monkeypatch.setattr(api_app, "export_simple_glb", fail_export)
     model = FloorPlanModel.load_json(Path("tests/fixtures/sample_floorplan.json"))
-    response = TestClient(create_app()).post(
+    client = TestClient(create_app())
+    response = client.post(
         f"/jobs/{job_id}/corrections",
         json=model.model_dump(mode="json"),
     )
@@ -428,12 +445,19 @@ def test_unrenderable_correction_keeps_last_good_json_and_glb(tmp_path: Path, mo
     assert good_json.read_text(encoding="utf-8") == '{"last_good": true}'
     assert good_glb.read_bytes() == b"last good model"
     assert not list(job_dir.glob(".*.*.glb"))
+    assert client.get(f"/jobs/{job_id}").json()["glb_bake_mode"] == "final"
 
 
 def test_failed_blender_generation_keeps_last_good_preview(tmp_path: Path, monkeypatch) -> None:
     config = AppConfig(paths=PathSettings(work_root=tmp_path))
     runner = LocalJobRunner(config)
-    record = JobRecord(job_id="generation-job", status="generating", glb_version=3)
+    record = JobRecord(
+        job_id="generation-job",
+        status="generating",
+        glb_source="preview",
+        glb_bake_mode="none",
+        glb_version=3,
+    )
     job_dir = tmp_path / record.job_id
     job_dir.mkdir(parents=True)
     good_glb = job_dir / "building.glb"
@@ -444,12 +468,48 @@ def test_failed_blender_generation_keeps_last_good_preview(tmp_path: Path, monke
         raise RuntimeError("Blender crashed")
 
     monkeypatch.setattr(api_app, "build_model", fail_after_partial_write)
-    runner._run_generation(record, force=False, bake_mode="none")
+    runner._run_generation(record, force=False, bake_mode="final")
 
     assert good_glb.read_bytes() == b"last good preview"
     assert record.status == "generation_failed"
+    assert record.glb_bake_mode == "none"
     assert record.glb_version == 3
     assert not list(job_dir.glob(".building.*"))
+
+
+@pytest.mark.parametrize(
+    ("configured_mode", "requested_mode", "expected_mode"),
+    [("draft", None, "draft"), ("draft", "final", "final")],
+)
+def test_successful_blender_generation_persists_resolved_bake_mode(
+    tmp_path: Path,
+    monkeypatch,
+    configured_mode: str,
+    requested_mode: str | None,
+    expected_mode: str,
+) -> None:
+    config = AppConfig(paths=PathSettings(work_root=tmp_path))
+    config.bake.mode = configured_mode
+    runner = LocalJobRunner(config)
+    record = JobRecord(job_id="successful-generation-job", status="generating")
+    job_dir = tmp_path / record.job_id
+    job_dir.mkdir(parents=True)
+
+    def successful_build(_job_dir, output_glb, _config, **_kwargs):
+        output_glb.write_bytes(b"glTF")
+        return output_glb
+
+    monkeypatch.setattr(api_app, "build_model", successful_build)
+
+    runner._run_generation(record, force=False, bake_mode=requested_mode)
+
+    assert record.status == "model_generated"
+    assert record.glb_source == "blender"
+    assert record.glb_bake_mode == expected_mode
+    persisted = JobRecord.model_validate_json(
+        (job_dir / "job.json").read_text(encoding="utf-8")
+    )
+    assert persisted.glb_bake_mode == expected_mode
 
 
 def test_concurrent_generation_requests_claim_job_once(tmp_path: Path, monkeypatch) -> None:
@@ -966,6 +1026,7 @@ def test_spawned_analysis_process_publishes_a_complete_job(tmp_path: Path) -> No
     )
 
     assert terminal.glb_source == "preview"
+    assert terminal.glb_bake_mode == "none"
     assert (job_dir / "building.glb").read_bytes()[:4] == b"glTF"
     assert (job_dir / "floorplan.optimized.json").is_file()
     assert (job_dir / "debug" / "01_original_roi.png").is_file()

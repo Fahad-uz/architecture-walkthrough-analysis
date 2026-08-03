@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from multiprocessing.process import BaseProcess
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
@@ -44,8 +45,7 @@ from architecture_walkthrough.security.file_validation import (
     validate_image_file,
     validate_job_id,
 )
-from architecture_walkthrough.walkthrough.camera_animation import waypoints_from_points
-from architecture_walkthrough.walkthrough.path_planner import manual_or_auto_waypoints
+from architecture_walkthrough.walkthrough.path_planner import camera_waypoints_for_model
 
 LOGGER = logging.getLogger(__name__)
 
@@ -452,6 +452,7 @@ class JobRecord(BaseModel):
     message: str = ""
     glb_url: str | None = None
     glb_source: str | None = None  # "preview" (trimesh) | "blender"
+    glb_bake_mode: Literal["none", "draft", "final"] | None = None
     # Bumped whenever a new GLB is written; viewers append it to the artifact
     # URL so browser and loader caches can never serve stale model bytes.
     glb_version: int = 0
@@ -975,6 +976,7 @@ class LocalJobRunner:
                             f"/jobs/{record.job_id}/artifacts/building.glb"
                         ),
                         "glb_source": "preview",
+                        "glb_bake_mode": "none",
                         "optimized_json_url": (
                             f"/jobs/{record.job_id}/artifacts/"
                             "floorplan.optimized.json"
@@ -1124,6 +1126,7 @@ class LocalJobRunner:
 
     def _run_generation(self, record: JobRecord, force: bool, bake_mode: str | None) -> None:
         job_dir = self.config.paths.work_root / record.job_id
+        resolved_bake_mode = bake_mode or self.config.bake.mode
         revision = uuid.uuid4().hex
         temporary_glb = job_dir / f".building.{revision}.glb"
         terminal_status = "model_generated"
@@ -1148,6 +1151,7 @@ class LocalJobRunner:
             terminal_changes = {
                 "glb_url": f"/jobs/{record.job_id}/artifacts/building.glb",
                 "glb_source": "blender",
+                "glb_bake_mode": resolved_bake_mode,
             }
         except ValueError as exc:  # quality gate
             terminal_status = "blocked"
@@ -1210,8 +1214,8 @@ def _apply_correction_revision(
         }
     )
     try:
-        route = manual_or_auto_waypoints(model)
-        model = model.model_copy(update={"camera_waypoints": waypoints_from_points(route)})
+        route = camera_waypoints_for_model(model)
+        model = model.model_copy(update={"camera_waypoints": route})
     except ValueError:
         # Manual walking remains available when no collision-safe guided route exists.
         pass
@@ -1280,6 +1284,7 @@ def _apply_correction_revision(
         quality_score=quality.score,
         glb_url=f"/jobs/{record.job_id}/artifacts/building.glb",
         glb_source="preview",
+        glb_bake_mode="none",
     )
     return {"status": "accepted", "model": model.model_dump(mode="json"), **report}
 
