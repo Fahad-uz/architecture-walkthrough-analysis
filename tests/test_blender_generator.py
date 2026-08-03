@@ -25,6 +25,29 @@ from architecture_walkthrough.scene.blender_generator import (
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+def _face_points_away_from(
+    vertices: list[tuple[float, float, float]],
+    face: tuple[int, ...],
+    center: tuple[float, float, float],
+) -> bool:
+    a, b, c = (vertices[index] for index in face[:3])
+    edge_ab = tuple(b[axis] - a[axis] for axis in range(3))
+    edge_ac = tuple(c[axis] - a[axis] for axis in range(3))
+    normal = (
+        edge_ab[1] * edge_ac[2] - edge_ab[2] * edge_ac[1],
+        edge_ab[2] * edge_ac[0] - edge_ab[0] * edge_ac[2],
+        edge_ab[0] * edge_ac[1] - edge_ab[1] * edge_ac[0],
+    )
+    face_center = tuple(
+        sum(vertices[index][axis] for index in face) / len(face)
+        for axis in range(3)
+    )
+    return sum(
+        normal[axis] * (face_center[axis] - center[axis])
+        for axis in range(3)
+    ) > 0
+
+
 def test_template_exists_and_compiles() -> None:
     source = TEMPLATE.read_text(encoding="utf-8")
     compile(source, str(TEMPLATE), "exec")  # syntax check without bpy
@@ -32,6 +55,82 @@ def test_template_exists_and_compiles() -> None:
     assert 'if MODE != "none":' in source
     assert "EXACT" in source  # boolean solver
     assert "KHR" in source or "export_lights" in source
+
+
+def test_box_faces_point_outward_for_cycles_baking() -> None:
+    """Back-facing boxes produce empty COMBINED lightmaps in Cycles."""
+    import ast
+
+    source = TEMPLATE.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    new_box = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "new_box"
+    )
+    faces_node = next(
+        statement.value
+        for statement in new_box.body
+        if isinstance(statement, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "faces"
+            for target in statement.targets
+        )
+    )
+    faces = ast.literal_eval(faces_node)
+    vertices = [
+        (-1.0, -1.0, -1.0),
+        (1.0, -1.0, -1.0),
+        (1.0, 1.0, -1.0),
+        (-1.0, 1.0, -1.0),
+        (-1.0, -1.0, 1.0),
+        (1.0, -1.0, 1.0),
+        (1.0, 1.0, 1.0),
+        (-1.0, 1.0, 1.0),
+    ]
+
+    assert all(_face_points_away_from(vertices, face, (0.0, 0.0, 0.0)) for face in faces)
+
+
+def test_polygon_slab_faces_point_outward_for_cycles_baking() -> None:
+    import ast
+
+    source = TEMPLATE.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    build_slab = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "build_polygon_slab"
+    )
+    face_loops = [
+        statement
+        for statement in build_slab.body
+        if isinstance(statement, ast.For)
+        and isinstance(statement.target, ast.Name)
+        and statement.target.id in {"tri", "i"}
+    ]
+    face_program = ast.fix_missing_locations(ast.Module(body=face_loops, type_ignores=[]))
+    for clockwise, loop in (
+        (False, [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)]),
+        (True, [(0.0, 0.0), (0.0, 1.0), (1.0, 0.0)]),
+    ):
+        namespace: dict[str, object] = {
+            "triangles": [(0, 1, 2)],
+            "clockwise": clockwise,
+            "n": 3,
+            "faces": [],
+        }
+        exec(compile(face_program, str(TEMPLATE), "exec"), namespace)
+        faces = namespace["faces"]
+        assert isinstance(faces, list)
+        vertices = [
+            *((x, y, 1.0) for x, y in loop),
+            *((x, y, 0.0) for x, y in loop),
+        ]
+        assert all(
+            _face_points_away_from(vertices, face, (1 / 3, 1 / 3, 0.5))
+            for face in faces
+        )
 
 
 def test_template_keeps_scene_semantics_in_the_blender_export() -> None:
@@ -46,6 +145,7 @@ def test_template_keeps_scene_semantics_in_the_blender_export() -> None:
     assert source.count("mesh.from_pydata") >= 4
     assert "room_floor_coverage" in source
     assert "MIN_ROOM_FLOOR_COVERAGE" in source
+    assert "DOOR_LEAF_OPEN_DEG = 90.0" in source
     assert "tune_realtime_lights_for_export" in source
     assert '"export_lights": True' in source
     assert "opening_interval(opening, length)" in source

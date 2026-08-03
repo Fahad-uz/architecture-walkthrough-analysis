@@ -55,7 +55,7 @@ WALL_HEIGHT_DEFAULT = 2.8
 FLOOR_THICKNESS = 0.1
 CEILING_THICKNESS = 0.08
 BASEBOARD_HEIGHT = 0.1
-DOOR_LEAF_OPEN_DEG = 25.0
+DOOR_LEAF_OPEN_DEG = 90.0
 MIN_OPENING_WIDTH = 0.18
 MIN_ROOM_FLOOR_COVERAGE = 0.45
 
@@ -294,7 +294,18 @@ def new_box(name: str, size: Vector, location: Vector, z_rotation: float, materi
         (-hx, -hy, -hz), (hx, -hy, -hz), (hx, hy, -hz), (-hx, hy, -hz),
         (-hx, -hy, hz), (hx, -hy, hz), (hx, hy, hz), (-hx, hy, hz),
     ]
-    faces = [(0, 1, 2, 3), (4, 7, 6, 5), (0, 4, 5, 1), (1, 5, 6, 2), (2, 6, 7, 3), (3, 7, 4, 0)]
+    # Keep every face counter-clockwise from outside the box.  Cycles does not
+    # bake useful direct/indirect light onto backfaces; the former inward
+    # winding therefore produced black wall and trim lightmaps even though
+    # double-sided realtime glTF materials looked acceptable in no-bake mode.
+    faces = [
+        (0, 3, 2, 1),
+        (4, 5, 6, 7),
+        (0, 1, 5, 4),
+        (1, 2, 6, 5),
+        (2, 3, 7, 6),
+        (3, 0, 4, 7),
+    ]
     mesh.from_pydata(verts, [], faces)
     mesh.update()
     obj = bpy.data.objects.new(name, mesh)
@@ -431,13 +442,25 @@ def build_polygon_slab(name: str, points: list[dict], z: float, thickness: float
     bottom = [(c.x, c.y, z - thickness) for c in coords]
     verts = top + bottom
     n = len(coords)
+    clockwise = sum(
+        coords[index].x * coords[(index + 1) % n].y
+        - coords[(index + 1) % n].x * coords[index].y
+        for index in range(n)
+    ) < 0
     faces: list[tuple[int, ...]] = []
     for tri in triangles:
-        faces.append(tuple(tri))
-        faces.append(tuple(reversed([i + n for i in tri])))
+        # tessellate_polygon follows the source loop's winding, which is
+        # commonly clockwise in reconstructed plans.  Normalize the top to
+        # counter-clockwise and make the bottom its exact opposite.
+        top_face = tuple(reversed(tri)) if clockwise else tuple(tri)
+        faces.append(top_face)
+        faces.append(tuple(index + n for index in reversed(top_face)))
     for i in range(n):
         j = (i + 1) % n
-        faces.append((i, j, j + n, i + n))
+        if clockwise:
+            faces.append((i, j, j + n, i + n))
+        else:
+            faces.append((i, i + n, j + n, j))
     mesh.from_pydata(verts, [], faces)
     mesh.update()
     obj = bpy.data.objects.new(name, mesh)
@@ -1506,13 +1529,13 @@ def build_lighting() -> None:
         sky.sun_elevation = math.radians(40)
         sky.sun_rotation = math.radians(135)
     background = nodes.new("ShaderNodeBackground")
-    background.inputs["Strength"].default_value = 0.9
+    background.inputs["Strength"].default_value = 0.04
     output = nodes.new("ShaderNodeOutputWorld")
     links.new(sky.outputs["Color"], background.inputs["Color"])
     links.new(background.outputs["Background"], output.inputs["Surface"])
 
     sun_data = bpy.data.lights.new("Sun", "SUN")
-    sun_data.energy = 2.5
+    sun_data.energy = 0.1
     sun_data.angle = math.radians(2.0)
     sun = bpy.data.objects.new("Sun", sun_data)
     sun.rotation_euler = (math.radians(50), 0.0, math.radians(135))
@@ -1528,9 +1551,10 @@ def build_lighting() -> None:
         ys = [p["y"] for p in points]
         area = abs((max(xs) - min(xs)) * (max(ys) - min(ys)))
         light_data = bpy.data.lights.new(f"RoomLight_{index:03d}", "POINT")
-        # Blender point-light power is measured in watts. The old 25-120 W
-        # range left enclosed rooms and their baked floors almost black.
-        light_data.energy = max(300.0, min(1200.0, area * 55.0))
+        # These are bake-level watts.  The previous 300-1200 W workaround hid
+        # inward geometry normals by clipping most correctly facing texels to
+        # white; ordinary residential powers preserve usable tonal range.
+        light_data.energy = max(25.0, min(120.0, area * 6.0))
         light_data.color = (1.0, 0.82, 0.66)
         light_data.shadow_soft_size = 0.35
         light = bpy.data.objects.new(f"RoomLight_{index:03d}", light_data)
@@ -1557,9 +1581,9 @@ def tune_realtime_lights_for_export() -> None:
         if light.type != "POINT":
             continue
         if MODE == "none":
-            light.energy = max(18.0, min(55.0, float(light.energy) * 0.05))
+            light.energy = max(18.0, min(55.0, float(light.energy) * 0.45))
         else:
-            light.energy = max(12.0, min(35.0, float(light.energy) * 0.035))
+            light.energy = max(12.0, min(35.0, float(light.energy) * 0.28))
 
 
 # ---------------------------------------------------------------------------
@@ -1595,9 +1619,12 @@ def bake_object_lightmap(obj: bpy.types.Object, image_name: str, resolution: int
     bpy.ops.object.mode_set(mode="EDIT")
     bpy.ops.mesh.select_all(action="SELECT")
     try:
-        bpy.ops.uv.lightmap_pack(PREF_CONTEXT="ALL_FACES", PREF_MARGIN_DIV=0.2)
+        # Smart Project keeps connected coplanar triangles in one UV island.
+        # Lightmap Pack splits every polygon, which exposed dark filtering
+        # seams along the tessellation diagonals of otherwise flat floors.
+        bpy.ops.uv.smart_project(island_margin=0.01)
     except Exception:
-        bpy.ops.uv.smart_project(island_margin=0.02)
+        bpy.ops.uv.lightmap_pack(PREF_CONTEXT="ALL_FACES", PREF_MARGIN_DIV=0.2)
     bpy.ops.object.mode_set(mode="OBJECT")
     for slot in obj.material_slots:
         material = slot.material
@@ -1633,7 +1660,7 @@ def rewire_to_baked(obj: bpy.types.Object, lightmap: bpy.types.Image) -> None:
         uv_node = nodes.new("ShaderNodeUVMap")
         uv_node.uv_map = "LightmapUV"
         emission = nodes.new("ShaderNodeEmission")
-        emission.inputs["Strength"].default_value = 1.15
+        emission.inputs["Strength"].default_value = 1.0
         output = nodes.new("ShaderNodeOutputMaterial")
         links.new(uv_node.outputs["UV"], image_node.inputs["Vector"])
         links.new(image_node.outputs["Color"], emission.inputs["Color"])

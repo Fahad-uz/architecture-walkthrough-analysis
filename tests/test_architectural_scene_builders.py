@@ -47,6 +47,8 @@ def test_door_leaf_rotates_around_the_declared_hinge() -> None:
         (float(leaf.centroid[0]) - 1.0) ** 2 + float(leaf.centroid[1]) ** 2
     ) ** 0.5
     assert abs(hinge_distance - 0.5) < 1e-6
+    assert abs(float(leaf.centroid[0]) - 1.0) < 1e-6
+    assert abs(float(leaf.centroid[1]) - 0.5) < 1e-6
 
 
 def test_wall_splits_around_one_window() -> None:

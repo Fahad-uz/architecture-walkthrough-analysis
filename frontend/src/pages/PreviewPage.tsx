@@ -1,12 +1,16 @@
 import { OrbitControls, useGLTF, useProgress } from "@react-three/drei";
 import { Canvas, useThree } from "@react-three/fiber";
+import { EffectComposer, N8AO, SMAA, ToneMapping } from "@react-three/postprocessing";
+import { ToneMappingMode } from "postprocessing";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ACESFilmicToneMapping, Box3, PerspectiveCamera, SRGBColorSpace, Vector3 } from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { getJob, versionedGlbUrl } from "../api";
+import NeutralEnvironment from "../components/NeutralEnvironment";
 import SceneErrorBoundary from "../components/SceneErrorBoundary";
 import type { JobRecord } from "../types";
+import useCoarsePointer from "../useCoarsePointer";
 
 /** Loads the GLB and frames it: orbit target = bounding-box center, camera
  *  placed from the bbox size so the whole building is visible. The pipeline
@@ -75,6 +79,7 @@ export default function PreviewPage() {
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [sceneError, setSceneError] = useState<string | null>(null);
   const [sceneRetry, setSceneRetry] = useState(0);
+  const coarsePointer = useCoarsePointer();
 
   useEffect(() => {
     let cancelled = false;
@@ -103,6 +108,10 @@ export default function PreviewPage() {
   // and therefore drei's cache key — changes with it.
   const url = job?.glb_url ? versionedGlbUrl(jobId, job.glb_version) : null;
   const sceneResetKey = url ? `${url}:${sceneRetry}` : null;
+  const baked =
+    job?.glb_bake_mode == null
+      ? job?.glb_source === "blender"
+      : job.glb_bake_mode !== "none";
   useEffect(() => {
     setSceneError(null);
     setSceneRetry(0);
@@ -163,11 +172,17 @@ export default function PreviewPage() {
           >
             <Canvas
               aria-label="Interactive 3D building preview"
-              camera={{ position: [8, 9, 8], fov: 50 }}
+              camera={{ position: [8, 9, 8], fov: coarsePointer ? 58 : 50 }}
+              dpr={coarsePointer ? [1, 1.25] : [1, 1.75]}
               gl={{ toneMapping: ACESFilmicToneMapping, outputColorSpace: SRGBColorSpace }}
             >
-              <ambientLight intensity={0.7} />
-              <directionalLight position={[6, 12, 6]} intensity={1.4} />
+              <color attach="background" args={["#c9ced3"]} />
+              <NeutralEnvironment />
+              <ambientLight intensity={0.32} />
+              <hemisphereLight intensity={0.34} color="#ffffff" groundColor="#8f9498" />
+              {job?.glb_source === "preview" && (
+                <directionalLight position={[6, 12, 6]} intensity={0.9} />
+              )}
               <Suspense fallback={null}>
                 <FramedBuilding
                   key={sceneResetKey}
@@ -182,6 +197,21 @@ export default function PreviewPage() {
                 dampingFactor={0.08}
                 maxPolarAngle={Math.PI * 0.495}
               />
+              {!baked && (
+                <EffectComposer multisampling={0}>
+                  <N8AO
+                    screenSpaceRadius
+                    aoRadius={32}
+                    intensity={1.8}
+                    distanceFalloff={0.2}
+                    quality={coarsePointer ? "performance" : "medium"}
+                    halfRes={coarsePointer}
+                    depthAwareUpsampling
+                  />
+                  <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
+                  <SMAA />
+                </EffectComposer>
+              )}
             </Canvas>
           </SceneErrorBoundary>
         ) : (
