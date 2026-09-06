@@ -1,0 +1,43 @@
+materials:
+  painted_wall:
+    base_color: [0.86, 0.84, 0.79, 1.0]
+    texture_scale_m: 1.0
+    roughness: 0.78
+    metallic: 0.0
+  marble:
+    base_color: [0.82, 0.78, 0.68, 1.0]
+    texture_scale_m: 0.75
+    roughness: 0.38
+    metallic: 0.0
+  wood:
+    base_color: [0.45, 0.24, 0.12, 1.0]
+    texture_scale_m: 0.5
+    roughness: 0.52
+    metallic: 0.0
+  ceramic_tile:
+    base_color: [0.55, 0.55, 0.53, 1.0]
+    texture_scale_m: 0.3
+    roughness: 0.42
+    metallic: 0.0
+  metal:
+    base_color: [0.08, 0.08, 0.08, 1.0]
+    texture_scale_m: 1.0
+    roughness: 0.35
+    metallic: 0.85
+  glass:
+    base_color: [0.45, 0.68, 0.78, 0.45]
+    texture_scale_m: 1.0
+    roughness: 0.08
+    metallic: 0.0
+    alpha_mode: BLEND
+    double_sided: true
+  fabric:
+    base_color: [0.38, 0.38, 0.22, 1.0]
+    texture_scale_m: 0.4
+    roughness: 0.9
+    metallic: 0.0
+  plastic:
+    base_color: [0.25, 0.45, 0.25, 1.0]
+    texture_scale_m: 0.5
+    roughness: 0.65
+    metallic: 0.0

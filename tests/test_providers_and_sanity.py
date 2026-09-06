@@ -1,0 +1,239 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from architecture_walkthrough.ai.sanity_check import (
+    GeminiLayoutSanityChecker,
+    SanityWarning,
+    _layout_summary,
+    _sanity_prompt,
+)
+from architecture_walkthrough.config import AppConfig
+from architecture_walkthrough.geometry.models import (
+    BalconyPolygon,
+    FloorPlanModel,
+    Point2D,
+    RoomPolygon,
+    WallSegment,
+)
+from architecture_walkthrough.vision.providers import (
+    CubiCasaGeometryProvider,
+    WallBandGeometryProvider,
+    build_geometry_provider,
+)
+
+
+def test_default_provider_is_wallband_cv() -> None:
+    provider = build_geometry_provider(AppConfig())
+    assert isinstance(provider, WallBandGeometryProvider)
+    assert provider.name == "wallband_cv"
+    assert provider.accuracy_tier == "medium"
+
+
+def test_cubicasa_provider_requires_implementation_flag(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "weights.pkl"
+    checkpoint.write_bytes(b"fake")
+    config = AppConfig()
+    config.ai.segmentation_checkpoint = checkpoint
+    # Even with a checkpoint on disk, the provider stays off until inference lands.
+    assert not CubiCasaGeometryProvider.is_available(config)
+    assert isinstance(build_geometry_provider(config), WallBandGeometryProvider)
+
+
+def _model() -> FloorPlanModel:
+    return FloorPlanModel(
+        pixels_per_metre=100.0,
+        walls=[WallSegment(id="w0", start=Point2D(x=0, y=0), end=Point2D(x=4, y=0))],
+    )
+
+
+def _model_with_room_and_balcony() -> FloorPlanModel:
+    return _model().model_copy(
+        update={
+            "rooms": [
+                RoomPolygon(
+                    id="room-0",
+                    name="BEDROOM",
+                    points=[
+                        Point2D(x=0, y=0),
+                        Point2D(x=2, y=0),
+                        Point2D(x=2, y=2),
+                        Point2D(x=0, y=2),
+                    ],
+                )
+            ],
+            "balconies": [
+                BalconyPolygon(
+                    id="balcony-0",
+                    name="BALCONY",
+                    points=[
+                        Point2D(x=2, y=0),
+                        Point2D(x=4, y=0),
+                        Point2D(x=4, y=1),
+                        Point2D(x=2, y=1),
+                    ],
+                )
+            ],
+        }
+    )
+
+
+def test_sanity_checker_disabled_reports_not_attempted() -> None:
+    config = AppConfig()
+    config.ai.gemini_sanity_check_enabled = False
+    result = GeminiLayoutSanityChecker(config.ai).check(Path("missing.png"), _model(), 400, 300)
+    assert not result.attempted
+    assert result.error
+
+
+def test_sanity_checker_without_key_is_soft_failure(monkeypatch) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    result = GeminiLayoutSanityChecker(AppConfig().ai).check(Path("missing.png"), _model(), 400, 300)
+    assert result.attempted and not result.succeeded
+    assert result.warnings == []
+
+
+def test_sanity_request_uses_one_bounded_attempt(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeModels:
+        def generate_content(self, **_kwargs):
+            return SimpleNamespace(text='{"warnings": []}')
+
+    class FakeClient:
+        def __init__(self, *, api_key, http_options) -> None:
+            captured["api_key"] = api_key
+            captured["http_options"] = http_options
+            self.models = FakeModels()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            captured["closed"] = True
+
+    def fake_backoff(operation, *, attempts, base_delay_seconds):
+        captured["attempts"] = attempts
+        captured["base_delay_seconds"] = base_delay_seconds
+        return operation()
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr("google.genai.Client", FakeClient)
+    monkeypatch.setattr("architecture_walkthrough.ai.retry.call_with_backoff", fake_backoff)
+    image_path = tmp_path / "plan.png"
+    image_path.write_bytes(b"test-image")
+    checker = GeminiLayoutSanityChecker(
+        AppConfig().ai.model_copy(
+            update={
+                "gemini_request_timeout_seconds": 9,
+                "gemini_retry_attempts": 2,
+                "gemini_retry_base_delay_seconds": 1.25,
+            }
+        )
+    )
+
+    assert checker._request(image_path, _model(), 400, 300) == []
+    options = captured["http_options"]
+    assert options.timeout == 9_000
+    assert options.retry_options.attempts == 1
+    assert captured["attempts"] == 1
+    assert captured["base_delay_seconds"] == 1.25
+    assert captured["closed"] is True
+
+
+def test_sanity_checker_parses_mocked_warnings(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    image = tmp_path / "plan.png"
+    image.write_bytes(b"png")
+    warnings = [
+        SanityWarning(kind="missed_door", description="door arc near kitchen", x=0.4, y=0.6, confidence=0.8)
+    ]
+    with patch.object(GeminiLayoutSanityChecker, "_request", return_value=warnings):
+        result = GeminiLayoutSanityChecker(AppConfig().ai).check(image, _model(), 400, 300)
+    assert result.succeeded
+    assert result.warnings[0].kind == "missed_door"
+
+
+def test_layout_summary_is_normalized_json() -> None:
+    model = _model_with_room_and_balcony()
+    payload = json.loads(_layout_summary(model, image_width_px=400, image_height_px=300))
+    assert payload["walls"][0]["start"] == {"x": 0.0, "y": 1.0}
+    assert payload["walls"][0]["end"]["x"] == 1.0
+    assert payload["rooms"][0] == {
+        "id": "room-0",
+        "name": "BEDROOM",
+        "center": {"x": 0.25, "y": 0.667},
+        "polygon": [
+            {"x": 0.0, "y": 1.0},
+            {"x": 0.5, "y": 1.0},
+            {"x": 0.5, "y": 0.333},
+            {"x": 0.0, "y": 0.333},
+        ],
+    }
+    assert payload["balconies"][0] == {
+        "id": "balcony-0",
+        "name": "BALCONY",
+        "center": {"x": 0.75, "y": 0.833},
+        "polygon": [
+            {"x": 0.5, "y": 1.0},
+            {"x": 1.0, "y": 1.0},
+            {"x": 1.0, "y": 0.667},
+            {"x": 0.5, "y": 0.667},
+        ],
+    }
+
+
+def test_sanity_prompt_distinguishes_rooms_from_balconies() -> None:
+    prompt = _sanity_prompt(_model_with_room_and_balcony(), 400, 300)
+    assert "inside a rooms[].polygon" in prompt
+    assert "BALCONY or TERRACE label inside a balconies[].polygon" in prompt
+    assert "not a wrong_room_label" in prompt
+
+
+def test_sanity_checker_discards_only_room_label_warnings_inside_balconies(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    image = tmp_path / "plan.png"
+    image.write_bytes(b"png")
+    warnings = [
+        SanityWarning(
+            kind="wrong_room_label",
+            description="balcony was mistaken for a bedroom",
+            x=0.75,
+            y=0.833,
+            confidence=0.9,
+        ),
+        SanityWarning(
+            kind="wrong_room_label",
+            description="printed kitchen label contradicts bedroom",
+            x=0.25,
+            y=0.667,
+            confidence=0.9,
+        ),
+        SanityWarning(
+            kind="missed_window",
+            description="window on balcony edge",
+            x=0.75,
+            y=0.833,
+            confidence=0.8,
+        ),
+    ]
+
+    with patch.object(GeminiLayoutSanityChecker, "_request", return_value=warnings):
+        result = GeminiLayoutSanityChecker(AppConfig().ai).check(
+            image,
+            _model_with_room_and_balcony(),
+            400,
+            300,
+        )
+
+    assert result.succeeded
+    assert [(warning.kind, warning.description) for warning in result.warnings] == [
+        ("wrong_room_label", "printed kitchen label contradicts bedroom"),
+        ("missed_window", "window on balcony edge"),
+    ]
