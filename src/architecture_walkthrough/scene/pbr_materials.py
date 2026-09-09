@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field, PositiveFloat, field_validator
+from architecture_walkthrough.scene.furniture import render_furniture
 
 from architecture_walkthrough.geometry.models import (
     FloorPlanModel,
@@ -16,7 +17,7 @@ from architecture_walkthrough.geometry.models import (
 )
 
 LOGGER = logging.getLogger(__name__)
-MATERIAL_PLAN_SCHEMA_VERSION = 1
+MATERIAL_PLAN_SCHEMA_VERSION = 2
 MATERIAL_PLAN_METADATA_KEY = "blender_material_plan"
 SAFE_FALLBACK_PRESET = "fallback"
 _MATERIAL_SEPARATOR = re.compile(r"[^a-z0-9]+")
@@ -81,6 +82,19 @@ class PBRMaterialPreset(BaseModel):
             "double_sided": self.double_sided,
         }
 
+    def render_payload(self) -> dict[str, object]:
+        """Include available local maps in the self-contained renderer contract."""
+        payload = self.scalar_payload()
+        payload["texture_scale_m"] = float(self.texture_scale_m)
+        for field in (
+            "base_color_texture", "normal_texture", "roughness_texture",
+            "metallic_texture", "ao_texture",
+        ):
+            path = getattr(self, field)
+            if path is not None and path.is_file():
+                payload[field] = str(path.resolve())
+        return payload
+
 
 class MaterialRegistry(BaseModel):
     materials: dict[str, PBRMaterialPreset] = Field(default_factory=dict)
@@ -120,6 +134,9 @@ class MaterialRegistry(BaseModel):
             for name, preset in sorted(self.materials.items())
         }
 
+    def render_payload(self) -> dict[str, dict[str, object]]:
+        return {name: preset.render_payload() for name, preset in sorted(self.materials.items())}
+
 
 def load_material_registry(path: Path) -> MaterialRegistry:
     if not path.is_file():
@@ -144,6 +161,17 @@ def load_material_registry(path: Path) -> MaterialRegistry:
         else:
             raise ValueError(f"material preset {key!r} must be a mapping")
         entry["name"] = key
+        for field in (
+            "base_color_texture", "normal_texture", "roughness_texture",
+            "metallic_texture", "ao_texture",
+        ):
+            if entry.get(field):
+                texture_path = Path(str(entry[field])).expanduser()
+                if not texture_path.is_absolute():
+                    texture_path = path.parent / texture_path
+                entry[field] = texture_path.resolve()
+                if not texture_path.is_file():
+                    LOGGER.warning("Material %s: unavailable %s map %s; using scalar fallback", key, field, texture_path)
         entries[key] = entry
     if not entries:
         raise ValueError(f"material registry defines no materials: {path}")
@@ -322,7 +350,7 @@ def build_material_plan(
             )
         )
 
-    materials = registry.scalar_payload()
+    materials = registry.render_payload()
     materials.setdefault(
         SAFE_FALLBACK_PRESET,
         PBRMaterialPreset(name=SAFE_FALLBACK_PRESET).scalar_payload(),
@@ -364,6 +392,7 @@ def model_with_material_plan(
         LOGGER.warning("Material plan: %s", warning)
     return model.model_copy(
         update={
+            "furniture": render_furniture(model),
             "metadata": {
                 **model.metadata,
                 MATERIAL_PLAN_METADATA_KEY: material_plan,

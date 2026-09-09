@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import builtins
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -62,6 +64,41 @@ def test_rapidocr_preserves_line_boxes_and_dimension_tokens(
     assert results[0].semantic_type == "room_label"
     assert results[1].semantic_type == "dimension"
     assert parse_dimension_pair(results[1].normalized_text).height_m == 2.9
+
+
+def test_local_ocr_disables_native_telemetry_before_runtime_initializes(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    image_path = tmp_path / "plan.png"
+    _image(image_path)
+    events: list[str] = []
+    original_import = builtins.__import__
+
+    def observe_import(name, *args, **kwargs):
+        if name == "onnxruntime":
+            # The environment opt-out must precede the import, since the
+            # native library can start its uploader before returning to Python.
+            assert os.environ.get("ORT_DISABLE_TELEMETRY") == "1"
+            events.append("import_runtime")
+        return original_import(name, *args, **kwargs)
+
+    class FakeRapidOCR:
+        def __init__(self, **_kwargs) -> None:
+            assert events == ["import_runtime", "disable_telemetry"]
+            events.append("create_session")
+
+        def __call__(self, _image, **_kwargs):
+            return SimpleNamespace(boxes=None, txts=None, scores=None)
+
+    monkeypatch.delenv("ORT_DISABLE_TELEMETRY", raising=False)
+    monkeypatch.setitem(sys.modules, "onnxruntime", SimpleNamespace(
+        disable_telemetry_events=lambda: events.append("disable_telemetry"),
+    ))
+    monkeypatch.setitem(sys.modules, "rapidocr", SimpleNamespace(RapidOCR=FakeRapidOCR))
+    monkeypatch.setattr(builtins, "__import__", observe_import)
+
+    assert RapidOCRBackend().recognize(image_path) == []
+    assert events == ["import_runtime", "disable_telemetry", "create_session"]
 
 
 def test_auto_backend_prefers_rapidocr_and_falls_back_to_tesseract(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -34,10 +35,7 @@ from architecture_walkthrough.geometry.balcony_ownership import (
 )
 from architecture_walkthrough.geometry.furniture_layout import fit_furniture_to_rooms
 from architecture_walkthrough.geometry.reconstruction import reconstruct_walls
-from architecture_walkthrough.geometry.room_extraction import (
-    extract_rooms_from_geometry_mask,
-    extract_rooms_from_walls,
-)
+from architecture_walkthrough.geometry.room_extraction import extract_rooms_from_walls
 from architecture_walkthrough.geometry.scale import ScaleConverter
 from architecture_walkthrough.geometry.scale_solver import ScaleConstraint, solve_scale
 from architecture_walkthrough.geometry.wall_graph import collinear_gaps
@@ -212,8 +210,8 @@ def _convert_walls_to_metres(
 def _manual_pixels_per_metre(manual_scale: float | None) -> float | None:
     if manual_scale is None:
         return None
-    if manual_scale <= 0:
-        raise ValueError("manual scale must be positive metres per pixel")
+    if not math.isfinite(manual_scale) or manual_scale <= 0:
+        raise ValueError("manual scale must be finite positive metres per pixel")
     return 1.0 / manual_scale
 
 
@@ -700,6 +698,7 @@ def analyze_image(
     require_ai_success: bool = False,
     crop_rect: tuple[int, int, int, int] | None = None,
 ) -> FloorPlanModel:
+    source_pixels_per_metre = _manual_pixels_per_metre(manual_scale)
     output_dir.mkdir(parents=True, exist_ok=True)
     debug_dir = output_dir / "debug"
     stages = StageLogger()
@@ -727,6 +726,7 @@ def analyze_image(
         options=config.preprocessing.model_dump(),
     )
     resized_height, resized_width = preprocessing.resized_shape[:2]
+    resize_ratio = max(resized_height, resized_width) / max(preprocessing.original_shape[:2])
     stages.record("preprocess_layers", started, layers={key: str(value) for key, value in preprocessing.layers.items()})
 
     started = time.perf_counter()
@@ -894,7 +894,10 @@ def analyze_image(
     ]
     scale_result = solve_scale(
         constraints,
-        manual_pixels_per_metre=_manual_pixels_per_metre(manual_scale),
+        manual_pixels_per_metre=(
+            source_pixels_per_metre * resize_ratio
+            if source_pixels_per_metre is not None else None
+        ),
         min_pixels_per_metre=config.scale_solver.min_pixels_per_metre,
         max_pixels_per_metre=config.scale_solver.max_pixels_per_metre,
         outlier_mad_factor=config.scale_solver.outlier_mad_factor,
@@ -968,13 +971,9 @@ def analyze_image(
     )
     final_rooms = room_result.rooms
     unclosed_gap_reports = room_result.rejected
-    if not final_rooms:
-        final_rooms = extract_rooms_from_geometry_mask(
-            preprocessing.layers["cleaned_geometry_only"],
-            all_room_labels,
-            pixels_per_metre=pixels_per_metre,
-            image_height_px=resized_height,
-        ).rooms
+    # Failure to close the measured wall graph is evidence for review. A
+    # morphological mask fallback used to close 90-pixel gaps indiscriminately
+    # and invent rooms that disagreed with the walls rendered in the GLB.
     stages.record("extract_final_rooms", started, room_count=len(final_rooms), unclosed_gaps=len(unclosed_gap_reports))
 
     started = time.perf_counter()
@@ -1068,6 +1067,8 @@ def analyze_image(
             "roi_image": str(analysis_image_path),
             "scale_source": scale_result.source,
             "scale_confidence": scale_result.confidence,
+            "analysis_resize_ratio": resize_ratio,
+            "manual_source_metres_per_pixel": manual_scale,
             "ai_provider": "gemini",
             "ai_assist_enabled": config.ai.gemini_enabled,
             "ai_assist_attempted": ai_analysis.attempted,

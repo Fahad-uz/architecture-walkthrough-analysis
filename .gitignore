@@ -21,6 +21,8 @@ assets/textures/**
 assets/hdri/**
 !assets/**/
 !assets/**/.gitkeep
+!assets/textures/material_registry.yaml
+!assets/models/asset_registry.yaml
 *.blend
 *.blend1
 *.glb
@@ -39,6 +41,9 @@ assets/hdri/**
 *.pt
 *.pth
 *.onnx
+
+# Small licensed materials shipped with the application.
+!assets/textures/polyhaven/**/*.jpg
 
 # Local/editor
 .idea/

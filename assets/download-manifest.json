@@ -1,0 +1,95 @@
+{
+  "source_license": "https://polyhaven.com/license",
+  "files": [
+    {
+      "asset": "wooden_floor_02",
+      "map": "Diffuse",
+      "path": "assets/textures/polyhaven/wooden_floor_02/wooden_floor_02_diff_1k.jpg",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/wooden_floor_02/wooden_floor_02_diff_1k.jpg",
+      "source": "https://polyhaven.com/a/wooden_floor_02",
+      "license": "CC0-1.0",
+      "bytes": 729028,
+      "sha256": "82e56941b7554ad8069d3e5fffa149165b01f52bafa2f631f1618a6cf166fd88"
+    },
+    {
+      "asset": "wooden_floor_02",
+      "map": "nor_gl",
+      "path": "assets/textures/polyhaven/wooden_floor_02/wooden_floor_02_nor_gl_1k.jpg",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/wooden_floor_02/wooden_floor_02_nor_gl_1k.jpg",
+      "source": "https://polyhaven.com/a/wooden_floor_02",
+      "license": "CC0-1.0",
+      "bytes": 434460,
+      "sha256": "4ed9a5ddf84c7362642f1d866d838c746621448c421a9a85f58b4debc14e8ba1"
+    },
+    {
+      "asset": "wooden_floor_02",
+      "map": "Rough",
+      "path": "assets/textures/polyhaven/wooden_floor_02/wooden_floor_02_rough_1k.jpg",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/wooden_floor_02/wooden_floor_02_rough_1k.jpg",
+      "source": "https://polyhaven.com/a/wooden_floor_02",
+      "license": "CC0-1.0",
+      "bytes": 548918,
+      "sha256": "6226c1fc88ace4d7aa8d8d11bc87b66dbc693fb51134709ee560bd0c71bd40eb"
+    },
+    {
+      "asset": "plastered_wall_02",
+      "map": "Diffuse",
+      "path": "assets/textures/polyhaven/plastered_wall_02/plastered_wall_02_diff_1k.jpg",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/plastered_wall_02/plastered_wall_02_diff_1k.jpg",
+      "source": "https://polyhaven.com/a/plastered_wall_02",
+      "license": "CC0-1.0",
+      "bytes": 436395,
+      "sha256": "0a316ffd3f953a902325c06afb5a5863bbf71d13a353f9d85378562adca79603"
+    },
+    {
+      "asset": "plastered_wall_02",
+      "map": "nor_gl",
+      "path": "assets/textures/polyhaven/plastered_wall_02/plastered_wall_02_nor_gl_1k.jpg",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/plastered_wall_02/plastered_wall_02_nor_gl_1k.jpg",
+      "source": "https://polyhaven.com/a/plastered_wall_02",
+      "license": "CC0-1.0",
+      "bytes": 960241,
+      "sha256": "0f1b4ea0c4707ea133f133c020923bddd8610a43a153281dad15d49f39ad9624"
+    },
+    {
+      "asset": "plastered_wall_02",
+      "map": "Rough",
+      "path": "assets/textures/polyhaven/plastered_wall_02/plastered_wall_02_rough_1k.jpg",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/plastered_wall_02/plastered_wall_02_rough_1k.jpg",
+      "source": "https://polyhaven.com/a/plastered_wall_02",
+      "license": "CC0-1.0",
+      "bytes": 173930,
+      "sha256": "6c317c0e647b02259601690bd33501bbc825858c6d1715cd0f8f46a5b51f6db4"
+    },
+    {
+      "asset": "floor_tiles_06",
+      "map": "Diffuse",
+      "path": "assets/textures/polyhaven/floor_tiles_06/floor_tiles_06_diff_1k.jpg",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/floor_tiles_06/floor_tiles_06_diff_1k.jpg",
+      "source": "https://polyhaven.com/a/floor_tiles_06",
+      "license": "CC0-1.0",
+      "bytes": 356257,
+      "sha256": "ac159ca6072e30dd9d5c65e2d6eae7bb55a7dc9f06e6d141e9119390563511c2"
+    },
+    {
+      "asset": "floor_tiles_06",
+      "map": "nor_gl",
+      "path": "assets/textures/polyhaven/floor_tiles_06/floor_tiles_06_nor_gl_1k.jpg",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/floor_tiles_06/floor_tiles_06_nor_gl_1k.jpg",
+      "source": "https://polyhaven.com/a/floor_tiles_06",
+      "license": "CC0-1.0",
+      "bytes": 121299,
+      "sha256": "efaff964d5688dd52ea3b876d5dac63ffee76d8d7270e30c11c81095246d5fdd"
+    },
+    {
+      "asset": "floor_tiles_06",
+      "map": "Rough",
+      "path": "assets/textures/polyhaven/floor_tiles_06/floor_tiles_06_rough_1k.jpg",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/floor_tiles_06/floor_tiles_06_rough_1k.jpg",
+      "source": "https://polyhaven.com/a/floor_tiles_06",
+      "license": "CC0-1.0",
+      "bytes": 114013,
+      "sha256": "9c1996177892f220bcfdbc44675d0cd404482cfa80b1c577c7bcc100637ef8b6"
+    }
+  ]
+}

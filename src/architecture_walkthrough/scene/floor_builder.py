@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 from shapely.geometry import Polygon  # type: ignore[import-untyped]
-from shapely.ops import triangulate  # type: ignore[import-untyped]
+from shapely.geometry.polygon import orient  # type: ignore[import-untyped]
 import trimesh
 
 from architecture_walkthrough.geometry.models import FloorPlanModel, Point2D, RoomPolygon
@@ -24,29 +24,46 @@ def polygon_floor_mesh(
     polygon = Polygon([(point.x, point.y) for point in polygon_points])
     if not polygon.is_valid or polygon.area <= 0:
         raise ValueError("floor polygon is invalid")
-    vertices: list[list[float]] = []
-    faces: list[list[int]] = []
-    for triangle in triangulate(polygon):
-        clipped = triangle.intersection(polygon)
-        if clipped.is_empty or clipped.area <= 0:
-            continue
-        if clipped.geom_type == "Polygon":
-            coords = list(clipped.exterior.coords)[:-1]
-            if len(coords) < 3:
+    if not np.isfinite(thickness_m) or thickness_m <= 0:
+        raise ValueError("floor thickness must be positive")
+    # Triangulate one shared top surface, then extrude only its outer boundary.
+    # Extruding each clipped triangle separately left duplicate internal walls
+    # and inverted top normals, producing visible seams and broken collision.
+    coords = np.asarray(orient(polygon, sign=1.0).exterior.coords[:-1], dtype=float)
+    remaining = list(range(len(coords)))
+    triangles: list[list[int]] = []
+
+    def cross(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
+        ab, ac = b - a, c - a
+        return float(ab[0] * ac[1] - ab[1] * ac[0])
+
+    tolerance = max(float(polygon.area), 1.0) * 1e-12
+    while len(remaining) > 3:
+        for position, current in enumerate(remaining):
+            previous = remaining[position - 1]
+            following = remaining[(position + 1) % len(remaining)]
+            a, b, c = coords[[previous, current, following]]
+            turn = cross(a, b, c)
+            if abs(turn) <= tolerance:
+                remaining.pop(position)
+                break
+            if turn < 0:
                 continue
-            base = len(vertices)
-            vertices.extend([[x, y, 0.0] for x, y in coords])
-            vertices.extend([[x, y, -thickness_m] for x, y in coords])
-            for index in range(1, len(coords) - 1):
-                faces.append([base, base + index, base + index + 1])
-                faces.append([base + len(coords), base + len(coords) + index + 1, base + len(coords) + index])
-            for index in range(len(coords)):
-                nxt = (index + 1) % len(coords)
-                faces.append([base + index, base + nxt, base + len(coords) + nxt])
-                faces.append([base + index, base + len(coords) + nxt, base + len(coords) + index])
-    if not vertices or not faces:
-        raise ValueError("floor polygon produced no triangles")
-    mesh = trimesh.Trimesh(vertices=np.array(vertices), faces=np.array(faces), process=True)
+            blocked = any(
+                min(cross(a, b, coords[other]), cross(b, c, coords[other]), cross(c, a, coords[other])) >= -tolerance
+                for other in remaining if other not in {previous, current, following}
+            )
+            if blocked:
+                continue
+            triangles.append([previous, current, following])
+            remaining.pop(position)
+            break
+        else:
+            raise ValueError("floor polygon could not be triangulated")
+    if len(remaining) == 3:
+        triangles.append(remaining)
+    mesh = trimesh.creation.extrude_triangulation(coords, np.asarray(triangles), thickness_m)
+    mesh.apply_translation([0.0, 0.0, -thickness_m])
     return _paint(mesh, color)
 
 
