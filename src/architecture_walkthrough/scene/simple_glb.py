@@ -17,6 +17,7 @@ from architecture_walkthrough.geometry.models import (
     WallSegment,
 )
 from architecture_walkthrough.scene.ceiling_builder import ceiling_meshes
+from architecture_walkthrough.scene.furniture import render_furniture
 from architecture_walkthrough.scene.door_builder import door_meshes
 from architecture_walkthrough.scene.floor_builder import (
     fallback_floor_mesh,
@@ -1195,8 +1196,13 @@ def export_simple_glb(model: FloorPlanModel, output_glb: Path) -> Path:
             mesh, node_name=f"Skirting_{index:03d}", geom_name=f"Skirting_{index:03d}"
         )
 
-    for index, item in enumerate(model.furniture):
-        for part_index, mesh in enumerate(_furniture_meshes(item)):
+    for index, item in enumerate(render_furniture(model)):
+        parts = _furniture_meshes(item)
+        top = max((float(mesh.bounds[1, 2]) for mesh in parts), default=0.0)
+        if item.height_m is not None and top > 0:
+            for mesh in parts:
+                mesh.apply_scale([1.0, 1.0, item.height_m / top])
+        for part_index, mesh in enumerate(parts):
             category = _safe_name(item.category)
             part_name = _safe_name(mesh.metadata.get("part_name") or f"Part_{part_index:02d}")
             name = f"Furniture_{index:03d}_{part_index:02d}_{category}_{part_name}"
