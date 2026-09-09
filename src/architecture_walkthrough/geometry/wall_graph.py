@@ -111,16 +111,31 @@ def collinear_gaps(walls: list[WallSegment], coord_tol: float) -> list[dict[str,
 
         for group in coordinate_groups:
             ordered = sorted(group, key=lambda wall: span(wall)[0])
-            for first, second in zip(ordered, ordered[1:]):
+            if not ordered:
+                continue
+            first = ordered[0]
+            for second in ordered[1:]:
                 gap_start = span(first)[1]
                 gap_end = span(second)[0]
                 if gap_end - gap_start <= 1e-6:
+                    # A nested detector fragment must not hide the far end of
+                    # the continuous wall union and manufacture a false gap.
+                    if span(second)[1] > span(first)[1]:
+                        first = second
                     continue
-                coord = (line_coord(first) + line_coord(second)) / 2
-                if is_horizontal:
-                    a, b = (gap_start, coord), (gap_end, coord)
-                else:
-                    a, b = (coord, gap_start), (coord, gap_end)
+                # Connect measured endpoints, not an averaged parallel line.
+                # An averaged line floats between slightly offset fragments
+                # and polygonization still sees an open room after closure.
+                first_end = max(
+                    (first.start, first.end),
+                    key=lambda point: point.x if is_horizontal else point.y,
+                )
+                second_start = min(
+                    (second.start, second.end),
+                    key=lambda point: point.x if is_horizontal else point.y,
+                )
+                a = (first_end.x, first_end.y)
+                b = (second_start.x, second_start.y)
                 gaps.append(
                     {
                         "wall_a": first.id,
@@ -129,6 +144,7 @@ def collinear_gaps(walls: list[WallSegment], coord_tol: float) -> list[dict[str,
                         "line": LineString([a, b]),
                     }
                 )
+                first = second
     return gaps
 
 
@@ -221,7 +237,7 @@ def _opening_spans_gap(
     walls_by_id: dict[str, WallSegment],
     openings: list[DoorOpening | WindowOpening],
 ) -> bool:
-    """True when a confirmed opening interval reaches into the gap span."""
+    """True only when an opening interval covers the measured gap."""
     gap_line: LineString = gap["line"]  # type: ignore[assignment]
     for opening in openings:
         if opening.wall_id not in (gap["wall_a"], gap["wall_b"]):
@@ -238,11 +254,16 @@ def _opening_spans_gap(
         # Opening interval endpoints in plan coordinates.
         ux = (wall.end.x - wall.start.x) / length
         uy = (wall.end.y - wall.start.y) / length
-        for offset in interval:
-            px = wall.start.x + ux * offset
-            py = wall.start.y + uy * offset
-            if gap_line.distance(Point(px, py)) <= max(opening.width_m, 0.3):
-                return True
+        opening_line = LineString([
+            (wall.start.x + ux * offset, wall.start.y + uy * offset)
+            for offset in interval
+        ])
+        # Width is not a positional tolerance: a nearby doorway must never
+        # confirm a different break in the wall. Both gap endpoints must lie
+        # on the opening interval, allowing only detector centreline jitter.
+        tolerance = max(0.02, min(wall.thickness_m * 0.75, 0.10))
+        if all(opening_line.distance(Point(point)) <= tolerance for point in gap_line.coords):
+            return True
     return False
 
 
