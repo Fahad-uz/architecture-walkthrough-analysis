@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -150,7 +151,16 @@ class RapidOCRBackend(OCRBackend):
     """
 
     def recognize(self, image_path: Path) -> list[OCRText]:
+        # Disable the native telemetry uploader before importing ONNX Runtime.
+        # The API alone runs after native initialization and can leave an
+        # initialization-event HTTP worker alive during interpreter shutdown
+        # (ONNX Runtime 1.29 on macOS crashes in that worker's destroyed mutex).
+        # OCR is local supporting evidence and does not need runtime telemetry.
+        os.environ["ORT_DISABLE_TELEMETRY"] = "1"
         try:
+            import onnxruntime
+
+            onnxruntime.disable_telemetry_events()
             from rapidocr import RapidOCR  # type: ignore[import-not-found]
         except ImportError:
             return []
