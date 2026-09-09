@@ -9,7 +9,9 @@
     "prebuild": "node scripts/copy-draco.mjs",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "predev": "node scripts/copy-draco.mjs",
+    "test": "node --experimental-strip-types --test tests/*.test.ts"
   },
   "dependencies": {
     "@react-three/drei": "^9.114.3",
@@ -21,7 +23,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-konva": "^18.2.10",
-    "react-router-dom": "7.18.1",
+    "react-router-dom": "7.18.3",
     "three": "^0.169.0",
     "three-mesh-bvh": "^0.8.3"
   },
