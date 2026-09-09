@@ -573,10 +573,15 @@ def test_blender_binds_material_presets_to_architectural_surfaces(
         material = scene.geometry[geometry_name].visual.material
         return str(material.name)
 
-    assert material_for("Wall_000") == "PBR_metal"
-    assert material_for("Wall_001") == "PBR_masked_panel"
-    assert material_for("Wall_002") == "PBR_opaque_panel"
-    assert material_for("Wall_003") == "PBR_painted_wall"
+    # Intersecting walls now form a continuous solid; each wall's surface
+    # preset must survive as a primitive of that shell.
+    wall_materials = {
+        str(scene.geometry[scene.graph[node][1]].visual.material.name)
+        for node in nodes if node.startswith("Wall_Shell")
+    }
+    assert wall_materials == {
+        "PBR_metal", "PBR_masked_panel", "PBR_opaque_panel", "PBR_painted_wall",
+    }
     assert material_for("Floor_000") == "PBR_glass"
     assert material_for("Floor_001") == "PBR_wood"
     assert material_for("DoorJamb_000") == "PBR_wood"

@@ -182,7 +182,7 @@ def scalar_material(name: str, payload: dict) -> bpy.types.Material:
         metallic = max(0.0, min(1.0, float(payload.get("metallic", 0.0))))
     except (TypeError, ValueError):
         roughness, metallic = 0.65, 0.0
-    return make_pbr(
+    material = make_pbr(
         f"PBR_{material_key(name) or 'fallback'}",
         color,
         roughness=roughness,
@@ -190,6 +190,38 @@ def scalar_material(name: str, payload: dict) -> bpy.types.Material:
         alpha_mode=str(payload.get("alpha_mode") or "OPAQUE").upper(),
         double_sided=bool(payload.get("double_sided", False)),
     )
+    material["texture_scale_m"] = max(0.01, float(payload.get("texture_scale_m") or 1.0))
+    nodes, links = material.node_tree.nodes, material.node_tree.links
+    bsdf = nodes["Principled BSDF"]
+    uv = nodes.new("ShaderNodeUVMap")
+    uv.uv_map = "MaterialUV"
+    for field, socket in (
+        ("base_color_texture", "Base Color"),
+        ("roughness_texture", "Roughness"),
+        ("metallic_texture", "Metallic"),
+        ("normal_texture", "Normal"),
+    ):
+        path = payload.get(field)
+        if not path or not Path(str(path)).is_file():
+            continue
+        try:
+            image = bpy.data.images.load(str(path), check_existing=True)
+        except RuntimeError as exc:
+            print(f"[generate_building] could not load {field} {path}: {exc}")
+            continue
+        image.colorspace_settings.name = "sRGB" if field == "base_color_texture" else "Non-Color"
+        texture = nodes.new("ShaderNodeTexImage")
+        texture.image = image
+        texture.extension = "REPEAT"
+        links.new(uv.outputs["UV"], texture.inputs["Vector"])
+        if field == "normal_texture":
+            normal = nodes.new("ShaderNodeNormalMap")
+            normal.uv_map = "MaterialUV"
+            links.new(texture.outputs["Color"], normal.inputs["Color"])
+            links.new(normal.outputs["Normal"], bsdf.inputs[socket])
+        else:
+            links.new(texture.outputs["Color"], bsdf.inputs[socket])
+    return material
 
 
 def material_for_preset(
@@ -277,6 +309,13 @@ def build_materials() -> None:
             if key:
                 MATERIALS[f"preset:{key}"] = scalar_material(key, payload)
 
+    # Grounded procedural furniture uses the same real surface maps as the
+    # architecture without replacing the user's item list or placements.
+    for role, preset in (("wood", "wood"), ("wood_light", "wood"), ("cabinet", "wood")):
+        mapped = MATERIALS.get(f"preset:{preset}")
+        if mapped is not None:
+            MATERIALS[role] = mapped
+
 
 # ---------------------------------------------------------------------------
 # Geometry helpers
@@ -324,6 +363,26 @@ def wall_vec(wall: dict) -> tuple[Vector, Vector, float, float]:
     return start, end, length, angle
 
 
+def assign_material_uvs() -> None:
+    """Box-project in metres; vertical walls must not collapse onto XY UVs."""
+    for obj in bpy.context.scene.objects:
+        if obj.type != "MESH":
+            continue
+        mesh = obj.data
+        uv = mesh.uv_layers.get("MaterialUV") or mesh.uv_layers.new(name="MaterialUV")
+        mesh.uv_layers.active = uv
+        uv.active_render = True
+        for face in mesh.polygons:
+            material = mesh.materials[face.material_index] if face.material_index < len(mesh.materials) else None
+            scale = float(material.get("texture_scale_m", 1.0)) if material else 1.0
+            normal = face.normal
+            dominant = max(range(3), key=lambda axis: abs(normal[axis]))
+            axes = (1, 2) if dominant == 0 else (0, 2) if dominant == 1 else (0, 1)
+            for loop_index in face.loop_indices:
+                point = mesh.vertices[mesh.loops[loop_index].vertex_index].co
+                uv.data[loop_index].uv = (point[axes[0]] / scale, point[axes[1]] / scale)
+
+
 def opening_interval(opening: dict, wall_length: float | None = None) -> tuple[float, float] | None:
     start, end = opening.get("start_offset_m"), opening.get("end_offset_m")
     if start is not None and end is not None:
@@ -350,6 +409,70 @@ def openings_on_wall(wall_id: str) -> tuple[list[dict], list[dict]]:
     doors = [d for d in PLAN.get("doors", []) if d.get("wall_id") == wall_id]
     windows = [w for w in PLAN.get("windows", []) if w.get("wall_id") == wall_id]
     return doors, windows
+
+
+def normalize_opening_hosts() -> None:
+    """Upgrade legacy indexed hosts in the renderer copy, never the source model."""
+    walls = PLAN.get("walls") or []
+    aliases = {str(index): wall for index, wall in enumerate(walls)}
+    aliases.update({wall["id"]: wall for wall in walls if wall.get("id")})
+    for index, wall in enumerate(walls):
+        if not wall.get("id"):
+            candidate = f"renderer_wall_{index}"
+            while candidate in aliases:
+                candidate += "_"
+            wall["id"] = candidate
+    for opening in [*(PLAN.get("doors") or []), *(PLAN.get("windows") or [])]:
+        wall = aliases.get(str(opening.get("wall_id")))
+        if wall is None and opening.get("wall_id") is None and walls:
+            center = opening.get("center") or {}
+            point = Vector((float(center.get("x", 0)), float(center.get("y", 0)), 0.0))
+            candidates = []
+            for candidate in walls:
+                start, end, length, _angle = wall_vec(candidate)
+                if length <= 0:
+                    continue
+                direction = (end - start) / length
+                offset = min(length, max(0.0, (point - start).dot(direction)))
+                candidates.append(((point - start - direction * offset).length, candidate))
+            if candidates:
+                distance, candidate = min(candidates, key=lambda pair: pair[0])
+                if distance <= max(float(candidate.get("thickness_m") or 0.12) * 3, 0.35):
+                    wall = candidate
+        if wall is None:
+            print(f"[generate_building] opening {opening.get('id')} has no valid wall host")
+            continue
+        opening["wall_id"] = wall["id"]
+        if opening.get("offset_m") is None and opening.get("start_offset_m") is None:
+            start, end, length, _angle = wall_vec(wall)
+            if length > 0:
+                center = opening.get("center") or {}
+                point = Vector((float(center.get("x", 0)), float(center.get("y", 0)), 0.0))
+                opening["offset_m"] = (point - start).dot((end - start) / length)
+
+
+def merge_wall_junctions() -> None:
+    """Remove overlapping interior faces that bake as black squares at junctions."""
+    walls = [obj for obj in bpy.context.scene.objects if obj.type == "MESH" and obj.name.startswith("Wall_")]
+    if len(walls) < 2:
+        return
+    shell = walls[0]
+    operands = bpy.data.collections.new("WallUnionOperands")
+    for wall in walls[1:]:
+        operands.objects.link(wall)
+    modifier = shell.modifiers.new("Continuous_Wall_Shell", "BOOLEAN")
+    modifier.operation = "UNION"
+    modifier.solver = "EXACT"
+    modifier.operand_type = "COLLECTION"
+    modifier.collection = operands
+    if hasattr(modifier, "material_mode"):
+        modifier.material_mode = "TRANSFER"
+    _make_sole_active(shell)
+    bpy.ops.object.modifier_apply(modifier=modifier.name)
+    for wall in walls[1:]:
+        bpy.data.objects.remove(wall, do_unlink=True)
+    bpy.data.collections.remove(operands)
+    shell.name = "Wall_Shell"
 
 
 def build_wall(wall: dict, index: int) -> bpy.types.Object:
@@ -397,7 +520,7 @@ def build_wall(wall: dict, index: int) -> bpy.types.Object:
         o_start, o_end = interval
         width = o_end - o_start
         window_height = float(opening.get("height_m") or 1.2)
-        sill = float(opening.get("sill_height_m") or 0.9)
+        sill = float(opening.get("sill_height_m", 0.9))
         local = (o_start + o_end) / 2
         position = start + Vector((math.cos(angle), math.sin(angle), 0.0)) * local
         cutters.append(
@@ -432,9 +555,11 @@ def build_wall(wall: dict, index: int) -> bpy.types.Object:
 
 def build_polygon_slab(name: str, points: list[dict], z: float, thickness: float, material: bpy.types.Material) -> bpy.types.Object | None:
     coords = [Vector((p["x"], p["y"], 0.0)) for p in points]
+    if len(coords) > 1 and coords[0] == coords[-1]:
+        coords.pop()
     if len(coords) < 3:
         return None
-    triangles = tessellate_polygon([coords])
+    triangles = triangulate_indices(coords)
     if not triangles:
         return None
     mesh = bpy.data.meshes.new(name)
@@ -466,6 +591,15 @@ def build_polygon_slab(name: str, points: list[dict], z: float, thickness: float
     obj = bpy.data.objects.new(name, mesh)
     obj.data.materials.append(material)
     return link(obj)
+
+
+def triangulate_indices(coords: list[Vector]) -> list[tuple[int, int, int]]:
+    """Normalize mathutils tessellation across Blender's supported versions."""
+    lookup = {tuple(point): index for index, point in enumerate(coords)}
+    return [
+        tuple(vertex if isinstance(vertex, int) else lookup[tuple(vertex)] for vertex in triangle)
+        for triangle in tessellate_polygon([coords])
+    ]
 
 
 def polygon_area(points: list[dict]) -> float:
@@ -511,7 +645,7 @@ def build_floors(rooms: list[dict], walls: list[dict]) -> None:
                 ),
             )
         return
-    if rooms and room_floor_coverage(rooms, walls) >= MIN_ROOM_FLOOR_COVERAGE:
+    if rooms and (not walls or room_floor_coverage(rooms, walls) >= MIN_ROOM_FLOOR_COVERAGE):
         for index, room in enumerate(rooms):
             build_polygon_slab(
                 f"Floor_{index:03d}",
@@ -653,7 +787,7 @@ def build_window_assets(window: dict, walls_by_id: dict, index: int) -> None:
     o_start, o_end = interval
     width = o_end - o_start
     height = float(window.get("height_m") or 1.2)
-    sill = float(window.get("sill_height_m") or 0.9)
+    sill = float(window.get("sill_height_m", 0.9))
     thickness = float(wall.get("thickness_m") or 0.12)
     direction = Vector((math.cos(angle), math.sin(angle), 0.0))
     mid = start + direction * ((o_start + o_end) / 2)
@@ -1466,7 +1600,17 @@ def build_procedural_asset(item: dict, prefix: str, category: str) -> None:
 
 def build_furniture(item: dict, index: int) -> None:
     category = safe_name(item.get("category") or "unknown")
-    build_procedural_asset(item, f"Furniture_{index:03d}_{category}", category)
+    prefix = f"Furniture_{index:03d}_{category}"
+    build_procedural_asset(item, prefix, category)
+    if item.get("height_m") is not None:
+        parts = [obj for obj in bpy.context.scene.objects if obj.name.startswith(prefix + "_") and obj.type == "MESH"]
+        bpy.context.view_layer.update()
+        top = max((float((obj.matrix_world @ Vector(corner)).z) for obj in parts for corner in obj.bound_box), default=0.0)
+        if top > 1e-6:
+            scale = float(item["height_m"]) / top
+            for obj in parts:
+                obj.location.z *= scale
+                obj.scale.z *= scale
 
 
 def build_special_element(element: dict, index: int) -> None:
@@ -1512,6 +1656,42 @@ def build_special_element(element: dict, index: int) -> None:
 # Lighting
 
 
+def point_in_room(x: float, y: float, points: list[dict]) -> bool:
+    inside = False
+    for index, a in enumerate(points):
+        b = points[(index + 1) % len(points)]
+        if (a["y"] > y) != (b["y"] > y):
+            crossing = (b["x"] - a["x"]) * (y - a["y"]) / (b["y"] - a["y"]) + a["x"]
+            if x < crossing:
+                inside = not inside
+    return inside
+
+
+def room_light_positions(points: list[dict]) -> list[tuple[float, float]]:
+    """Distribute lights inside a room, including narrow or concave floor plans."""
+    if len(points) < 3 or polygon_area(points) <= 1e-8:
+        return []
+    xs, ys = [p["x"] for p in points], [p["y"] for p in points]
+    nx = max(1, min(8, math.ceil((max(xs) - min(xs)) / 3.0)))
+    ny = max(1, min(8, math.ceil((max(ys) - min(ys)) / 3.0)))
+    positions = []
+    for ix in range(nx):
+        for iy in range(ny):
+            x = min(xs) + (ix + 0.5) * (max(xs) - min(xs)) / nx
+            y = min(ys) + (iy + 0.5) * (max(ys) - min(ys)) / ny
+            if point_in_room(x, y, points):
+                positions.append((x, y))
+    if positions:
+        return positions
+    coords = [Vector((p["x"], p["y"], 0.0)) for p in points]
+    triangles = triangulate_indices(coords)
+    if not triangles:
+        return []
+    triangle = max(triangles, key=lambda tri: (coords[tri[1]] - coords[tri[0]]).cross(coords[tri[2]] - coords[tri[0]]).length)
+    center = sum((coords[index] for index in triangle), Vector()) / 3
+    return [(center.x, center.y)]
+
+
 def build_lighting() -> None:
     world = bpy.data.worlds.new("World")
     bpy.context.scene.world = world
@@ -1545,22 +1725,22 @@ def build_lighting() -> None:
         points = room.get("points", [])
         if len(points) < 3:
             continue
-        cx = sum(p["x"] for p in points) / len(points)
-        cy = sum(p["y"] for p in points) / len(points)
-        xs = [p["x"] for p in points]
-        ys = [p["y"] for p in points]
-        area = abs((max(xs) - min(xs)) * (max(ys) - min(ys)))
-        light_data = bpy.data.lights.new(f"RoomLight_{index:03d}", "POINT")
-        # These are bake-level watts.  The previous 300-1200 W workaround hid
-        # inward geometry normals by clipping most correctly facing texels to
-        # white; ordinary residential powers preserve usable tonal range.
-        light_data.energy = max(25.0, min(120.0, area * 6.0))
-        light_data.color = (1.0, 0.82, 0.66)
-        light_data.shadow_soft_size = 0.35
-        light = bpy.data.objects.new(f"RoomLight_{index:03d}", light_data)
-        height = float(PLAN.get("walls", [{}])[0].get("height_m") or WALL_HEIGHT_DEFAULT)
-        light.location = (cx, cy, height - 0.35)
-        link(light)
+        positions = room_light_positions(points)
+        area = polygon_area(points)
+        walls = PLAN.get("walls") or []
+        height = min((float(w.get("height_m") or WALL_HEIGHT_DEFAULT) for w in walls), default=WALL_HEIGHT_DEFAULT)
+        ceiling = PLAN.get("ceiling") or {}
+        if ceiling.get("enabled"):
+            height = min(height, float(ceiling.get("height_m") or height))
+        for fixture_index, (cx, cy) in enumerate(positions):
+            name = f"RoomLight_{index:03d}_{fixture_index:02d}"
+            light_data = bpy.data.lights.new(name, "POINT")
+            light_data.energy = max(12.0, min(80.0, area * 6.0 / len(positions)))
+            light_data.color = (1.0, 0.90, 0.78)
+            light_data.shadow_soft_size = 0.22
+            light = bpy.data.objects.new(name, light_data)
+            light.location = (cx, cy, max(0.3, height - 0.3))
+            link(light)
 
 
 def tune_realtime_lights_for_export() -> None:
@@ -1575,15 +1755,20 @@ def tune_realtime_lights_for_export() -> None:
         if obj.type != "LIGHT":
             continue
         light = obj.data
+        light["bake_energy"] = float(light.energy)
         if light.type == "SUN":
-            light.energy = min(float(light.energy), 1.5)
+            # The glTF exporter converts Blender watts to photometric units
+            # using 683 lm/W. Calibrate the exported lux/candela, not watts:
+            # exporting 0.1 W/m² used to create a 68-lux browser key light.
+            light.energy = 1.2 / 683.0
             continue
         if light.type != "POINT":
             continue
         if MODE == "none":
-            light.energy = max(18.0, min(55.0, float(light.energy) * 0.45))
+            intensity_cd = max(6.0, min(18.0, float(light.energy) * 0.30))
         else:
-            light.energy = max(12.0, min(35.0, float(light.energy) * 0.28))
+            intensity_cd = max(4.0, min(12.0, float(light.energy) * 0.20))
+        light.energy = intensity_cd * (4.0 * math.pi) / 683.0
 
 
 # ---------------------------------------------------------------------------
@@ -1613,7 +1798,7 @@ def join_objects(names_prefixes: list[str], joined_name: str) -> bpy.types.Objec
 
 def bake_object_lightmap(obj: bpy.types.Object, image_name: str, resolution: int) -> bpy.types.Image:
     lightmap = bpy.data.images.new(image_name, resolution, resolution, alpha=False, float_buffer=False)
-    uv_layer = obj.data.uv_layers.new(name="LightmapUV")
+    uv_layer = obj.data.uv_layers.get("LightmapUV") or obj.data.uv_layers.new(name="LightmapUV")
     obj.data.uv_layers.active = uv_layer
     _make_sole_active(obj)
     bpy.ops.object.mode_set(mode="EDIT")
@@ -1677,6 +1862,7 @@ def run_bake() -> None:
         # its static collision mesh by their stable DoorLeaf_* names.
         (["Baseboard_", "DoorJamb_", "DoorHeader_", "WindowFrame_", "WindowJamb_"], "Trim_Joined", max(512, LIGHTMAP_PX // 2)),
     ]
+    baked_groups = []
     for prefixes, joined_name, resolution in groups:
         joined = join_objects(prefixes, joined_name)
         if joined is None:
@@ -1692,7 +1878,27 @@ def run_bake() -> None:
             else:
                 raise
         lightmap.pack()
+        baked_groups.append((joined, lightmap, list(joined.data.materials)))
+    # Every bake must see the same original PBR surfaces. Rewiring one group
+    # early turns its already-lit pixels into emitters during the next bake.
+    for joined, lightmap, original_materials in baked_groups:
         rewire_to_baked(joined, lightmap)
+        if joined.name == "Walls_Joined":
+            # The ceiling occludes these faces during baking. Keep exposed
+            # cutaway tops in their surface material when the roof is hidden,
+            # without adding overlapping geometry or changing collisions.
+            top_height = min(float(w.get("height_m") or WALL_HEIGHT_DEFAULT) for w in PLAN["walls"])
+            restored = {}
+            for face in joined.data.polygons:
+                if face.normal.z < 0.999:
+                    continue
+                if (joined.matrix_world @ face.center).z < top_height - 0.001:
+                    continue
+                source_index = face.material_index
+                if source_index not in restored:
+                    restored[source_index] = len(joined.data.materials)
+                    joined.data.materials.append(original_materials[source_index])
+                face.material_index = restored[source_index]
 
 
 # ---------------------------------------------------------------------------
@@ -1707,12 +1913,14 @@ def main() -> None:
     device = enable_gpu_if_available() if MODE != "none" else "n/a"
     print(f"[generate_building] mode={MODE} samples={SAMPLES} lightmap={LIGHTMAP_PX} device={device}")
     build_materials()
+    normalize_opening_hosts()
 
     walls = PLAN.get("walls", [])
     walls_by_id = {w.get("id"): w for w in walls if w.get("id")}
     for index, wall in enumerate(walls):
         build_wall(wall, index)
         build_baseboards(wall, index)
+    merge_wall_junctions()
 
     rooms = PLAN.get("rooms", [])
     build_floors(rooms, walls)
@@ -1755,6 +1963,7 @@ def main() -> None:
     for index, element in enumerate(PLAN.get("special_elements", [])):
         build_special_element(element, index)
 
+    assign_material_uvs()
     build_lighting()
 
     if MODE != "none":
