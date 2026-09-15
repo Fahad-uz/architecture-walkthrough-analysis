@@ -560,10 +560,20 @@ def _suppress_repetitive_detail_bands(
     # stair centre/stringer or a hatch stroke, not a full-height wall.  Keep
     # perimeter faces by protecting a margin along the region's two sides.
     for band in bands:
-        if id(band) in rejected_ids or band.thickness_px > thin_limit:
+        if id(band) in rejected_ids:
             continue
         for region in regions:
             if band.orientation == region.orientation:
+                continue
+            # A stair center/stringer is often a close double line. Closing
+            # hollow strokes fuses it into a thicker band than the treads.
+            # Limit this exception to recognized stairs and half a tread pitch
+            # so a substantial partition across the field remains structural.
+            stringer_limit = (
+                max(thin_limit, min(thin_limit * 2.0, region.spacing_px * 0.5))
+                if region.is_stair_like() else thin_limit
+            )
+            if band.thickness_px > stringer_limit:
                 continue
             x, y, width, height = region.rect
             edge_margin = max(3.0, region.spacing_px * 0.35)
@@ -624,7 +634,8 @@ def _pair_parallel_wall_faces(
             second_length = second_end - second_start
             overlap = max(0.0, min(first_end, second_end) - max(first_start, second_start))
             overlap_ratio = overlap / max(first_length, second_length, 1.0)
-            if overlap_ratio < 0.72:
+            shorter_coverage = overlap / max(min(first_length, second_length), 1.0)
+            if overlap_ratio < 0.55 or shorter_coverage < 0.90:
                 continue
             separation_score = abs(separation - target_separation) / max(target_separation, 1.0)
             pair_candidates.append((overlap_ratio - separation_score * 0.12, first_index, second_index))
@@ -638,9 +649,15 @@ def _pair_parallel_wall_faces(
         paired_ids.update((id(first), id(second)))
         orientation = first.orientation
         coordinate = (_band_coordinate(first) + _band_coordinate(second)) / 2.0
-        span_start = min(_band_span(first)[0], _band_span(second)[0])
-        span_end = max(_band_span(first)[1], _band_span(second)[1])
         separation = abs(_band_coordinate(second) - _band_coordinate(first))
+        # Only the overlap is evidence of a physical wall. CAD dimension
+        # extension lines often continue one face far beyond the other; a
+        # union turns those measurement tails into phantom walls/rooms.
+        # Half a wall width reaches the adjoining wall's centerline at corners.
+        starts = (_band_span(first)[0], _band_span(second)[0])
+        ends = (_band_span(first)[1], _band_span(second)[1])
+        span_start = max(min(starts), max(starts) - separation / 2.0)
+        span_end = min(max(ends), min(ends) + separation / 2.0)
         thickness = separation + (first.thickness_px + second.thickness_px) / 2.0
         rect = (
             (span_start, coordinate - thickness / 2.0, span_end - span_start, thickness)
@@ -665,6 +682,26 @@ def _pair_parallel_wall_faces(
         )
 
     unpaired = [band for band in available if id(band) not in paired_ids]
+    # In an outlined plan, long isolated hairlines outside the envelope formed
+    # by paired faces are dimension annotations. Single-line plans have no
+    # such evidence, so their exterior lines must remain untouched.
+    if len(pairs) >= 3 and {pair.orientation for pair in pairs} == {"h", "v"}:
+        structural = [*pairs, *(band for band in unpaired if band.thickness_px > thin_limit)]
+        min_x = min(min(band.centerline[0], band.centerline[2]) for band in structural)
+        max_x = max(max(band.centerline[0], band.centerline[2]) for band in structural)
+        min_y = min(min(band.centerline[1], band.centerline[3]) for band in structural)
+        max_y = max(max(band.centerline[1], band.centerline[3]) for band in structural)
+        margin = max(3.0, max_separation / 2.0)
+        unpaired = [
+            band for band in unpaired
+            if band.thickness_px > thin_limit
+            or _band_span(band)[1] - _band_span(band)[0] < basis * 0.20
+            or (
+                min_y - margin <= _band_coordinate(band) <= max_y + margin
+                if band.orientation == "h"
+                else min_x - margin <= _band_coordinate(band) <= max_x + margin
+            )
+        ]
     return [*unpaired, *pairs]
 
 
@@ -853,6 +890,11 @@ def detect_wall_bands(
     )
     rejected_detail_bands.extend(dense_rejected_bands)
     repetitive_detail_regions.extend(dense_regions)
+    # Join fragments on the same measured face before pairing its opposite
+    # face. A perpendicular wall can split one face into multiple components.
+    structural_bands = _merge_collinear_bands(
+        structural_bands, min(2.0, coordinate_tolerance_px), gap_tolerance_px,
+    )
     structural_bands = _pair_parallel_wall_faces(structural_bands, (height, width))
     structural_bands.extend([*recovered_h, *recovered_v, *recovered_sides])
     bands = _merge_collinear_bands(structural_bands, coordinate_tolerance_px, gap_tolerance_px)
