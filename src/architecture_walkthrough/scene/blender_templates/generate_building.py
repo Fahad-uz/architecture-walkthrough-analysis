@@ -1080,6 +1080,47 @@ def build_table(item: dict, prefix: str, width: float, depth: float, coffee: boo
             )
 
 
+def asset_revolved_shell(
+    prefix: str,
+    item: dict,
+    part: str,
+    profile: list[tuple[float, float]],
+    width: float,
+    depth: float,
+    local_y: float,
+) -> bpy.types.Object:
+    """Revolve a closed ceramic profile, retaining the bowl's open cavity."""
+    segments = 32
+    rings = profile[:-1] if profile[0] == profile[-1] else profile
+    verts = [
+        (width / 2 * radius * math.cos(math.tau * index / segments),
+         depth / 2 * radius * math.sin(math.tau * index / segments), z)
+        for radius, z in rings
+        for index in range(segments)
+    ]
+    faces = []
+    for ring in range(len(rings)):
+        following_ring = (ring + 1) % len(rings)
+        for index in range(segments):
+            following_index = (index + 1) % segments
+            faces.append((ring * segments + index, ring * segments + following_index,
+                          following_ring * segments + following_index,
+                          following_ring * segments + index))
+    name = f"{prefix}_{safe_name(part)}"
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(verts, [], faces)
+    mesh.update()
+    for polygon in mesh.polygons:
+        polygon.use_smooth = True
+    x, y = oriented_xy(item, 0, local_y)
+    obj = bpy.data.objects.new(name, mesh)
+    obj.location = Vector((x, y, 0))
+    obj.rotation_euler.z = math.radians(float(item.get("rotation_deg") or 0.0))
+    obj.data.materials.append(MATERIALS["fixture"])
+    link(obj)
+    return obj
+
+
 def asset_family(category: str) -> str:
     """Resolve specific semantic categories before broad room-like tokens."""
     normalized = category.lower().replace("-", "_").replace(" ", "_")
@@ -1101,11 +1142,13 @@ def asset_family(category: str) -> str:
         return "bed"
     if "sofa" in tokens or "couch" in tokens:
         return "sofa"
-    if {"wardrobe", "cabinet", "shelf", "closet"} & tokens:
+    if {"wardrobe", "cabinet", "shelf", "bookshelf", "bookcase", "closet"} & tokens:
         return "wardrobe"
+    if "toilet" in tokens or "wc" in tokens:
+        return "toilet"
     if "counter" in tokens or "kitchen" in tokens:
         return "counter"
-    if {"bath", "bathtub", "toilet", "fixture"} & tokens or "bath" in normalized:
+    if {"bath", "bathtub", "fixture"} & tokens or "bath" in normalized:
         return "fixture"
     if "rug" in tokens or "carpet" in tokens:
         return "rug"
@@ -1521,6 +1564,28 @@ def build_procedural_asset(item: dict, prefix: str, category: str) -> None:
                 )
         return
 
+    if family == "toilet":
+        asset_cylinder(prefix, item, "Pedestal", 0, -depth * 0.09,
+                       width * 0.48, depth * 0.43, 0.28, 0.14, "fixture", segments=24)
+        asset_revolved_shell(
+            prefix, item, "Bowl",
+            [(0.48, 0.18), (0.90, 0.36), (0.94, 0.44), (0.78, 0.44),
+             (0.58, 0.27), (0.12, 0.22), (0.12, 0.18), (0.48, 0.18)],
+            width, depth * 0.74, -depth * 0.12,
+        )
+        asset_revolved_shell(
+            prefix, item, "Seat",
+            [(0.78, 0.44), (0.99, 0.44), (0.99, 0.48), (0.78, 0.48), (0.78, 0.44)],
+            width, depth * 0.74, -depth * 0.12,
+        )
+        asset_box(prefix, item, "Cistern", 0, depth * 0.36,
+                  width * 0.88, depth * 0.24, 0.38, 0.57, "fixture", bevel_width=0.035)
+        asset_box(prefix, item, "Cistern_Lid", 0, depth * 0.36,
+                  width * 0.92, depth * 0.27, 0.035, 0.7775, "fixture", bevel_width=0.009)
+        asset_cylinder(prefix, item, "Flush_Button", 0, depth * 0.36,
+                       width * 0.12, depth * 0.08, 0.012, 0.801, "metal", segments=12)
+        return
+
     if family == "fixture":
         asset_box(prefix, item, "Body", 0, 0, width, depth, 0.38, 0.22, "fixture")
         asset_box(prefix, item, "Inset", 0, -depth * 0.05, width * 0.68, depth * 0.67, 0.08, 0.43, "metal")
@@ -1934,7 +1999,11 @@ def main() -> None:
     if rooms and ceiling.get("enabled", False):
         ceiling_height = float(ceiling.get("height_m") or WALL_HEIGHT_DEFAULT)
         ceiling_thickness = float(ceiling.get("thickness_m") or CEILING_THICKNESS)
+        void_ids = (PLAN.get("metadata") or {}).get("ceiling_void_room_ids", [])
+        void_ids = void_ids if isinstance(void_ids, list) else []
         for index, room in enumerate(rooms):
+            if room.get("id") in void_ids:
+                continue
             build_polygon_slab(
                 f"Ceiling_{index:03d}",
                 room.get("points", []),

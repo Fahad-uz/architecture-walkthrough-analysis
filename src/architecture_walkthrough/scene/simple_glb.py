@@ -886,6 +886,54 @@ def _fixture_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
     ]
 
 
+def _toilet_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
+    """A close-coupled toilet with an open bowl, distinct seat and rear cistern."""
+    width, depth = item.width_m, item.depth_m
+
+    def revolved_part(profile: list[tuple[float, float]], name: str) -> trimesh.Trimesh:
+        mesh = trimesh.creation.revolve(np.asarray(profile), sections=24)
+        mesh.apply_scale([width / 2, depth * 0.74 / 2, 1.0])
+        x, y = _oriented_offset(item, 0, -depth * 0.12)
+        transform = trimesh.transformations.rotation_matrix(
+            math.radians(item.rotation_deg), [0, 0, 1]
+        )
+        transform[:3, 3] = [x, y, 0]
+        mesh.apply_transform(transform)
+        return _named(_paint(mesh, COLORS["fixture"]), name)
+
+    return [
+        _named(
+            _cylinder_part(item, 0, -depth * 0.09, width * 0.48, depth * 0.43,
+                           0.28, COLORS["fixture"], 0.14, sections=24),
+            "Pedestal",
+        ),
+        revolved_part(
+            [(0.48, 0.18), (0.90, 0.36), (0.94, 0.44), (0.78, 0.44),
+             (0.58, 0.27), (0.12, 0.22), (0.12, 0.18), (0.48, 0.18)],
+            "Bowl",
+        ),
+        revolved_part(
+            [(0.78, 0.44), (0.99, 0.44), (0.99, 0.48), (0.78, 0.48), (0.78, 0.44)],
+            "Seat",
+        ),
+        _named(
+            _part(item, 0, depth * 0.36, width * 0.88, depth * 0.24,
+                  0.38, COLORS["fixture"], 0.57),
+            "Cistern",
+        ),
+        _named(
+            _part(item, 0, depth * 0.36, width * 0.92, depth * 0.27,
+                  0.035, COLORS["fixture"], 0.7775),
+            "Cistern_Lid",
+        ),
+        _named(
+            _cylinder_part(item, 0, depth * 0.36, width * 0.12, depth * 0.08,
+                           0.012, COLORS["metal"], 0.801, sections=12),
+            "Flush_Button",
+        ),
+    ]
+
+
 def _plant_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
     width = item.width_m
     depth = item.depth_m
@@ -983,12 +1031,14 @@ def _furniture_family(category: str) -> str:
         return "bed"
     if "sofa" in tokens or "couch" in tokens:
         return "sofa"
-    if {"wardrobe", "cabinet", "shelf", "closet"} & tokens:
+    if {"wardrobe", "cabinet", "shelf", "bookshelf", "bookcase", "closet"} & tokens:
         return "wardrobe"
+    if "toilet" in tokens or "wc" in tokens:
+        return "toilet"
     # Kitchen sinks and stoves have already been handled above.
     if "counter" in tokens or "kitchen" in tokens:
         return "counter"
-    if {"fixture", "toilet", "bath", "bathtub"} & tokens or "bath" in normalized:
+    if {"fixture", "bath", "bathtub"} & tokens or "bath" in normalized:
         return "fixture"
     if "plant" in tokens:
         return "plant"
@@ -1032,6 +1082,8 @@ def _furniture_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
         return _counter_meshes(item)
     if family == "fixture":
         return _fixture_meshes(item)
+    if family == "toilet":
+        return _toilet_meshes(item)
     if family == "plant":
         return _plant_meshes(item)
     if family == "rug":
@@ -1172,11 +1224,14 @@ def export_simple_glb(model: FloorPlanModel, output_glb: Path) -> Path:
             )
 
     if model.ceiling.enabled and model.rooms:
-        for index, mesh in enumerate(
-            ceiling_meshes(
-                model.rooms, model.ceiling.height_m, model.ceiling.thickness_m, COLORS["wall"]
-            )
-        ):
+        void_ids = model.metadata.get("ceiling_void_room_ids", [])
+        void_ids = void_ids if isinstance(void_ids, list) else []
+        for index, room in enumerate(model.rooms):
+            if room.id in void_ids:
+                continue
+            mesh = ceiling_meshes(
+                [room], model.ceiling.height_m, model.ceiling.thickness_m, COLORS["wall"]
+            )[0]
             scene.add_geometry(
                 apply_planar_uv(mesh),
                 node_name=f"Ceiling_{index:03d}",
