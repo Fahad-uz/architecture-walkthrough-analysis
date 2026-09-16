@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import cv2
 import numpy as np
+import pytest
 
 from architecture_walkthrough.vision.ocr import (
     AutoOCRBackend,
@@ -150,6 +151,70 @@ def test_dimension_parser_accepts_unicode_multiplication_sign() -> None:
     assert parsed is not None
     assert parsed.width_m == 3.0
     assert parsed.height_m == 4.0
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Bedroom (10'3 x 12')", (3.1242, 3.6576)),
+        ("(4'9\"x8')", (1.4478, 2.4384)),
+        ("(8'6\" x 5')", (2.5908, 1.524)),
+        ("(10'6\"x10')", (3.2004, 3.048)),
+        ("Study room (10' x 7'10\")", (3.048, 2.3876)),
+        ("14′ × 12′", (4.2672, 3.6576)),
+        ("10’–6” by 12’–0”", (3.2004, 3.6576)),
+        ("10ft6in x 12ft", (3.2004, 3.6576)),
+        ("10 feet 6 inches by 12 feet", (3.2004, 3.6576)),
+        ("10'6 1/2\" x 12'", (3.2131, 3.6576)),
+        ("10′6½″ x 12′", (3.2131, 3.6576)),
+        ("10 x 12 ft", (3.048, 3.6576)),
+    ],
+)
+def test_dimension_parser_preserves_complete_imperial_operands(text, expected) -> None:
+    parsed = parse_dimension_pair(text)
+
+    assert parsed is not None
+    assert (parsed.width_m, parsed.height_m) == pytest.approx(expected)
+    assert parsed.unit == "ft"
+    assert parsed.source_text == text
+    assert classify_text(text) == "dimension"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("599X340", (5.99, 3.4)),
+        ("3.2 x 4.1 m", (3.2, 4.1)),
+        ("300cmx400cm", (3.0, 4.0)),
+        ("3000mmx4000mm", (3.0, 4.0)),
+        ("3000 x 4000 mm", (3.0, 4.0)),
+        ("120\" x 144\"", (3.048, 3.6576)),
+        ("3 m x 12 ft", (3.0, 3.6576)),
+    ],
+)
+def test_dimension_parser_preserves_metric_and_explicit_mixed_units(text, expected) -> None:
+    parsed = parse_dimension_pair(text)
+
+    assert parsed is not None
+    assert (parsed.width_m, parsed.height_m) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("text", ["10'13 x 12'", "10'6/0\" x 12'", '86\"x5'])
+def test_invalid_imperial_ocr_is_rejected_without_breaking_classification(text) -> None:
+    with pytest.raises(ValueError):
+        parse_dimension_pair(text)
+
+    assert classify_text(text) == "text"
+    assert classify_text(f"Toilet {text}") == "room_label"
+
+
+@pytest.mark.parametrize("text", ["10'3/ x 12'", "10'3 x 12'broken", "abc3 x 4m"])
+def test_dimension_parser_does_not_salvage_partial_tokens(text) -> None:
+    assert parse_dimension_pair(text) is None
+
+
+def test_study_room_is_a_room_label() -> None:
+    assert classify_text("Study room") == "room_label"
 
 
 def test_furniture_detection_rejects_colored_text_plaque(tmp_path: Path) -> None:
