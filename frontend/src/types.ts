@@ -55,6 +55,7 @@ export interface FurniturePlacement {
   width_m: number;
   depth_m: number;
   rotation_deg?: number;
+  height_m?: number | null;
 }
 
 export interface AssetPlacement extends FurniturePlacement {

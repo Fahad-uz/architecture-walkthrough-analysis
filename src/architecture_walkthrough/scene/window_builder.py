@@ -23,21 +23,30 @@ def window_meshes(
     frame_color: tuple[int, int, int, int],
     glass_color: tuple[int, int, int, int],
 ) -> list[trimesh.Trimesh]:
-    offset = window.offset_m if window.offset_m is not None else point_offset_on_wall(wall, window.center)
+    interval = window.interval(window.width_m)
+    if interval is None:
+        offset = point_offset_on_wall(wall, window.center)
+        interval = (offset - window.width_m / 2, offset + window.width_m / 2)
+    start = max(0.0, interval[0])
+    end = min(wall.start.distance_to(wall.end), interval[1])
+    width = end - start
+    if width < 0.18:
+        return []
+    offset = (start + end) / 2
     angle = math.atan2(wall.end.y - wall.start.y, wall.end.x - wall.start.x)
     x = wall.start.x + offset * math.cos(angle)
     y = wall.start.y + offset * math.sin(angle)
     z = window.sill_height_m + window.height_m / 2
     transform = trimesh.transformations.rotation_matrix(angle, [0, 0, 1])
     transform[:3, 3] = [x, y, z]
-    glass = trimesh.creation.box(extents=[window.width_m, 0.025, window.height_m], transform=transform)
+    glass = trimesh.creation.box(extents=[width, 0.025, window.height_m], transform=transform)
     top_bottom = []
     for dz in (-window.height_m / 2, window.height_m / 2):
         t = transform.copy()
         t[:3, 3] = [x, y, z + dz]
-        top_bottom.append(trimesh.creation.box(extents=[window.width_m + 0.08, 0.06, 0.06], transform=t))
+        top_bottom.append(trimesh.creation.box(extents=[width + 0.08, 0.06, 0.06], transform=t))
     sides = []
-    for sx in (-window.width_m / 2, window.width_m / 2):
+    for sx in (-width / 2, width / 2):
         t = trimesh.transformations.rotation_matrix(angle, [0, 0, 1])
         t[:3, 3] = [x + sx * math.cos(angle), y + sx * math.sin(angle), z]
         sides.append(trimesh.creation.box(extents=[0.06, 0.06, window.height_m], transform=t))

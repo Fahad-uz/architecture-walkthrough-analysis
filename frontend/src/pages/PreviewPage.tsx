@@ -4,11 +4,12 @@ import { EffectComposer, N8AO, SMAA, ToneMapping } from "@react-three/postproces
 import { ToneMappingMode } from "postprocessing";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ACESFilmicToneMapping, Box3, PerspectiveCamera, SRGBColorSpace, Vector3 } from "three";
+import { Box3, NoToneMapping, Object3D, PerspectiveCamera, SRGBColorSpace, Vector3 } from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { getJob, versionedGlbUrl } from "../api";
 import NeutralEnvironment from "../components/NeutralEnvironment";
 import SceneErrorBoundary from "../components/SceneErrorBoundary";
+import ModelShadows from "../components/ModelShadows";
 import type { JobRecord } from "../types";
 import useCoarsePointer from "../useCoarsePointer";
 
@@ -20,16 +21,29 @@ function FramedBuilding({
   url,
   resetNonce,
   showCeiling,
+  previewLighting,
+  coarsePointer,
 }: {
   url: string;
   resetNonce: number;
   showCeiling: boolean;
+  previewLighting: boolean;
+  coarsePointer: boolean;
 }) {
   const { scene } = useGLTF(url, "/draco/");
   // useGLTF caches its scene. Clone the node hierarchy so a roof visibility
   // change here cannot leak into the walkthrough's cached copy.
   const model = useMemo(() => scene.clone(true), [scene]);
   const camera = useThree((s) => s.camera);
+  const viewportSize = useThree((s) => s.size);
+  const bounds = useMemo(() => new Box3().setFromObject(model), [model]);
+  const center = useMemo(() => bounds.getCenter(new Vector3()), [bounds]);
+  const maxDim = useMemo(() => Math.max(...bounds.getSize(new Vector3()).toArray(), 1), [bounds]);
+  const sunTarget = useMemo(() => {
+    const target = new Object3D();
+    target.position.copy(center);
+    return target;
+  }, [center]);
   const controls = useThree((s) => s.controls) as OrbitControlsImpl | null;
 
   useEffect(() => {
@@ -40,13 +54,15 @@ function FramedBuilding({
 
   useEffect(() => {
     if (!controls) return;
-    const box = new Box3().setFromObject(model);
-    if (box.isEmpty()) return;
-    const center = box.getCenter(new Vector3());
-    const size = box.getSize(new Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z, 1);
-    const distance = maxDim * 1.5;
-    camera.position.set(center.x + distance * 0.75, center.y + distance * 0.65, center.z + distance * 0.75);
+    if (bounds.isEmpty()) return;
+    const radius = bounds.getSize(new Vector3()).length() / 2;
+    let distance = maxDim * 1.5;
+    if (camera instanceof PerspectiveCamera) {
+      const verticalFov = camera.fov * Math.PI / 180;
+      const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * viewportSize.width / Math.max(viewportSize.height, 1));
+      distance = radius / Math.sin(Math.min(verticalFov, horizontalFov) / 2) * 1.12;
+    }
+    camera.position.copy(center).add(new Vector3(0.65, 1.2, 0.75).normalize().multiplyScalar(distance));
     if (camera instanceof PerspectiveCamera) {
       camera.near = Math.max(0.01, distance / 1000);
       camera.far = distance * 40;
@@ -54,11 +70,34 @@ function FramedBuilding({
     }
     controls.target.copy(center);
     controls.minDistance = maxDim * 0.15;
-    controls.maxDistance = maxDim * 6;
+    controls.maxDistance = Math.max(maxDim * 6, distance * 2);
     controls.update();
-  }, [model, controls, camera, resetNonce]);
+  }, [bounds, center, maxDim, controls, camera, resetNonce, viewportSize.width, viewportSize.height]);
 
-  return <primitive object={model} />;
+  return <>
+    <primitive object={model} />
+    <ModelShadows model={model} coarsePointer={coarsePointer} revision={Number(showCeiling)} />
+    {previewLighting && <>
+      <primitive object={sunTarget} />
+      <directionalLight
+        position={[center.x + maxDim * 0.6, center.y + maxDim, center.z + maxDim * 0.8]}
+        target={sunTarget}
+        intensity={1.1}
+        color="#fff3e0"
+        castShadow
+        shadow-mapSize-width={coarsePointer ? 512 : 1024}
+        shadow-mapSize-height={coarsePointer ? 512 : 1024}
+        shadow-bias={-0.00015}
+        shadow-normalBias={0.025}
+        shadow-camera-left={-maxDim}
+        shadow-camera-right={maxDim}
+        shadow-camera-top={maxDim}
+        shadow-camera-bottom={-maxDim}
+        shadow-camera-near={0.1}
+        shadow-camera-far={maxDim * 5}
+      />
+    </>}
+  </>;
 }
 
 function ModelLoadingOverlay() {
@@ -84,6 +123,8 @@ export default function PreviewPage() {
   useEffect(() => {
     let cancelled = false;
     let timer: number | null = null;
+    setJob(null);
+    setRefreshError(null);
     const refresh = async () => {
       try {
         const latest = await getJob(jobId);
@@ -174,21 +215,21 @@ export default function PreviewPage() {
               aria-label="Interactive 3D building preview"
               camera={{ position: [8, 9, 8], fov: coarsePointer ? 58 : 50 }}
               dpr={coarsePointer ? [1, 1.25] : [1, 1.75]}
-              gl={{ toneMapping: ACESFilmicToneMapping, outputColorSpace: SRGBColorSpace }}
+              shadows
+              gl={{ toneMapping: NoToneMapping, outputColorSpace: SRGBColorSpace }}
             >
               <color attach="background" args={["#c9ced3"]} />
               <NeutralEnvironment />
               <ambientLight intensity={0.32} />
               <hemisphereLight intensity={0.34} color="#ffffff" groundColor="#8f9498" />
-              {job?.glb_source === "preview" && (
-                <directionalLight position={[6, 12, 6]} intensity={0.9} />
-              )}
               <Suspense fallback={null}>
                 <FramedBuilding
                   key={sceneResetKey}
                   url={url}
                   resetNonce={resetNonce}
                   showCeiling={showCeiling}
+                  previewLighting={job?.glb_source === "preview"}
+                  coarsePointer={coarsePointer}
                 />
               </Suspense>
               <OrbitControls
@@ -197,9 +238,8 @@ export default function PreviewPage() {
                 dampingFactor={0.08}
                 maxPolarAngle={Math.PI * 0.495}
               />
-              {!baked && (
-                <EffectComposer multisampling={0}>
-                  <N8AO
+              <EffectComposer multisampling={0}>
+                  {[...(!baked ? [<N8AO key="ao"
                     screenSpaceRadius
                     aoRadius={32}
                     intensity={1.8}
@@ -207,11 +247,10 @@ export default function PreviewPage() {
                     quality={coarsePointer ? "performance" : "medium"}
                     halfRes={coarsePointer}
                     depthAwareUpsampling
-                  />
-                  <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
-                  <SMAA />
-                </EffectComposer>
-              )}
+                  />] : []),
+                  <ToneMapping key="tone" mode={ToneMappingMode.ACES_FILMIC} />,
+                  <SMAA key="antialias" />]}
+              </EffectComposer>
             </Canvas>
           </SceneErrorBoundary>
         ) : (

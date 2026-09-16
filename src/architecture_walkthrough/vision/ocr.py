@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -25,8 +27,29 @@ class DimensionPair:
     unit: str
 
 
+_NUMBER = r"\d+(?:\.\d+)?"
+_FEET_UNIT = r"(?:feet|foot|ft|')"
+_INCH_UNIT = r'(?:inches|inch|in|")'
+_INCH_VALUE = rf"(?:\d+\s+\d+/\d+|\d+/\d+|{_NUMBER})"
+
+
+def _dimension_operand_pattern(suffix: str) -> str:
+    # Keep a feet/inches token intact. A metric-only regex used to find the
+    # trailing `3 x 12` inside `10'3 x 12'`, inflating dimensions and scale.
+    return (
+        rf"(?P<{suffix}>{_NUMBER})\s*"
+        rf"(?:(?P<f{suffix}>{_FEET_UNIT})"
+        rf"(?:\s*-?\s*(?P<i{suffix}>{_INCH_VALUE})(?:\s*{_INCH_UNIT})?)?"
+        rf"|(?P<u{suffix}>mm|cm|m|{_INCH_UNIT}))?"
+    )
+
+
 DIMENSION_RE = re.compile(
-    r"(?P<a>\d+(?:\.\d+)?)\s*(?P<ua>cm|m)?\s*(?:x|X|\*|by|×)\s*(?P<b>\d+(?:\.\d+)?)\s*(?P<ub>cm|m)?",
+    r"(?<![\w.,'\"/+-])"
+    + _dimension_operand_pattern("a")
+    + r"\s*(?:x|\*|by|×)\s*"
+    + _dimension_operand_pattern("b")
+    + r"(?![\w.,'\"/]|\s*\d)",
     re.IGNORECASE,
 )
 
@@ -43,17 +66,29 @@ ROOM_KEYWORDS = {
     "stair",
     "staircase",
     "shelf",
+    "study",
 }
 
 
 def normalize_ocr_text(text: str) -> str:
-    return " ".join(text.replace("\n", " ").replace("×", "x").strip().split())
+    punctuation = str.maketrans({
+        "′": "'", "’": "'", "‘": "'", "″": '"', "“": '"', "”": '"',
+        "×": "x", "–": "-", "−": "-",
+        "½": " 1/2", "¼": " 1/4", "¾": " 3/4",
+        "⅛": " 1/8", "⅜": " 3/8", "⅝": " 5/8", "⅞": " 7/8",
+    })
+    return " ".join(text.translate(punctuation).strip().split())
 
 
 def classify_text(text: str) -> str:
     normalized = normalize_ocr_text(text).lower()
-    if parse_dimension_pair(normalized) is not None:
-        return "dimension"
+    try:
+        if parse_dimension_pair(normalized) is not None:
+            return "dimension"
+    except ValueError:
+        # A malformed/implausible OCR token is uncertain supporting evidence;
+        # it must not abort recognition of the remaining room labels.
+        pass
     if any(keyword in normalized for keyword in ROOM_KEYWORDS):
         if "stair" in normalized:
             return "stair_label"
@@ -70,6 +105,15 @@ def _interpret_value(value: float, explicit_unit: str | None) -> tuple[float, st
     if unit == "m":
         metres = value
         used = "m"
+    elif unit == "ft":
+        metres = value * 0.3048
+        used = "ft"
+    elif unit in {"in", "inch", "inches", '"'}:
+        metres = value * 0.0254
+        used = "in"
+    elif unit == "mm":
+        metres = value / 1000.0
+        used = "mm"
     elif unit == "cm":
         metres = value / 100.0
         used = "cm"
@@ -89,10 +133,24 @@ def parse_dimension_pair(text: str) -> DimensionPair | None:
     match = DIMENSION_RE.search(normalize_ocr_text(text))
     if not match:
         return None
-    a = float(match.group("a"))
-    b = float(match.group("b"))
-    unit_a = match.group("ua")
-    unit_b = match.group("ub") or unit_a
+
+    def operand(suffix: str) -> tuple[float, str | None]:
+        value = float(match.group(suffix))
+        if match.group(f"f{suffix}"):
+            inches_text = match.group(f"i{suffix}")
+            if inches_text is not None:
+                try:
+                    inches = float(sum(Fraction(part) for part in inches_text.split()))
+                except (ValueError, ZeroDivisionError) as exc:
+                    raise ValueError(f"invalid architectural inches: {text!r}") from exc
+                if not 0 <= inches < 12:
+                    raise ValueError(f"architectural inches must be less than 12: {text!r}")
+                value += inches / 12.0
+            return value, "ft"
+        return value, match.group(f"u{suffix}")
+
+    a, unit_a = operand("a")
+    b, unit_b = operand("b")
     width_m, used_a = _interpret_value(a, unit_a or unit_b)
     height_m, used_b = _interpret_value(b, unit_b or unit_a)
     if not (0.20 <= width_m <= 80.0 and 0.20 <= height_m <= 80.0):
@@ -150,7 +208,16 @@ class RapidOCRBackend(OCRBackend):
     """
 
     def recognize(self, image_path: Path) -> list[OCRText]:
+        # Disable the native telemetry uploader before importing ONNX Runtime.
+        # The API alone runs after native initialization and can leave an
+        # initialization-event HTTP worker alive during interpreter shutdown
+        # (ONNX Runtime 1.29 on macOS crashes in that worker's destroyed mutex).
+        # OCR is local supporting evidence and does not need runtime telemetry.
+        os.environ["ORT_DISABLE_TELEMETRY"] = "1"
         try:
+            import onnxruntime
+
+            onnxruntime.disable_telemetry_events()
             from rapidocr import RapidOCR  # type: ignore[import-not-found]
         except ImportError:
             return []

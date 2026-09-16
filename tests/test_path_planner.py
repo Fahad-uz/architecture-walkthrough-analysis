@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from shapely.affinity import rotate, translate
 from shapely.geometry import LineString, Polygon, box
 
@@ -201,3 +202,22 @@ def test_only_floor_level_placement_categories_are_walkable() -> None:
 
     assert _route_line(lamp_path).distance(_furniture_footprint(lamp)) >= 0.329
     assert rug_path == [start, goal]
+
+
+@pytest.mark.parametrize("blocked_by_furniture", [False, True])
+def test_auto_route_skips_room_without_camera_clearance(blocked_by_furniture: bool) -> None:
+    width = 2.0 if blocked_by_furniture else 0.5
+    unavailable = RoomPolygon(points=[
+        Point2D(x=8, y=0), Point2D(x=8 + width, y=0),
+        Point2D(x=8 + width, y=width), Point2D(x=8, y=width),
+    ])
+    furniture = [FurniturePlacement(
+        category="cabinet", center=Point2D(x=9, y=1), width_m=2, depth_m=2,
+    )] if blocked_by_furniture else []
+    model = FloorPlanModel(rooms=[_room(), unavailable], furniture=furniture)
+
+    waypoints = camera_waypoints_for_model(model)
+
+    assert len(waypoints) >= 2
+    assert all(0.3 < waypoint.position.x < 5.7 and 0.3 < waypoint.position.y < 3.7
+               for waypoint in waypoints)

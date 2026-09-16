@@ -87,7 +87,7 @@ class WindowOpening(_OpeningIntervalMixin):
     center: Point2D
     width_m: PositiveFloat = 1.20
     height_m: PositiveFloat = 1.20
-    sill_height_m: PositiveFloat = 0.90
+    sill_height_m: float = Field(default=0.90, ge=0.0)
     opening_type: str = "fixed"
     asset_preset: str | None = None
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
@@ -216,6 +216,7 @@ class FurniturePlacement(BaseModel):
     width_m: PositiveFloat
     depth_m: PositiveFloat
     rotation_deg: float = 0.0
+    height_m: PositiveFloat | None = None
 
 
 class CameraWaypoint(BaseModel):
@@ -249,6 +250,45 @@ class FloorPlanModel(BaseModel):
     validation_issues: list[ValidationIssue] = Field(default_factory=list)
     reconstruction: ReconstructionMetadata = Field(default_factory=ReconstructionMetadata)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_legacy_wall_identifiers(self) -> "FloorPlanModel":
+        """Give anonymous walls stable IDs without orphaning legacy openings.
+
+        Older exports addressed anonymous walls by their zero-based index.
+        Explicit wall IDs always win; an unknown modern ID is deliberately
+        left unresolved for validation rather than guessed from proximity.
+        """
+        used = {wall.id for wall in self.walls if wall.id}
+        legacy: dict[str, str] = {}
+        normalized: list[WallSegment] = []
+        for index, wall in enumerate(self.walls):
+            if wall.id:
+                normalized.append(wall)
+                continue
+            candidate = f"wall_{index:03d}"
+            suffix = 1
+            while candidate in used:
+                candidate = f"wall_{index:03d}_{suffix}"
+                suffix += 1
+            used.add(candidate)
+            legacy[str(index)] = candidate
+            normalized.append(wall.model_copy(update={"id": candidate}))
+        if not legacy:
+            return self
+        explicit = {wall.id for wall in self.walls if wall.id}
+        self.walls = normalized
+        self.doors = [
+            door.model_copy(update={"wall_id": legacy[door.wall_id]})
+            if door.wall_id in legacy and door.wall_id not in explicit else door
+            for door in self.doors
+        ]
+        self.windows = [
+            window.model_copy(update={"wall_id": legacy[window.wall_id]})
+            if window.wall_id in legacy and window.wall_id not in explicit else window
+            for window in self.windows
+        ]
+        return self
 
     def save_json(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

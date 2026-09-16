@@ -36,10 +36,10 @@ def openings_for_wall(
     wall_openings: list[WallOpening] = []
     for door in doors:
         selected = nearest_wall_index(all_walls, door.center) if door.wall_id is None and all_walls else None
-        if door.wall_id in {wall_id, stable_wall_id} or selected == wall_index:
+        if (door.wall_id is not None and door.wall_id in {wall_id, stable_wall_id}) or selected == wall_index:
             wall_openings.append(opening_from_door(wall, door))
     for window in windows:
         selected = nearest_wall_index(all_walls, window.center) if window.wall_id is None and all_walls else None
-        if window.wall_id in {wall_id, stable_wall_id} or selected == wall_index:
+        if (window.wall_id is not None and window.wall_id in {wall_id, stable_wall_id}) or selected == wall_index:
             wall_openings.append(opening_from_window(wall, window))
     return wall_openings

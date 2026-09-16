@@ -1,5 +1,8 @@
 materials:
   painted_wall:
+    base_color_texture: polyhaven/plastered_wall_02/plastered_wall_02_diff_1k.jpg
+    normal_texture: polyhaven/plastered_wall_02/plastered_wall_02_nor_gl_1k.jpg
+    roughness_texture: polyhaven/plastered_wall_02/plastered_wall_02_rough_1k.jpg
     base_color: [0.86, 0.84, 0.79, 1.0]
     texture_scale_m: 1.0
     roughness: 0.78
@@ -10,13 +13,19 @@ materials:
     roughness: 0.38
     metallic: 0.0
   wood:
+    base_color_texture: polyhaven/wooden_floor_02/wooden_floor_02_diff_1k.jpg
+    normal_texture: polyhaven/wooden_floor_02/wooden_floor_02_nor_gl_1k.jpg
+    roughness_texture: polyhaven/wooden_floor_02/wooden_floor_02_rough_1k.jpg
     base_color: [0.45, 0.24, 0.12, 1.0]
-    texture_scale_m: 0.5
+    texture_scale_m: 2.0
     roughness: 0.52
     metallic: 0.0
   ceramic_tile:
+    base_color_texture: polyhaven/floor_tiles_06/floor_tiles_06_diff_1k.jpg
+    normal_texture: polyhaven/floor_tiles_06/floor_tiles_06_nor_gl_1k.jpg
+    roughness_texture: polyhaven/floor_tiles_06/floor_tiles_06_rough_1k.jpg
     base_color: [0.55, 0.55, 0.53, 1.0]
-    texture_scale_m: 0.3
+    texture_scale_m: 2.0
     roughness: 0.42
     metallic: 0.0
   metal:
