@@ -5,6 +5,8 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from shapely.geometry import LineString
+from shapely.ops import polygonize, unary_union
 
 from architecture_walkthrough.geometry.models import Point2D, WallSegment
 
@@ -43,12 +45,29 @@ class RepetitiveDetailRegion:
 
 
 @dataclass(frozen=True)
+class FixtureDetailRegion:
+    """A closed shallow footprint with a thin front and structural backing.
+
+    This is evidence for a built-in fixture, not a furniture type prediction.
+    Its room context still needs to distinguish a cupboard from a counter.
+    Coordinates remain in the detector's image-pixel coordinate system.
+    """
+
+    polygon: tuple[tuple[float, float], ...]
+    front_band_ids: tuple[str, ...]
+    max_depth_px: float
+    confidence: float = 0.75
+
+
+@dataclass(frozen=True)
 class WallDetectionResult:
     bands: list[WallBand]
     walls: list[WallSegment]
     debug_overlay_path: Path | None = None
     repetitive_detail_regions: list[RepetitiveDetailRegion] = field(default_factory=list)
     rejected_detail_bands: list[WallBand] = field(default_factory=list)
+    fixture_detail_regions: list[FixtureDetailRegion] = field(default_factory=list)
+    rejected_fixture_bands: list[WallBand] = field(default_factory=list)
 
 
 def _write_overlay(
@@ -57,6 +76,7 @@ def _write_overlay(
     debug_dir: Path | None,
     rejected_detail_bands: list[WallBand] | None = None,
     repetitive_detail_regions: list[RepetitiveDetailRegion] | None = None,
+    fixture_detail_regions: list[FixtureDetailRegion] | None = None,
 ) -> Path | None:
     if debug_dir is None:
         return None
@@ -95,6 +115,13 @@ def _write_overlay(
             (int(round(x2)), int(round(y2))),
             (80, 80, 190),
             1,
+        )
+    for fixture_region in fixture_detail_regions or []:
+        points = np.rint(fixture_region.polygon).astype(np.int32)
+        cv2.polylines(overlay, [points], True, (170, 150, 10), 2)
+        cv2.putText(
+            overlay, "fixture", tuple(points[0]), cv2.FONT_HERSHEY_SIMPLEX,
+            0.42, (170, 150, 10), 1,
         )
     path = debug_dir / "wall_band_overlay.png"
     cv2.imwrite(str(path), overlay)
@@ -705,6 +732,114 @@ def _pair_parallel_wall_faces(
     return [*unpaired, *pairs]
 
 
+def _suppress_enclosed_fixture_fronts(
+    bands: list[WallBand],
+    image_shape: tuple[int, int],
+    *,
+    internal_thickness_m: float = 0.12,
+    external_thickness_m: float = 0.20,
+) -> tuple[list[WallBand], list[WallBand], list[FixtureDetailRegion]]:
+    """Keep thin cupboard/counter fronts out of full-height wall topology.
+
+    A thin line alone is insufficient evidence. This requires an established
+    outlined-wall drawing style, a closed shallow face, and a thicker parallel
+    backing wall covering each front. Whole faces can be L-shaped. Paired or
+    thick walls are never removed, nor are unclosed runs across open rooms.
+    Nominal wall thickness supplies a conservative depth estimate until the
+    later scale solver has measured the plan; fixture identity needs review.
+    """
+
+    paired = [band for band in bands if band.id.startswith("paired_")]
+    if len(paired) < 3 or {band.orientation for band in paired} != {"h", "v"}:
+        return list(bands), [], []
+    basis = float(max(image_shape))
+    thin_limit = max(5.0, basis * 0.006)
+    thin = [band for band in bands if band.thickness_px <= thin_limit and band not in paired]
+    backing = [band for band in bands if band.thickness_px >= thin_limit * 1.6]
+    if not thin or not backing:
+        return list(bands), [], []
+
+    stroke_width = float(np.median([band.thickness_px for band in thin]))
+    interior = [band for band in backing if not band.id.startswith("paired_")]
+    width_samples = interior or paired
+    nominal_thickness = internal_thickness_m if interior else external_thickness_m
+    physical_wall_width = float(np.median([band.thickness_px for band in width_samples])) - stroke_width
+    if physical_wall_width <= 0 or nominal_thickness <= 0:
+        return list(bands), [], []
+    # Never let a large nominal scale interpretation swallow a broad room.
+    max_depth = min(0.80 * physical_wall_width / nominal_thickness, basis * 0.075)
+    min_depth = max(stroke_width * 2.0, physical_wall_width * 1.5)
+    if max_depth <= min_depth:
+        return list(bands), [], []
+
+    def line_for(band: WallBand, extension: float = 0.0) -> LineString:
+        start, end = _band_span(band)
+        coordinate = _band_coordinate(band)
+        points = (
+            [(start - extension, coordinate), (end + extension, coordinate)]
+            if band.orientation == "h" else
+            [(coordinate, start - extension), (coordinate, end + extension)]
+        )
+        return LineString(points)
+
+    eligible: list[WallBand] = []
+    for front in thin:
+        start, end = _band_span(front)
+        for back in backing:
+            if front.orientation != back.orientation:
+                continue
+            depth = abs(_band_coordinate(front) - _band_coordinate(back))
+            back_start, back_end = _band_span(back)
+            overlap = max(0.0, min(end, back_end) - max(start, back_start))
+            if min_depth <= depth <= max_depth and overlap >= (end - start) * 0.85:
+                eligible.append(front)
+                break
+    if not eligible:
+        return list(bands), [], []
+
+    # Face endpoints lie on the drawn wall face, while paired bands use the
+    # wall centre. A local half-width extension closes those corners without
+    # spanning ordinary doorways or creating a room boundary through a hall.
+    corner_tolerance = max(3.0, thin_limit + 2.0, float(np.median([band.thickness_px for band in paired])) / 2.0)
+    lines = [line_for(band, max(corner_tolerance, band.thickness_px / 2.0 + 2.0)) for band in bands]
+    faces = list(polygonize(unary_union(lines)))
+    rejected_ids: set[str] = set()
+    regions: list[FixtureDetailRegion] = []
+    epsilon = max(0.05, basis * 0.0001)
+    for face in faces:
+        if face.interiors or face.area < min_depth**2 or not face.buffer(-max_depth / 2.0).is_empty:
+            continue
+        boundary = face.boundary.buffer(epsilon)
+        fronts = [
+            band for band in eligible
+            if boundary.intersection(line_for(band)).length >= max(
+                line_for(band).length * 0.85, line_for(band).length - corner_tolerance * 2.0,
+            )
+        ]
+        if not fronts:
+            continue
+        # Reject a shallow face only when all its thin boundaries have the
+        # same backing evidence; this protects mixed fixture/partition runs.
+        touching_thin = [
+            band for band in thin
+            if boundary.intersection(line_for(band)).length > max(corner_tolerance, line_for(band).length * 0.15)
+        ]
+        front_ids = {band.id for band in fronts}
+        if any(band.id not in front_ids for band in touching_thin):
+            continue
+        rejected_ids.update(front_ids)
+        regions.append(FixtureDetailRegion(
+            polygon=tuple((float(x), float(y)) for x, y in list(face.exterior.coords)[:-1]),
+            front_band_ids=tuple(band.id for band in fronts),
+            max_depth_px=max_depth,
+        ))
+    return (
+        [band for band in bands if band.id not in rejected_ids],
+        [band for band in bands if band.id in rejected_ids],
+        regions,
+    )
+
+
 def _merge_band_group(group: list[WallBand], band_id: str) -> WallBand:
     orientation = group[0].orientation
     xs = [band.rect[0] for band in group]
@@ -896,6 +1031,11 @@ def detect_wall_bands(
         structural_bands, min(2.0, coordinate_tolerance_px), gap_tolerance_px,
     )
     structural_bands = _pair_parallel_wall_faces(structural_bands, (height, width))
+    structural_bands, rejected_fixture_bands, fixture_detail_regions = _suppress_enclosed_fixture_fronts(
+        structural_bands, (height, width),
+        internal_thickness_m=internal_thickness_m,
+        external_thickness_m=external_thickness_m,
+    )
     structural_bands.extend([*recovered_h, *recovered_v, *recovered_sides])
     bands = _merge_collinear_bands(structural_bands, coordinate_tolerance_px, gap_tolerance_px)
     bands = _classify_external(bands, (height, width))
@@ -922,6 +1062,7 @@ def detect_wall_bands(
         debug_dir,
         rejected_detail_bands,
         repetitive_detail_regions,
+        fixture_detail_regions,
     )
     return WallDetectionResult(
         bands=bands,
@@ -929,6 +1070,8 @@ def detect_wall_bands(
         debug_overlay_path=overlay_path,
         repetitive_detail_regions=repetitive_detail_regions,
         rejected_detail_bands=rejected_detail_bands,
+        fixture_detail_regions=fixture_detail_regions,
+        rejected_fixture_bands=rejected_fixture_bands,
     )
 
 
