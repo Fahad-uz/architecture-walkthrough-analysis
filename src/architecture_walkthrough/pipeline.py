@@ -34,8 +34,9 @@ from architecture_walkthrough.geometry.balcony_ownership import (
     reconcile_room_balcony_ownership,
 )
 from architecture_walkthrough.geometry.furniture_layout import fit_furniture_to_rooms
+from architecture_walkthrough.geometry.fixture_layout import fixture_furniture_from_regions
 from architecture_walkthrough.geometry.reconstruction import reconstruct_walls
-from architecture_walkthrough.geometry.room_extraction import extract_rooms_from_walls
+from architecture_walkthrough.geometry.room_extraction import extract_rooms_from_walls, missing_room_label_issues
 from architecture_walkthrough.geometry.scale import ScaleConverter
 from architecture_walkthrough.geometry.scale_solver import ScaleConstraint, solve_scale
 from architecture_walkthrough.geometry.wall_graph import collinear_gaps
@@ -1016,7 +1017,14 @@ def analyze_image(
         pixels_per_metre,
         min_confidence=config.ai.gemini_min_confidence,
     )
-    local_furniture = grounded_furniture.furniture
+    outlined_fixtures = fixture_furniture_from_regions(
+        wall_detection.fixture_detail_regions,
+        final_rooms,
+        pixels_per_metre,
+        resized_height,
+        walls=final_walls,
+    )
+    local_furniture = [*grounded_furniture.furniture, *outlined_fixtures]
     furniture = fit_furniture_to_rooms(
         local_furniture,
         final_rooms,
@@ -1029,6 +1037,8 @@ def analyze_image(
         gemini_furniture_matched=grounded_furniture.matched_hint_count,
         gemini_furniture_rejected=grounded_furniture.rejected_hint_count,
         accepted_furniture=len(furniture),
+        outlined_fixture_regions=len(wall_detection.fixture_detail_regions),
+        outlined_fixture_items=len(outlined_fixtures),
     )
 
     raw_model = FloorPlanModel(
@@ -1087,6 +1097,10 @@ def analyze_image(
             "gemini_furniture_count": grounded_furniture.matched_hint_count,
             "gemini_furniture_rejected_unmatched": grounded_furniture.rejected_hint_count,
             "accepted_furniture_count": len(furniture),
+            "outlined_fixture_region_count": len(wall_detection.fixture_detail_regions),
+            "fixture_front_walls_rejected": len(wall_detection.rejected_fixture_bands),
+            "outlined_fixture_item_count": len(outlined_fixtures),
+            "outlined_fixture_semantics": "Category and height inferred from room context; review counter/wardrobe choices.",
             "raw_wall_count": len(wall_detection.walls),
             "wall_band_count": len(wall_detection.bands),
             "grounded_ai_wall_count": len(grounded_hints.walls),
@@ -1147,6 +1161,7 @@ def analyze_image(
         band_mask=band_mask,
     )
     issues = validate_reconstruction(model, evidence)
+    issues.extend(missing_room_label_issues(final_rooms, all_room_labels, pixels_per_metre, resized_height))
     for report in ambiguous_openings:
         issues.append(ValidationIssue(code="ambiguous_opening", severity="warning", message=report))
     for gap_report in unclosed_gap_reports:
@@ -1242,7 +1257,7 @@ def build_model(
             issue
             for issue in model.validation_issues
             if issue.code.startswith("gemini_")
-            or issue.code in {"ambiguous_opening", "unclosed_wall_gap"}
+            or issue.code in {"ambiguous_opening", "unclosed_wall_gap", "unreconstructed_labeled_room"}
         ]
         issues: list[ValidationIssue] = []
         seen: set[tuple[str, str]] = set()

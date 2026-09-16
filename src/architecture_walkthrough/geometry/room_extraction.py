@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 from shapely.geometry import Point, Polygon
 
-from architecture_walkthrough.geometry.models import DoorOpening, Point2D, RoomPolygon, WallSegment, WindowOpening
+from architecture_walkthrough.geometry.models import DoorOpening, Point2D, RoomPolygon, ValidationIssue, WallSegment, WindowOpening
 from architecture_walkthrough.geometry.wall_graph import DEFAULT_JUNCTION_SNAP_M, enumerate_faces
 from architecture_walkthrough.vision.ocr import OCRText, parse_dimension_pair
 
@@ -16,6 +16,45 @@ from architecture_walkthrough.vision.ocr import OCRText, parse_dimension_pair
 class RoomExtractionResult:
     rooms: list[RoomPolygon]
     rejected: list[str]
+
+
+def missing_room_label_issues(
+    rooms: list[RoomPolygon],
+    labels: list[OCRText],
+    pixels_per_metre: float,
+    image_height_px: int,
+) -> list[ValidationIssue]:
+    """Report readable room labels that have no enclosing reconstructed room.
+
+    A large open entrance can leave the most important room out of the wall
+    graph while several small closed faces still produce a plausible score.
+    Keep the measured geometry, but make that missing room explicit in review.
+    """
+    polygons = [Polygon([(point.x, point.y) for point in room.points]) for room in rooms]
+    issues: list[ValidationIssue] = []
+    seen: set[tuple[str, int, int]] = set()
+    for label in labels:
+        if label.semantic_type != "room_label" or label.confidence < 0.6 or not label.polygon:
+            continue
+        try:
+            if parse_dimension_pair(label.normalized_text) is not None:
+                continue
+        except ValueError:
+            continue
+        point = _label_point(label, pixels_per_metre, image_height_px)
+        if any(polygon.is_valid and polygon.covers(point) for polygon in polygons):
+            continue
+        key = (label.normalized_text.casefold(), round(point.x * 10), round(point.y * 10))
+        if key in seen:
+            continue
+        seen.add(key)
+        issues.append(ValidationIssue(
+            code="unreconstructed_labeled_room",
+            severity="warning",
+            message=(f'Room "{label.normalized_text}" is visible in the image but its floor boundary '
+                     "was not reconstructed. Review its wall gaps and draw the room boundary before export."),
+        ))
+    return issues
 
 
 def _label_point(label: OCRText, pixels_per_metre: float, image_height_px: int | None) -> Point:
