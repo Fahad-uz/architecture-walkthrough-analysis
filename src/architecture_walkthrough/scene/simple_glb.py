@@ -25,6 +25,7 @@ from architecture_walkthrough.scene.floor_builder import (
     room_floor_meshes,
 )
 from architecture_walkthrough.scene.opening_builder import nearest_wall_index, openings_for_wall
+from architecture_walkthrough.scene.stair_builder import stair_parts, stair_placement
 from architecture_walkthrough.scene.trim_builder import skirting_meshes
 from architecture_walkthrough.scene.uv_mapping import apply_planar_uv
 from architecture_walkthrough.scene.wall_builder import split_wall_meshes
@@ -1061,25 +1062,15 @@ def _special_placement(element: ArchitecturalElement) -> FurniturePlacement:
     )
 
 
-def _staircase_meshes(item: FurniturePlacement, step_count: int) -> list[trimesh.Trimesh]:
-    steps = max(4, min(14, step_count))
-    step_depth = item.depth_m / steps
+def _staircase_meshes(
+    item: FurniturePlacement, step_count: int, metadata: dict | None = None,
+) -> list[trimesh.Trimesh]:
+    settings = {"step_count": step_count, **(metadata or {})}
     meshes: list[trimesh.Trimesh] = []
-    for index in range(steps):
-        local_y = -item.depth_m / 2 + step_depth * (index + 0.5)
-        height = 0.16 * (index + 1)
-        meshes.append(
-            _part(
-                item,
-                0,
-                local_y,
-                item.width_m,
-                step_depth * 0.94,
-                height,
-                COLORS["step"],
-                height / 2,
-            )
-        )
+    for part in stair_parts(item.width_m, item.depth_m, settings):
+        mesh = _part(item, part["x"], part["y"], part["width"], part["depth"],
+                     part["height"], COLORS["step"], part["z"])
+        meshes.append(_named(mesh, part["name"]))
     return meshes
 
 
@@ -1098,7 +1089,8 @@ def _special_element_meshes(element: ArchitecturalElement) -> list[trimesh.Trime
     kind = element.kind.lower().replace("-", "_").replace(" ", "_")
     placement = _special_placement(element)
     if kind in {"stair", "stairs", "staircase"}:
-        return _staircase_meshes(placement, int(element.metadata.get("step_count") or 10))
+        placement = FurniturePlacement(category=kind, **stair_placement(element.model_dump()))
+        return _staircase_meshes(placement, int(element.metadata.get("step_count") or 10), element.metadata)
     if kind == "lift":
         return _lift_meshes(placement)
     if kind in {"counter", "kitchen_counter"}:

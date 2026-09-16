@@ -1627,16 +1627,22 @@ def build_special_element(element: dict, index: int) -> None:
         )
         return
     if kind in {"stair", "stairs", "staircase"}:
-        item = dict(element)
-        item.setdefault("center", {"x": 0.0, "y": 0.0})
-        width = max(0.70, float(item.get("width_m") or 1.0))
-        depth = max(1.20, float(item.get("depth_m") or 2.0))
-        steps = max(4, min(14, int((item.get("metadata") or {}).get("step_count") or 10)))
-        for step in range(steps):
-            step_depth = depth / steps
-            y = -depth / 2 + step_depth * (step + 0.5)
-            height = 0.16 * (step + 1)
-            asset_box(prefix, item, f"Step_{step:02d}", 0, y, width, step_depth * 0.94, height, height / 2, "counter")
+        # Load only the shared standard-library geometry helper. Importing the
+        # full application inside Blender would require its Python dependencies.
+        import runpy
+
+        helpers = runpy.run_path(str(Path(__file__).resolve().parents[1] / "stair_builder.py"))
+        item = helpers["stair_placement"](element)
+        parts = helpers["stair_parts"](item["width_m"], item["depth_m"], element.get("metadata"))
+        for part in parts:
+            x, y = oriented_xy(item, part["x"], part["y"])
+            new_box(
+                f"{prefix}_{part['name']}",
+                Vector((part["width"], part["depth"], part["height"])),
+                Vector((x, y, part["z"])),
+                math.radians(item["rotation_deg"]),
+                MATERIALS["counter"],
+            )
         return
     if kind == "lift":
         item = dict(element)
