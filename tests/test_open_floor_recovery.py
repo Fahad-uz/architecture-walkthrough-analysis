@@ -120,6 +120,14 @@ def test_low_confidence_label_cannot_rename_recovered_floor() -> None:
     assert result.candidates[0]["room_name"] == "Living"
 
 
+@pytest.mark.parametrize("name", ["Balcony", "TERRACE", "Living / Balcony", "Open terrace"])
+def test_outdoor_labels_do_not_enter_room_only_floor_recovery(name: str) -> None:
+    result = recover_open_labeled_floors(open_room(), [], [label(name)], 100, 1000)
+    assert not result.rooms
+    assert not result.issues
+    assert not result.candidates
+
+
 @pytest.mark.parametrize("scale", [0, -1, float("nan"), float("inf")])
 def test_invalid_scale_cannot_propose_floor(scale: float) -> None:
     assert not recover_open_labeled_floors(open_room(), [], [label("Living")], scale, 1000).rooms

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from math import isfinite
+import re
 
 from shapely import unary_union
 from shapely.geometry import LineString, Polygon
@@ -46,6 +47,11 @@ def _confident_room_name(label: OCRText) -> bool:
         or len(label.polygon) < 3
         or not label.normalized_text.strip()
     ):
+        return False
+    # These labels belong to balcony ownership, which may rename the face and
+    # remove it from rooms. Keep this room-only inference out of that flow.
+    name_tokens = set(re.findall(r"[a-z0-9]+", label.normalized_text.casefold()))
+    if name_tokens & {"balcony", "terrace"}:
         return False
     try:
         return parse_dimension_pair(label.normalized_text) is None
