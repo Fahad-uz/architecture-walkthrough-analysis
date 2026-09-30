@@ -36,6 +36,7 @@ from architecture_walkthrough.geometry.balcony_ownership import (
 from architecture_walkthrough.geometry.furniture_layout import fit_furniture_to_rooms
 from architecture_walkthrough.geometry.fixture_layout import fixture_furniture_from_regions
 from architecture_walkthrough.geometry.reconstruction import reconstruct_walls
+from architecture_walkthrough.geometry.open_floor_recovery import recover_open_labeled_floors
 from architecture_walkthrough.geometry.room_extraction import extract_rooms_from_walls, missing_room_label_issues
 from architecture_walkthrough.geometry.scale import ScaleConverter
 from architecture_walkthrough.geometry.scale_solver import ScaleConstraint, solve_scale
@@ -997,7 +998,16 @@ def analyze_image(
         windows=local_openings.windows,
         bridge_ambiguous_openings=True,
     )
-    final_rooms = room_result.rooms
+    open_floors = recover_open_labeled_floors(
+        final_walls,
+        room_result.rooms,
+        all_room_labels,
+        pixels_per_metre,
+        resized_height,
+        doors=local_openings.doors,
+        windows=local_openings.windows,
+    )
+    final_rooms = open_floors.rooms
     unclosed_gap_reports = room_result.rejected
     # Failure to close the measured wall graph is evidence for review. A
     # morphological mask fallback used to close 90-pixel gaps indiscriminately
@@ -1120,6 +1130,7 @@ def analyze_image(
             "gemini_semantic_label_count": len(semantic_room_labels) + len(semantic_special_labels),
             "gemini_dimension_text_count": len(gemini_dimension_labels),
             "unclosed_wall_gaps": unclosed_gap_reports,
+            "floor_boundary_inferences": open_floors.candidates,
             "local_furniture_count": len(local_furniture),
             "gemini_furniture_count": grounded_furniture.matched_hint_count,
             "gemini_furniture_rejected_unmatched": grounded_furniture.rejected_hint_count,
@@ -1188,6 +1199,7 @@ def analyze_image(
         band_mask=band_mask,
     )
     issues = validate_reconstruction(model, evidence)
+    issues.extend(open_floors.issues)
     issues.extend(missing_room_label_issues(final_rooms, all_room_labels, pixels_per_metre, resized_height))
     for report in ambiguous_openings:
         issues.append(ValidationIssue(code="ambiguous_opening", severity="warning", message=report))
@@ -1284,7 +1296,11 @@ def build_model(
             issue
             for issue in model.validation_issues
             if issue.code.startswith("gemini_")
-            or issue.code in {"ambiguous_opening", "unclosed_wall_gap", "unreconstructed_labeled_room"}
+            or issue.code in {
+                "ambiguous_opening", "unclosed_wall_gap", "unreconstructed_labeled_room",
+                "inferred_open_floor_boundary", "inferred_open_floor_boundary_invalidated",
+                "reviewed_trace_invalidated",
+            }
         ]
         issues: list[ValidationIssue] = []
         seen: set[tuple[str, str]] = set()
