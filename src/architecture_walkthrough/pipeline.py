@@ -963,7 +963,10 @@ def analyze_image(
         preprocessing.layers["furniture_fixture_mask"],
         "furniture/fixture mask",
     )
-    thin_mask = build_thin_line_mask(adaptive_mask, dark_mask, colored_mask)
+    analysis_image_bgr = cv2.imread(str(analysis_image_path), cv2.IMREAD_COLOR)
+    thin_mask = build_thin_line_mask(
+        adaptive_mask, dark_mask, colored_mask, source_image_bgr=analysis_image_bgr
+    )
     local_openings = detect_local_openings(
         reconstruction.walls,
         dark_mask,
@@ -972,7 +975,7 @@ def analyze_image(
         resized_height,
         config.opening_detection,
         config.defaults,
-        color_image=cv2.imread(str(analysis_image_path), cv2.IMREAD_COLOR),
+        color_image=analysis_image_bgr,
     )
     final_walls = local_openings.walls
     stages.record(

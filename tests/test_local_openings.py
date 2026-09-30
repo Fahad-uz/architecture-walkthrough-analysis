@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import cv2
 import numpy as np
 import pytest
@@ -8,6 +10,7 @@ from architecture_walkthrough.config import GeometryDefaults, OpeningDetectionSe
 from architecture_walkthrough.geometry.models import Point2D, WallSegment
 from architecture_walkthrough.geometry.wall_graph import enumerate_faces
 from architecture_walkthrough.vision.local_openings import build_thin_line_mask, detect_local_openings
+from architecture_walkthrough.vision.preprocessing import preprocess_array
 
 PPM = 50.0
 HEIGHT = 300
@@ -255,3 +258,75 @@ def test_thin_line_mask_excludes_bold_structure() -> None:
     thin = build_thin_line_mask(adaptive, dark)
     assert thin[200, 150] > 0
     assert thin[150, 250] == 0
+
+
+@pytest.mark.parametrize("symbol", ["none", "arc", "glazing", "colored_swing"])
+def test_jpeg_source_ink_distinguishes_plain_gaps_from_opening_symbols(
+    tmp_path: Path, symbol: str,
+) -> None:
+    # A slightly uneven, compressed white background becomes dark texture
+    # after histogram equalization. Opening evidence must still come from ink.
+    rng = np.random.default_rng(7)
+    background = np.linspace(240, 255, WIDTH)[None, :] + rng.normal(0, 2, (HEIGHT, WIDTH))
+    source = cv2.cvtColor(np.clip(background, 0, 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+    for start, end in (((50, 146), (200, 154)), ((245, 146), (450, 154))):
+        cv2.rectangle(source, start, end, (0, 0, 0), 2)
+    if symbol == "arc":
+        cv2.ellipse(source, (245, 150), (45, 45), 0, 180, 270, (0, 0, 0), 2)
+    elif symbol == "glazing":
+        for row in (147, 150, 153):
+            cv2.line(source, (200, row), (245, row), (0, 0, 0), 1)
+    elif symbol == "colored_swing":
+        colored = _color_swing((230, 180))
+        source[np.min(colored, axis=2) < 255] = colored[np.min(colored, axis=2) < 255]
+    encoded, jpeg = cv2.imencode(".jpg", source, [cv2.IMWRITE_JPEG_QUALITY, 65])
+    assert encoded
+    source = cv2.imdecode(jpeg, cv2.IMREAD_COLOR)
+    preprocessing = preprocess_array(source, tmp_path)
+    adaptive = cv2.imread(str(preprocessing.layers["adaptive_binary"]), cv2.IMREAD_GRAYSCALE)
+    dark = cv2.imread(str(preprocessing.layers["dark_structural_stroke"]), cv2.IMREAD_GRAYSCALE)
+    fixtures = cv2.imread(str(preprocessing.layers["furniture_fixture_mask"]), cv2.IMREAD_GRAYSCALE)
+    thin = build_thin_line_mask(adaptive, dark, fixtures, source_image_bgr=source)
+
+    result = detect_local_openings(
+        _walls_pair(), dark, thin, PPM, HEIGHT, SETTINGS, DEFAULTS, color_image=source,
+    )
+
+    assert len(result.doors) == (1 if symbol in {"arc", "colored_swing"} else 0)
+    assert len(result.windows) == (1 if symbol == "glazing" else 0)
+    assert len(result.walls) == (2 if symbol == "none" else 1)
+    if symbol == "none":
+        assert len(result.ambiguous) == 1
+
+
+def test_counter_outline_does_not_extend_wall_to_perpendicular_boundary() -> None:
+    walls = [
+        _wall("vertical", 4.0, 1.0, 4.0, 2.5),
+        _wall("bottom", 1.0, 3.4, 5.0, 3.4),
+    ]
+    thin = _blank()
+    # A cabinet's parallel front/back edges between the endpoint and the
+    # boundary are not glazing in a missing wall.
+    for column in (197, 200, 203):
+        cv2.line(thin, (column, 130), (column, 175), 255, 1)
+
+    result = detect_local_openings(walls, _blank(), thin, PPM, HEIGHT, SETTINGS, DEFAULTS)
+
+    assert not result.doors and not result.windows
+    assert result.walls == sorted(walls, key=lambda wall: str(wall.id))
+
+
+def test_localized_curve_with_leaf_does_not_confirm_quarter_swing() -> None:
+    thin = _blank()
+    # A counter/fixture curve covers half the proposed swing, with a line at
+    # the proposed hinge. Total coverage alone used to accept it as a door.
+    cv2.ellipse(thin, (245, 150), (45, 45), 0, 207, 243, 255, 2)
+    cv2.line(thin, (245, 150), (245, 105), 255, 2)
+
+    result = detect_local_openings(
+        _walls_pair(), _dark_wall_pair_with_gap(), thin, PPM, HEIGHT, SETTINGS, DEFAULTS,
+    )
+
+    assert not result.doors and not result.windows
+    assert len(result.walls) == 2
+    assert len(result.ambiguous) == 1

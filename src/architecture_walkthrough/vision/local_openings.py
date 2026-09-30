@@ -135,9 +135,31 @@ def build_thin_line_mask(
     adaptive_binary: np.ndarray,
     dark_structural: np.ndarray,
     colored_mask: np.ndarray | None = None,
+    *,
+    source_image_bgr: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Strokes that are drawn but not bold structure: arcs, leaves, glazing lines."""
+    """Strokes that are drawn but not bold structure: arcs, leaves, glazing lines.
+
+    Histogram equalization can turn almost-white JPEG texture into extensive
+    adaptive-threshold foreground. Fixture masks derived from that foreground
+    are not independent evidence of ink or color. When source pixels are
+    available, use their actual darkness to reject this texture, retaining
+    narrow black arcs even when the structural mask also contains them.
+    """
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    if source_image_bgr is not None:
+        # The darkest color channel also preserves bright colored linework.
+        # A five-pixel opening removes genuinely filled/bold shapes, unlike
+        # subtracting dark_structural (which includes thin arcs and leaves).
+        source_darkness = np.min(source_image_bgr, axis=2)
+        ink = np.where(source_darkness <= 200, 255, 0).astype(np.uint8)
+        bold = cv2.morphologyEx(
+            ink,
+            cv2.MORPH_OPEN,
+            cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)),
+        )
+        thin = cv2.bitwise_and(ink, cv2.bitwise_not(cv2.dilate(bold, kernel)))
+        return cv2.dilate(thin, kernel)
     bold = cv2.dilate(dark_structural, kernel, iterations=2)
     thin = cv2.bitwise_and(adaptive_binary, cv2.bitwise_not(bold))
     if colored_mask is not None:
@@ -228,6 +250,12 @@ def _arc_coverage(
     ts = np.linspace(0.10, 0.90, samples)
     angles = start_angle + ts * delta
     points = center[None, :] + radius * np.stack([np.cos(angles), np.sin(angles)], axis=1)
+    # A localized text fragment or counter corner can cover a substantial
+    # fraction of one proposed arc. Support must extend around the sweep,
+    # rather than being concentrated in one short patch near a hinge.
+    supported_sections = sum(_coverage(mask, section) >= 0.5 for section in np.array_split(points, 4))
+    if supported_sections < 3:
+        return 0.0
     return _coverage(mask, points)
 
 
@@ -550,7 +578,11 @@ def detect_local_openings(
                 hinge = "end"
                 swing = "left"
 
-        if kind == "ambiguous":
+        if kind != "door":
+            # A perpendicular boundary is a possible door jamb, not the
+            # opposite side of an interrupted wall. Parallel marks here are
+            # commonly a counter or the adjacent wall's two outline strokes;
+            # they cannot justify extending a new wall carrying glazing.
             continue
         target_wall = _extend_wall_across_gap(source, gap_start, gap_end)
         working[str(target_wall.id)] = target_wall
