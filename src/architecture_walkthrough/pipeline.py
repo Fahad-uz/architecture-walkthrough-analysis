@@ -40,6 +40,7 @@ from architecture_walkthrough.geometry.open_floor_recovery import recover_open_l
 from architecture_walkthrough.geometry.room_extraction import extract_rooms_from_walls, missing_room_label_issues
 from architecture_walkthrough.geometry.scale import ScaleConverter
 from architecture_walkthrough.geometry.scale_solver import ScaleConstraint, solve_scale
+from architecture_walkthrough.geometry.stair_voids import infer_stair_ceiling_voids
 from architecture_walkthrough.geometry.wall_graph import collinear_gaps
 from architecture_walkthrough.geometry.validation import (
     SourceEvidence,
@@ -1032,6 +1033,7 @@ def analyze_image(
     )
     final_rooms = balcony_ownership.rooms
     balconies = balcony_ownership.balconies
+    stair_voids = infer_stair_ceiling_voids(final_rooms, special_elements)
     stages.record(
         "classify_special_elements",
         started,
@@ -1131,6 +1133,8 @@ def analyze_image(
             "gemini_dimension_text_count": len(gemini_dimension_labels),
             "unclosed_wall_gaps": unclosed_gap_reports,
             "floor_boundary_inferences": open_floors.candidates,
+            "ceiling_void_room_ids": stair_voids.room_ids,
+            "ceiling_void_inferences": stair_voids.inferences,
             "local_furniture_count": len(local_furniture),
             "gemini_furniture_count": grounded_furniture.matched_hint_count,
             "gemini_furniture_rejected_unmatched": grounded_furniture.rejected_hint_count,
@@ -1200,6 +1204,7 @@ def analyze_image(
     )
     issues = validate_reconstruction(model, evidence)
     issues.extend(open_floors.issues)
+    issues.extend(stair_voids.issues)
     issues.extend(missing_room_label_issues(final_rooms, all_room_labels, pixels_per_metre, resized_height))
     for report in ambiguous_openings:
         issues.append(ValidationIssue(code="ambiguous_opening", severity="warning", message=report))
@@ -1300,6 +1305,7 @@ def build_model(
                 "ambiguous_opening", "unclosed_wall_gap", "unreconstructed_labeled_room",
                 "inferred_open_floor_boundary", "inferred_open_floor_boundary_invalidated",
                 "reviewed_trace_invalidated",
+                "inferred_stair_ceiling_void",
             }
         ]
         issues: list[ValidationIssue] = []
