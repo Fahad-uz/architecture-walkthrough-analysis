@@ -166,10 +166,21 @@ def _semantic_review_issues(model: FloorPlanModel) -> list[ValidationIssue]:
     return recovered
 
 
-def _carried_local_review_issues(model: FloorPlanModel) -> list[ValidationIssue]:
+def _carried_local_review_issues(
+    model: FloorPlanModel, *, previous: FloorPlanModel | None = None,
+) -> list[ValidationIssue]:
     """Keep source-image review findings when validation is recomputed."""
 
     issues = [issue for issue in model.validation_issues if issue.code == "ambiguous_opening"]
+    # OCR label polygons are not persisted, so correction validation cannot
+    # establish whether a missing source room has been recovered. Keep that
+    # finding from the authoritative saved model even if the browser omits it.
+    # A fresh image analysis can resolve it using the original label evidence.
+    source_model = previous if previous is not None else model
+    issues.extend(
+        issue for issue in source_model.validation_issues
+        if issue.code == "unreconstructed_labeled_room"
+    )
     if model.metadata.get("reviewed_source_trace_invalidated"):
         issues.append(
             ValidationIssue(
@@ -1336,7 +1347,7 @@ def _apply_correction_revision(
     issues = _deduplicate_issues(
         [
             *validate_reconstruction(model, evidence),
-            *_carried_local_review_issues(model),
+            *_carried_local_review_issues(model, previous=previous),
             *gap_issues,
             *_semantic_review_issues(model),
         ]

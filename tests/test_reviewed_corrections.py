@@ -17,6 +17,7 @@ from architecture_walkthrough.geometry.models import (
     FurniturePlacement,
     Point2D,
     RoomPolygon,
+    ValidationIssue,
     WallSegment,
 )
 from architecture_walkthrough.geometry.wall_graph import enumerate_faces
@@ -277,3 +278,62 @@ def test_request_cannot_promote_unreviewed_geometry_to_an_explicit_floor(
     assert [room.id for room in corrected.rooms] == ["bedroom"]
     assert "geometry_origin" not in corrected.metadata
     assert "floor_boundary_inferences" not in corrected.metadata
+
+
+@pytest.mark.parametrize("first_save", [False, True])
+def test_missing_source_room_warning_survives_saves_and_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first_save: bool,
+) -> None:
+    original = _open_living_plan()
+    missing_room = ValidationIssue(
+        code="unreconstructed_labeled_room",
+        severity="warning",
+        message=(
+            'Room "Study" is visible in the image but its floor boundary was not '
+            "reconstructed. Review its wall gaps and draw the room boundary before export."
+        ),
+    )
+    original.validation_issues = [missing_room]
+    job_id, job_dir = _save_reviewed_job(
+        tmp_path, monkeypatch, original, first_save=first_save,
+    )
+    edited = original.model_copy(deep=True)
+    edited.rooms[0].name = "Main bedroom"
+    edited.validation_issues = []
+    edited.metadata = {}
+
+    def assert_missing_room_warning(result: dict) -> None:
+        assert [
+            issue for issue in result["issues"]
+            if issue["code"] == "unreconstructed_labeled_room"
+        ] == [missing_room.model_dump(mode="json")]
+
+    with TestClient(create_app()) as client:
+        # Validate must also preserve the original analysis warning before a save.
+        validation = client.post(f"/jobs/{job_id}/validate-corrections")
+        assert validation.status_code == 200, validation.text
+        assert_missing_room_warning(validation.json())
+
+        for move_wall in (False, True):
+            if move_wall:
+                # A geometry edit cannot be taken as evidence that the missing
+                # source label is now enclosed, since its OCR position is absent.
+                for wall in edited.walls:
+                    for point in (wall.start, wall.end):
+                        if point.x == 0:
+                            point.x = 1
+            response = client.post(
+                f"/jobs/{job_id}/corrections", json=edited.model_dump(mode="json"),
+            )
+            validation = client.post(f"/jobs/{job_id}/validate-corrections")
+            for result in (response, validation):
+                assert result.status_code == 200, result.text
+                assert_missing_room_warning(result.json())
+            persisted = FloorPlanModel.load_json(job_dir / "floorplan.corrected.json")
+            assert [
+                issue for issue in persisted.validation_issues
+                if issue.code == "unreconstructed_labeled_room"
+            ] == [missing_room]
+            edited = persisted.model_copy(deep=True)
+            edited.validation_issues = []
+            edited.metadata = {}
