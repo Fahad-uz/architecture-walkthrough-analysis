@@ -12,6 +12,7 @@ import architecture_walkthrough.api.app as api_app
 from architecture_walkthrough.api.app import JobRecord, create_app
 from architecture_walkthrough.config import AppConfig, PathSettings
 from architecture_walkthrough.geometry.models import (
+    ArchitecturalElement,
     DoorOpening,
     FloorPlanModel,
     FurniturePlacement,
@@ -20,6 +21,7 @@ from architecture_walkthrough.geometry.models import (
     ValidationIssue,
     WallSegment,
 )
+from architecture_walkthrough.geometry.stair_voids import infer_stair_ceiling_voids
 from architecture_walkthrough.geometry.wall_graph import enumerate_faces
 
 
@@ -337,3 +339,67 @@ def test_missing_source_room_warning_survives_saves_and_validation(
             edited = persisted.model_copy(deep=True)
             edited.validation_issues = []
             edited.metadata = {}
+
+
+@pytest.mark.parametrize("change", ["wall", "stair", "label"])
+def test_saves_recompute_stair_voids_without_removing_manual_voids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str,
+) -> None:
+    original = _open_living_plan()
+    original.rooms[0].name = "Stair hall"
+    original.special_elements = [ArchitecturalElement(
+        id="stairs", kind="staircase", evidence_source="repetitive_parallel_treads",
+        confidence=0.9,
+        polygon=[Point2D(x=x, y=y) for x, y in [(0.2, 0.2), (2.8, 0.2), (2.8, 2.8), (0.2, 2.8)]],
+    )]
+    inferred = infer_stair_ceiling_voids(original.rooms, original.special_elements)
+    assert inferred.room_ids == ["bedroom"]
+    original.metadata.update({
+        "ceiling_void_room_ids": ["living", *inferred.room_ids],
+        "ceiling_void_inferences": inferred.inferences,
+    })
+    original.validation_issues = inferred.issues
+    job_id, job_dir = _save_reviewed_job(tmp_path, monkeypatch, original, first_save=True)
+    edited = original.model_copy(deep=True)
+    edited.metadata = {}
+    edited.validation_issues = []
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            f"/jobs/{job_id}/corrections", json=edited.model_dump(mode="json"),
+        )
+        validation = client.post(f"/jobs/{job_id}/validate-corrections")
+        for result in (response, validation):
+            assert result.status_code == 200, result.text
+            assert len([
+                issue for issue in result.json()["issues"]
+                if issue["code"] == "inferred_stair_ceiling_void"
+            ]) == 1
+        persisted = FloorPlanModel.load_json(job_dir / "floorplan.corrected.json")
+        assert persisted.metadata["ceiling_void_room_ids"] == ["living", "bedroom"]
+
+        edited = persisted.model_copy(deep=True)
+        edited.metadata = {}
+        edited.validation_issues = []
+        if change == "wall":
+            for wall in edited.walls:
+                for point in (wall.start, wall.end):
+                    if point.x == 0:
+                        point.x = 1
+        elif change == "stair":
+            for point in edited.special_elements[0].polygon:
+                point.x += 4
+        else:
+            edited.rooms[0].name = "Bedroom"
+        response = client.post(
+            f"/jobs/{job_id}/corrections", json=edited.model_dump(mode="json"),
+        )
+        validation = client.post(f"/jobs/{job_id}/validate-corrections")
+        for result in (response, validation):
+            assert result.status_code == 200, result.text
+            assert "inferred_stair_ceiling_void" not in {
+                issue["code"] for issue in result.json()["issues"]
+            }
+    corrected = FloorPlanModel.load_json(job_dir / "floorplan.corrected.json")
+    assert corrected.metadata["ceiling_void_room_ids"] == ["living"]
+    assert corrected.metadata["ceiling_void_inferences"] == []

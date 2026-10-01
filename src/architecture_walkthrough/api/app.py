@@ -30,6 +30,7 @@ from architecture_walkthrough.geometry.balcony_ownership import (
 )
 from architecture_walkthrough.geometry.floorplan import load_corrected_floorplan
 from architecture_walkthrough.geometry.models import FloorPlanModel, ValidationIssue
+from architecture_walkthrough.geometry.stair_voids import infer_stair_ceiling_voids
 from architecture_walkthrough.geometry.validation import (
     evaluate_quality,
     load_source_evidence,
@@ -181,6 +182,18 @@ def _carried_local_review_issues(
         issue for issue in source_model.validation_issues
         if issue.code == "unreconstructed_labeled_room"
     )
+    stair_void_inferences = model.metadata.get("ceiling_void_inferences", [])
+    stair_void_inferences = stair_void_inferences if isinstance(stair_void_inferences, list) else []
+    stair_void_ids = {
+        str(candidate["room_id"])
+        for candidate in stair_void_inferences
+        if isinstance(candidate, dict) and candidate.get("room_id")
+    }
+    if stair_void_ids:
+        issues.extend(
+            issue for issue in infer_stair_ceiling_voids(model.rooms, model.special_elements).issues
+            if issue.element_id in stair_void_ids
+        )
     if model.metadata.get("reviewed_source_trace_invalidated"):
         issues.append(
             ValidationIssue(
@@ -1335,6 +1348,31 @@ def _apply_correction_revision(
                 "metadata": metadata,
             }
         )
+    # Room IDs can survive a changed boundary; a previously inferred stairwell
+    # opening must not omit the ceiling over an unrelated replacement room.
+    # Recheck labels and stair footprints too, even if wall topology is unchanged.
+    previous_metadata = previous.metadata if previous is not None else {}
+    previous_voids = previous_metadata.get("ceiling_void_inferences", [])
+    previous_voids = previous_voids if isinstance(previous_voids, list) else []
+    inferred_void_ids = {
+        str(candidate["room_id"])
+        for candidate in previous_voids
+        if isinstance(candidate, dict) and candidate.get("room_id")
+    }
+    requested_void_ids = model.metadata.get(
+        "ceiling_void_room_ids", previous_metadata.get("ceiling_void_room_ids", [])
+    )
+    requested_void_ids = requested_void_ids if isinstance(requested_void_ids, list) else []
+    manual_void_ids = [
+        room_id for room_id in requested_void_ids
+        if isinstance(room_id, str) and room_id not in inferred_void_ids
+    ]
+    stair_voids = infer_stair_ceiling_voids(model.rooms, model.special_elements)
+    model = model.model_copy(update={"metadata": {
+        **model.metadata,
+        "ceiling_void_room_ids": list(dict.fromkeys([*manual_void_ids, *stair_voids.room_ids])),
+        "ceiling_void_inferences": stair_voids.inferences,
+    }})
     try:
         route = camera_waypoints_for_model(model)
         model = model.model_copy(update={"camera_waypoints": route})
