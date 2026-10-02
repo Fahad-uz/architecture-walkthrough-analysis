@@ -1,4 +1,8 @@
-# Architecture Walkthrough Analysis
+# PlanStride
+
+Turn floor plans into spaces you can explore. Formerly Architecture Walkthrough
+Analysis; the repository URL, package names, commands, and saved project format
+remain compatible.
 
 Convert a 2D architectural floor plan into an evidence-grounded, editable 3D
 building and explore it in a browser. The project combines deterministic

@@ -1,4 +1,5 @@
 import type { FloorPlanModel, JobRecord, QualityReport } from "./types";
+import type { CropRect } from "./crop";
 
 async function json<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -8,11 +9,14 @@ async function json<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
-export async function uploadPlan(file: File, useGemini: boolean, manualScale: string): Promise<JobRecord> {
+export async function uploadPlan(file: File, useGemini: boolean, manualScale: string, crop?: CropRect | null): Promise<JobRecord> {
   const form = new FormData();
   form.append("file", file);
   form.append("use_gemini", String(useGemini));
   if (manualScale.trim()) form.append("manual_scale", manualScale.trim());
+  if (crop) {
+    for (const field of ["x", "y", "width", "height"] as const) form.append(`crop_${field}`, String(crop[field]));
+  }
   return json(await fetch("/jobs", { method: "POST", body: form }));
 }
 

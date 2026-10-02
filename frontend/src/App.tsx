@@ -5,9 +5,9 @@ export default function App() {
     <div className="shell">
       <header className="topbar">
         <Link to="/" className="brand">
-          Architecture Walkthrough
+          PlanStride
         </Link>
-        <span className="tagline">plan image → editable layout → lit 3D walkthrough</span>
+        <span className="tagline">Turn floor plans into spaces you can explore</span>
       </header>
       <main className="content">
         <Outlet />

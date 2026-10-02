@@ -3,6 +3,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Circle, Group, Image as KonvaImage, Layer, Line, Stage, Text } from "react-konva";
 import { Link, useParams } from "react-router-dom";
 import { generateModel, getEditData, getJob, saveCorrections } from "../api";
+import {
+  appendDraft, createHistory, draftStorageKey, parseDraft, recordEdit, redoEdit, undoEdit, writeDraft,
+  type DraftEnvelope, type DraftVersion, type EditHistory,
+} from "../editorHistory";
 import type { FloorPlanModel, Opening, Point2D, QualityReport, RoomPolygon, SanityWarning, WallSegment } from "../types";
 
 type Tool = "select" | "wall" | "door" | "window" | "scale";
@@ -230,6 +234,23 @@ export default function EditorPage() {
   const [force, setForce] = useState(false);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const dirtyRef = useRef(false);
+  const historyRef = useRef<EditHistory<FloorPlanModel> | null>(null);
+  const savedModelRef = useRef("");
+  const dragGroupRef = useRef<boolean | null>(null);
+  const sessionRef = useRef(Symbol(jobId));
+  const draftContextRef = useRef<{
+    jobId: string;
+    envelope: DraftEnvelope | null;
+    raw: string | null;
+    ready: boolean;
+    recoveryPending: boolean;
+  } | null>(null);
+  const [draftVersions, setDraftVersions] = useState<DraftVersion[]>([]);
+  const [selectedDraftId, setSelectedDraftId] = useState("");
+  const [recoveryPending, setRecoveryPending] = useState(false);
+  const [draftMessage, setDraftMessage] = useState("");
+  const [draftError, setDraftError] = useState("");
   const [generating, setGenerating] = useState(false);
   const pollRef = useRef<number | null>(null);
   const revisionRef = useRef(0);
@@ -246,9 +267,43 @@ export default function EditorPage() {
   // plan-pixel coordinates underneath it.
   const [view, setView] = useState({ x: 0, y: 0, scale: 1 });
 
+  const persistLocalDraft = useCallback((source: DraftVersion["source"] = "automatic", quiet = false, includeSaved = false) => {
+    const context = draftContextRef.current;
+    const current = historyRef.current?.present;
+    if (!context || !current || !context.ready || context.recoveryPending ||
+        (source === "automatic" && !dirtyRef.current && !includeSaved && revisionRef.current === 0)) return;
+    try {
+      const next = appendDraft(context.envelope, context.jobId, current, source);
+      const raw = writeDraft(window.localStorage, next, context.raw);
+      context.raw = raw;
+      context.envelope = next;
+      if (!quiet) {
+        setDraftVersions(next.versions);
+        setSelectedDraftId(next.versions[0].id);
+        setDraftError("");
+        setDraftMessage(`Saved on this device at ${new Date(next.versions[0].savedAt).toLocaleTimeString()}`);
+      }
+    } catch (exc) {
+      if (!quiet) {
+        setDraftError(`Local draft was not saved: ${String(exc)} Your edits are still open; use Save changes to save to the project.`);
+      }
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     let img: HTMLImageElement | null = null;
+    sessionRef.current = Symbol(jobId);
+    historyRef.current = null;
+    savedModelRef.current = "";
+    dragGroupRef.current = null;
+    dirtyRef.current = false;
+    draftContextRef.current = null;
+    setDraftVersions([]);
+    setSelectedDraftId("");
+    setRecoveryPending(false);
+    setDraftMessage("");
+    setDraftError("");
     setModel(null);
     setImage(null);
     setSelection(null);
@@ -259,13 +314,30 @@ export default function EditorPage() {
     setSaving(false);
     setGenerating(false);
     revisionRef.current = 0;
+    savePromiseRef.current = null;
     setStatus("loading…");
     void (async () => {
       try {
         const data = await getEditData(jobId);
         if (cancelled) return;
+        historyRef.current = createHistory(data.model);
+        savedModelRef.current = JSON.stringify(data.model);
         setModel(data.model);
         setReport(qualityReportFromModel(data.model));
+        const context = { jobId, envelope: null as DraftEnvelope | null, raw: null as string | null, ready: false, recoveryPending: false };
+        draftContextRef.current = context;
+        try {
+          context.raw = window.localStorage.getItem(draftStorageKey(jobId));
+          context.envelope = parseDraft(context.raw, jobId, data.model.schema_version);
+          context.ready = true;
+          const versions = context.envelope?.versions ?? [];
+          setDraftVersions(versions);
+          setSelectedDraftId(versions[0]?.id ?? "");
+          context.recoveryPending = !!versions.length && JSON.stringify(versions[0].model) !== savedModelRef.current;
+          setRecoveryPending(context.recoveryPending);
+        } catch (exc) {
+          setDraftError(`Local recovery unavailable: ${String(exc)} The project version is still available.`);
+        }
         img = new window.Image();
         img.onload = () => {
           if (!cancelled) setImage(img);
@@ -287,7 +359,9 @@ export default function EditorPage() {
       }
     })();
     return () => {
+      persistLocalDraft("automatic", true);
       cancelled = true;
+      sessionRef.current = Symbol("closed");
       if (img) {
         img.onload = null;
         img.onerror = null;
@@ -297,7 +371,23 @@ export default function EditorPage() {
         pollRef.current = null;
       }
     };
-  }, [jobId]);
+  }, [jobId, persistLocalDraft]);
+
+  useEffect(() => {
+    if (!model || revisionRef.current === 0 || recoveryPending) return;
+    const timer = window.setTimeout(() => persistLocalDraft(), 700);
+    return () => window.clearTimeout(timer);
+  }, [model, dirty, recoveryPending, persistLocalDraft]);
+
+  useEffect(() => {
+    const flush = () => persistLocalDraft("automatic", true);
+    window.addEventListener("pagehide", flush);
+    window.addEventListener("beforeunload", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      window.removeEventListener("beforeunload", flush);
+    };
+  }, [persistLocalDraft]);
 
   useEffect(() => {
     const element = stageWrapRef.current;
@@ -332,12 +422,81 @@ export default function EditorPage() {
     fitToPlan(); // frame the whole plan once the image is known
   }, [fitToPlan]);
 
-  const update = useCallback((mutate: (m: FloorPlanModel) => FloorPlanModel) => {
+  const publishHistory = useCallback((next: EditHistory<FloorPlanModel>) => {
+    if (next === historyRef.current) return;
+    historyRef.current = next;
     revisionRef.current += 1;
-    setDirty(true);
-    setReport(null);
-    setModel((current) => (current ? mutate(structuredClone(current)) : current));
+    const changed = JSON.stringify(next.present) !== savedModelRef.current;
+    dirtyRef.current = changed;
+    setDirty(changed);
+    setReport(changed ? null : qualityReportFromModel(next.present));
+    setModel(next.present);
   }, []);
+
+  const update = useCallback((mutate: (m: FloorPlanModel) => FloorPlanModel) => {
+    const current = historyRef.current;
+    if (!current) return;
+    const next = recordEdit(current, mutate(structuredClone(current.present)), dragGroupRef.current === true);
+    if (next !== current && dragGroupRef.current === false) dragGroupRef.current = true;
+    publishHistory(next);
+  }, [publishHistory]);
+
+  const travelHistory = useCallback((direction: "undo" | "redo") => {
+    const current = historyRef.current;
+    if (!current) return;
+    dragGroupRef.current = null;
+    publishHistory(direction === "undo" ? undoEdit(current) : redoEdit(current));
+    setSelection(null);
+    setHover(null);
+    setPending(null);
+  }, [publishHistory]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const element = event.target;
+      if (element instanceof HTMLElement && (element.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(element.tagName))) return;
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      const key = event.key.toLowerCase();
+      if (key === "z" || (key === "y" && !event.metaKey)) {
+        event.preventDefault();
+        travelHistory(key === "y" || event.shiftKey ? "redo" : "undo");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [travelHistory]);
+
+  const restoreDraft = () => {
+    const context = draftContextRef.current;
+    const version = context?.envelope?.versions.find((item) => item.id === selectedDraftId);
+    if (!context || !version || !historyRef.current) return;
+    if (!window.confirm("Restore this local draft in the editor? You can undo this action. It will not replace the saved project until you choose Save changes.")) return;
+    context.recoveryPending = false;
+    setRecoveryPending(false);
+    publishHistory(recordEdit(historyRef.current, version.model));
+    setSelection(null);
+    setHover(null);
+    setPending(null);
+    setStatus("Local draft restored. Review it, then save changes when ready.");
+  };
+
+  const clearDrafts = () => {
+    const context = draftContextRef.current;
+    if (!context || !window.confirm("Delete this plan's local draft versions from this browser? The open layout and saved project will remain available.")) return;
+    try {
+      if (window.localStorage.getItem(draftStorageKey(jobId)) !== context.raw) throw new Error("Another tab changed the local draft. Reload to review it first.");
+      window.localStorage.removeItem(draftStorageKey(jobId));
+      context.envelope = null;
+      context.raw = null;
+      context.ready = true;
+      context.recoveryPending = false;
+      setDraftVersions([]);
+      setSelectedDraftId("");
+      setRecoveryPending(false);
+      setDraftError("");
+      setDraftMessage("Local draft versions cleared.");
+    } catch (exc) { setDraftError(String(exc)); }
+  };
 
   /** Pointer position in plan-pixel space, accounting for the pan/zoom transform. */
   const pointerPlanPx = (stage: Konva.Stage | null): { x: number; y: number } | null => {
@@ -488,12 +647,13 @@ export default function EditorPage() {
   };
 
   const save = async (): Promise<SavedCorrection | null> => {
-    if (!model) return null;
+    if (!historyRef.current) return null;
     if (savePromiseRef.current?.jobId === jobId) return savePromiseRef.current.promise;
 
     const savedJobId = jobId;
+    const savedSession = sessionRef.current;
     const savedRevision = revisionRef.current;
-    const correction = structuredClone(model);
+    const correction = structuredClone(historyRef.current.present);
     correction.walls.forEach((wall) => reclampWallOpenings(correction, wall));
     const requestId = Symbol(savedJobId);
     setSaving(true);
@@ -502,27 +662,32 @@ export default function EditorPage() {
     const task: Promise<SavedCorrection | null> = (async () => {
       try {
         const result = await saveCorrections(savedJobId, correction);
-        if (currentJobIdRef.current !== savedJobId) return null;
+        if (currentJobIdRef.current !== savedJobId || sessionRef.current !== savedSession) return null;
+        savedModelRef.current = JSON.stringify(result.model);
         if (revisionRef.current !== savedRevision) {
+          dirtyRef.current = JSON.stringify(historyRef.current?.present) !== savedModelRef.current;
+          setDirty(dirtyRef.current);
           setReport(null);
           setStatus("A snapshot was saved, but newer local edits remain. Save again before generating 3D.");
           return null;
         }
-        setModel(result.model);
+        if (historyRef.current) publishHistory(recordEdit(historyRef.current, result.model));
         setSelection(null);
         setHover(null);
         setPending(null);
         setReport(result);
+        dirtyRef.current = false;
         setDirty(false);
+        persistLocalDraft("automatic", false, true);
         setStatus(`saved — rooms regenerated from wall graph (${result.model.rooms.length} rooms)`);
         return result;
       } catch (exc) {
-        if (currentJobIdRef.current === savedJobId) setStatus(String(exc));
+        if (currentJobIdRef.current === savedJobId && sessionRef.current === savedSession) setStatus(String(exc));
         return null;
       } finally {
         if (savePromiseRef.current?.requestId === requestId) {
           savePromiseRef.current = null;
-          if (currentJobIdRef.current === savedJobId) setSaving(false);
+          if (currentJobIdRef.current === savedJobId && sessionRef.current === savedSession) setSaving(false);
         }
       }
     })();
@@ -815,6 +980,8 @@ export default function EditorPage() {
                             stroke="#222"
                             strokeWidth={2}
                             draggable
+                            onDragStart={() => { dragGroupRef.current = false; }}
+                            onDragEnd={() => { dragGroupRef.current = null; }}
                             onDragMove={(e) => {
                               const q = toM({ x: e.target.x(), y: e.target.y() });
                               update((m) => {
@@ -850,6 +1017,8 @@ export default function EditorPage() {
                       hitStrokeWidth={16}
                       lineCap="square"
                       draggable
+                      onDragStart={() => { dragGroupRef.current = false; }}
+                      onDragEnd={() => { dragGroupRef.current = null; }}
                       onMouseDown={(e) => {
                         e.cancelBubble = true;
                         setSelection({ kind, index });
@@ -886,6 +1055,43 @@ export default function EditorPage() {
         )}
       </div>
       <aside className="sidebar">
+        <div className="panel">
+          <div className="row">
+            <button type="button" onClick={() => travelHistory("undo")} disabled={!historyRef.current?.past.length} title="Undo (Ctrl/⌘ Z)">Undo</button>
+            <button type="button" onClick={() => travelHistory("redo")} disabled={!historyRef.current?.future.length} title="Redo (Ctrl/⌘ Shift Z)">Redo</button>
+            <span>{dirty ? "Unsaved project changes" : model ? "Project saved" : "Loading…"}</span>
+          </div>
+          <p style={{ fontSize: 12 }}>Edits autosave on this device. Use Save changes below to update the project. Up to five local versions and 50 undo steps are kept.</p>
+          {recoveryPending && (
+            <p role="status">A local draft differs from the saved project. Choose a version to restore, or keep the project version. Neither is replaced automatically.</p>
+          )}
+          {!!draftVersions.length && (
+            <>
+              <label>
+                Local draft version
+                <select value={selectedDraftId} onChange={(e) => setSelectedDraftId(e.target.value)}>
+                  {draftVersions.map((version) => (
+                    <option key={version.id} value={version.id}>
+                      {new Date(version.savedAt).toLocaleString()} · {version.source === "manual" ? "saved by you" : "autosaved"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button type="button" onClick={restoreDraft} disabled={!model || saving || generating}>Restore selected draft</button>
+            </>
+          )}
+          <div className="row">
+            <button type="button" onClick={() => persistLocalDraft("manual")} disabled={!model || recoveryPending || !draftContextRef.current?.ready}>Save local draft</button>
+            {recoveryPending && <button type="button" onClick={() => {
+              if (draftContextRef.current) draftContextRef.current.recoveryPending = false;
+              setRecoveryPending(false);
+              setDraftMessage("Kept the project version. Older local versions remain available to restore.");
+            }}>Keep project version</button>}
+            {(draftVersions.length > 0 || draftError) && <button type="button" onClick={clearDrafts}>Clear local drafts</button>}
+          </div>
+          {draftMessage && <div role="status" style={{ fontSize: 12 }}>{draftMessage}</div>}
+          {draftError && <div role="alert" style={{ color: "#a12622", fontSize: 12 }}>{draftError}</div>}
+        </div>
         <div className="panel">
           <div className="row">
             {(["select", "wall", "door", "window", "scale"] as Tool[]).map((t) => (
