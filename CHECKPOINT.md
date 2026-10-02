@@ -41,6 +41,12 @@ are now being published first. Starting allowance on resume: 82% remaining.
   Existing routes, package names and saved projects are unchanged.
   Checks: frontend typecheck/build and API upload tests.
 
+- Compatible PlanStride branding published: `ed2b21e7ce196453efd11ec13df362658f813a50`.
+- Upload preview and crop selection implemented with original-image preservation,
+  reset, precise controls, crop undo/redo and image-size guidance. Uses existing
+  crop transform/ROI pipeline; rotation and perspective correction remain pending.
+  Checks: crop geometry tests, frontend typecheck and production build.
+
 ## Current work
 
 1. Establish reproducible automatic baseline, with AI disabled and no manual

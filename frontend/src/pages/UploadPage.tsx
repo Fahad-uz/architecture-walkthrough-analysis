@@ -2,9 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { getJob, uploadPlan } from "../api";
 import type { JobRecord } from "../types";
+import ImagePreparation from "../components/ImagePreparation";
+import type { CropRect } from "../crop";
 
 export default function UploadPage() {
   const [file, setFile] = useState<File | null>(null);
+  const [crop, setCrop] = useState<CropRect | null>(null);
+  const [fileVersion, setFileVersion] = useState(0);
+  const [submitting, setSubmitting] = useState(false);
+  const submitRef = useRef(false);
   const [useGemini, setUseGemini] = useState(true);
   const [manualScale, setManualScale] = useState("");
   const [job, setJob] = useState<JobRecord | null>(null);
@@ -42,7 +48,7 @@ export default function UploadPage() {
   };
 
   const submit = async () => {
-    if (!file) return;
+    if (!file || submitRef.current) return;
     setError("");
     const parsedScale = manualScale.trim() ? Number(manualScale) : null;
     if (parsedScale !== null && (!Number.isFinite(parsedScale) || parsedScale <= 0)) {
@@ -50,16 +56,21 @@ export default function UploadPage() {
       return;
     }
     try {
-      const record = await uploadPlan(file, useGemini, manualScale);
+      submitRef.current = true;
+      setSubmitting(true);
+      const record = await uploadPlan(file, useGemini, manualScale, crop);
       if (!mountedRef.current) return;
       setJob(record);
       startPolling(record.job_id);
     } catch (exc) {
       if (mountedRef.current) setError(String(exc));
+    } finally {
+      submitRef.current = false;
+      if (mountedRef.current) setSubmitting(false);
     }
   };
 
-  const busy = job !== null && ["created", "processing", "generating"].includes(job.status);
+  const busy = submitting || (job !== null && ["created", "processing", "generating"].includes(job.status));
 
   return (
     <div className="upload-card">
@@ -70,8 +81,11 @@ export default function UploadPage() {
       </p>
       <label>
         Plan image
-        <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+        <input type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={(e) => {
+          setFile(e.target.files?.[0] ?? null); setCrop(null); setJob(null); setError(""); setFileVersion((v) => v + 1);
+        }} />
       </label>
+      {file && <ImagePreparation key={fileVersion} file={file} crop={crop} onCrop={setCrop} disabled={busy} />}
       <label className="row" style={{ display: "flex" }}>
         <input type="checkbox" checked={useGemini} onChange={(e) => setUseGemini(e.target.checked)} />
         Use Gemini for room labels / dimension text / sanity check (never geometry)
