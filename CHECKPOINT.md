@@ -34,6 +34,13 @@ The previous session stopped at the usage limit before any feature implementatio
 or new baseline run was saved. This checkpoint and the complete upgrade brief
 are now being published first. Starting allowance on resume: 82% remaining.
 
+## Completed this session
+
+- Published upgrade brief and initial checkpoint: `eaf21226d03bb4725ceb3e0b7a4f2612ea04c638`.
+- Renamed the UI, browser title, API title, fallback page and README to PlanStride.
+  Existing routes, package names and saved projects are unchanged.
+  Checks: frontend typecheck/build and API upload tests.
+
 ## Current work
 
 1. Establish reproducible automatic baseline, with AI disabled and no manual
@@ -42,8 +49,7 @@ are now being published first. Starting allowance on resume: 82% remaining.
    at least 30 untouched evaluation examples. Verify family/building separation
    and near duplicates before calling any set a valid final evaluation set.
 3. Implement editor undo/redo and recoverable versioned local drafts.
-4. Rename product UI and documentation to PlanStride without changing package,
-   command, repository or saved-project identifiers.
+4. Review and publish each tested milestone, then merge normally into main.
 
 ## Remaining full upgrade scope
 

@@ -1460,7 +1460,7 @@ def create_app() -> FastAPI:
         finally:
             runner.close()
 
-    app = FastAPI(title="Architecture Walkthrough Analysis", lifespan=lifespan)
+    app = FastAPI(title="PlanStride", lifespan=lifespan)
     app.state.runner = runner
     app.add_middleware(
         RequestBodyLimitMiddleware,
@@ -1733,7 +1733,7 @@ def create_app() -> FastAPI:
         @app.get("/", response_class=HTMLResponse)
         def frontend_missing() -> str:
             return (
-                "<h1>Architecture Walkthrough Analysis</h1>"
+                "<h1>PlanStride</h1>"
                 "<p>The web app is not built yet. Run <code>npm install && npm run build</code> "
                 "in <code>frontend/</code>, then restart the server. The JSON API is live.</p>"
             )
