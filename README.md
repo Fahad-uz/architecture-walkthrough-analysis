@@ -65,6 +65,10 @@ Generated jobs live under `outputs/`; local input plans and optional models,
 textures, and HDRIs live under `assets/`. Those large or private artifacts are
 ignored by Git while their directory placeholders remain tracked.
 
+The small bundled CC0 surface library is an exception: plaster, wood, and tile
+maps are included so new checkouts render textured surfaces without a download
+or API key. See [asset sources and checksums](assets/THIRD_PARTY.md).
+
 ## Local setup
 
 Requirements:
@@ -94,6 +98,25 @@ include `ARCH_WALK_CONFIG`, `ARCH_WALK_BLENDER_PATH`,
 `ARCH_WALK_FFMPEG_PATH`, `ARCH_WALK_GEMINI_ENABLED`, and
 `ARCH_WALK_GEMINI_MODEL`. Set `GEMINI_API_KEY` only if optional Gemini analysis
 is enabled. Never commit `.env` files or credentials.
+
+On macOS or Linux, use Python 3.12 and the Unix virtual-environment paths:
+
+```sh
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -e ".[dev]"
+npm --prefix frontend ci
+npm --prefix frontend run build
+npm --prefix tools/glb ci
+.venv/bin/python scripts/download_materials.py --check
+```
+
+On macOS, set `ARCH_WALK_BLENDER_PATH` to the actual executable inside the app,
+for example `/Applications/Blender.app/Contents/MacOS/Blender`. Blender needs its
+bundled resources, so a shell wrapper that executes this path is preferable to
+a symlink when adding it to `PATH`.
+
+Start locally with `.venv/bin/uvicorn architecture_walkthrough.ui:create_app
+--factory --host 127.0.0.1 --port 8001`. The Windows command below remains valid.
 
 ## Run the web application
 
@@ -194,6 +217,7 @@ cd frontend
 npm ci
 npm audit --audit-level=high
 npm run typecheck
+npm test
 npm run build
 
 cd ..\tools\glb

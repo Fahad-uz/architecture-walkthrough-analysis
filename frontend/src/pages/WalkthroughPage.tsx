@@ -3,10 +3,10 @@ import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { EffectComposer, N8AO, SMAA, ToneMapping } from "@react-three/postprocessing";
 import nipplejs from "nipplejs";
 import { ToneMappingMode } from "postprocessing";
-import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
-  ACESFilmicToneMapping,
+  NoToneMapping,
   Box3,
   BoxGeometry,
   Curve,
@@ -16,7 +16,6 @@ import {
   Line3,
   LineCurve3,
   MathUtils,
-  Matrix4,
   Mesh,
   SRGBColorSpace,
   Vector3,
@@ -25,233 +24,35 @@ import { MeshBVH, StaticGeometryGenerator } from "three-mesh-bvh";
 import { getEditData, getJob, versionedGlbUrl } from "../api";
 import NeutralEnvironment from "../components/NeutralEnvironment";
 import SceneErrorBoundary from "../components/SceneErrorBoundary";
+import ModelShadows from "../components/ModelShadows";
 import type {
   FloorPlanModel,
   FurniturePlacement,
   JobRecord,
-  Point2D,
-  RoomPolygon,
-  WallSegment,
 } from "../types";
 import useCoarsePointer from "../useCoarsePointer";
+import { CAPSULE_RADIUS, furnitureProxyHeight, insideFurniture, interestingViewTarget, isSafePlanPoint, isStructuralColliderName, isWalkableFurniture, openViewTarget, roomArea, safeRoomPoint, resolveFurniture } from "../navigation";
 
 const EYE_HEIGHT = 1.6;
 const WALK_SPEED = 1.4; // m/s
-const CAPSULE_RADIUS = 0.3;
+
 
 /** The GLB is Y-up (metres); plan coords (x, y) map to world (x, -y). */
 function planToWorld(x: number, y: number, height = EYE_HEIGHT): Vector3 {
   return new Vector3(x, height, -y);
 }
 
-function pointInPolygon(point: Point2D, polygon: Point2D[]): boolean {
-  let inside = false;
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
-    const a = polygon[i];
-    const b = polygon[j];
-    if (
-      (a.y > point.y) !== (b.y > point.y) &&
-      point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y || Number.EPSILON) + a.x
-    ) {
-      inside = !inside;
-    }
-  }
-  return inside;
-}
-
-function distanceToSegment(point: Point2D, a: Point2D, b: Point2D): number {
-  const lengthSquared = (b.x - a.x) ** 2 + (b.y - a.y) ** 2;
-  if (lengthSquared === 0) return Math.hypot(point.x - a.x, point.y - a.y);
-  const t = Math.max(0, Math.min(1, ((point.x - a.x) * (b.x - a.x) + (point.y - a.y) * (b.y - a.y)) / lengthSquared));
-  return Math.hypot(point.x - (a.x + t * (b.x - a.x)), point.y - (a.y + t * (b.y - a.y)));
-}
-
-function clearanceFromWalls(point: Point2D, walls: WallSegment[]): number {
-  let clearance = Number.POSITIVE_INFINITY;
-  for (const wall of walls) {
-    clearance = Math.min(
-      clearance,
-      distanceToSegment(point, wall.start, wall.end) - wall.thickness_m / 2,
-    );
-  }
-  return clearance;
-}
-
-function roomArea(room: RoomPolygon): number {
-  let twiceArea = 0;
-  for (let i = 0; i < room.points.length; i += 1) {
-    const a = room.points[i];
-    const b = room.points[(i + 1) % room.points.length];
-    twiceArea += a.x * b.y - b.x * a.y;
-  }
-  return Math.abs(twiceArea) / 2;
-}
-
-/** Coarse polylabel: choose an interior point with the greatest sampled
- * clearance from the room boundary. Unlike a vertex average, this remains
- * inside concave rooms and avoids spawning the camera in a wall. */
-function insideFurniture(point: Point2D, item: FurniturePlacement, clearance = 0.35): boolean {
-  const angle = (-(item.rotation_deg ?? 0) * Math.PI) / 180;
-  const dx = point.x - item.center.x;
-  const dy = point.y - item.center.y;
-  const localX = dx * Math.cos(angle) - dy * Math.sin(angle);
-  const localY = dx * Math.sin(angle) + dy * Math.cos(angle);
-  return (
-    Math.abs(localX) <= item.width_m / 2 + clearance &&
-    Math.abs(localY) <= item.depth_m / 2 + clearance
-  );
-}
-
-function safeRoomPoint(
-  room: RoomPolygon,
-  furniture: FurniturePlacement[],
-  walls: WallSegment[],
-): Point2D | null {
-  if (room.points.length < 3) return null;
-  const xs = room.points.map((point) => point.x);
-  const ys = room.points.map((point) => point.y);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
-  let best: Point2D | null = null;
-  let bestClearance = -1;
-  const samplesX = Math.min(64, Math.max(16, Math.ceil((maxX - minX) / 0.18)));
-  const samplesY = Math.min(64, Math.max(16, Math.ceil((maxY - minY) / 0.18)));
-  for (let xi = 0; xi < samplesX; xi += 1) {
-    for (let yi = 0; yi < samplesY; yi += 1) {
-      const candidate = {
-        x: minX + ((xi + 0.5) / samplesX) * (maxX - minX),
-        y: minY + ((yi + 0.5) / samplesY) * (maxY - minY),
-      };
-      if (!pointInPolygon(candidate, room.points)) continue;
-      if (furniture.some((item) => insideFurniture(candidate, item))) continue;
-      let clearance = Number.POSITIVE_INFINITY;
-      for (let index = 0; index < room.points.length; index += 1) {
-        clearance = Math.min(
-          clearance,
-          distanceToSegment(candidate, room.points[index], room.points[(index + 1) % room.points.length]),
-        );
-      }
-      clearance = Math.min(clearance, clearanceFromWalls(candidate, walls));
-      if (clearance > bestClearance) {
-        best = candidate;
-        bestClearance = clearance;
-      }
-    }
-  }
-  return bestClearance >= CAPSULE_RADIUS + 0.08 ? best : null;
-}
-
-function isSafePlanPoint(
-  point: Point2D,
-  rooms: RoomPolygon[],
-  furniture: FurniturePlacement[],
-  walls: WallSegment[],
-): boolean {
-  const room = rooms.find((candidate) => pointInPolygon(point, candidate.points));
-  if (!room || furniture.some((item) => insideFurniture(point, item))) return false;
-  let clearance = Number.POSITIVE_INFINITY;
-  for (let index = 0; index < room.points.length; index += 1) {
-    clearance = Math.min(
-      clearance,
-      distanceToSegment(point, room.points[index], room.points[(index + 1) % room.points.length]),
-    );
-  }
-  clearance = Math.min(clearance, clearanceFromWalls(point, walls));
-  return clearance >= CAPSULE_RADIUS + 0.08;
-}
-
-/** Find a useful first view direction without assuming that world -Z faces
- * into the room. Rays stop as soon as they approach a wall or furniture. */
-function openViewTarget(
-  origin: Point2D,
-  rooms: RoomPolygon[],
-  furniture: FurniturePlacement[],
-  walls: WallSegment[],
-): Point2D | null {
-  let best: Point2D | null = null;
-  let bestReach = 0;
-  const directionCount = 16;
-  for (let index = 0; index < directionCount; index += 1) {
-    const angle = (index / directionCount) * Math.PI * 2;
-    for (let reach = 0.25; reach <= 2.5; reach += 0.25) {
-      const candidate = {
-        x: origin.x + Math.cos(angle) * reach,
-        y: origin.y + Math.sin(angle) * reach,
-      };
-      if (!isSafePlanPoint(candidate, rooms, furniture, walls)) break;
-      if (reach > bestReach) {
-        best = candidate;
-        bestReach = reach;
-      }
-    }
-  }
-  return best;
-}
-
-/** Prefer starting with a recognizable room feature in view. A clear wall is
- * technically collision-safe, but it makes the first impression feel broken. */
-function interestingViewTarget(
-  origin: Point2D,
-  rooms: RoomPolygon[],
-  furniture: FurniturePlacement[],
-  walls: WallSegment[],
-): Point2D | null {
-  const room = rooms.find((candidate) => pointInPolygon(origin, candidate.points));
-  if (!room) return null;
-  let best: { target: Point2D; score: number } | null = null;
-  for (const item of furniture) {
-    if (isWalkableFurniture(item.category) || !pointInPolygon(item.center, room.points)) continue;
-    const distance = Math.hypot(item.center.x - origin.x, item.center.y - origin.y);
-    if (distance < 0.8 || distance > 6) continue;
-    let sightlineClear = true;
-    const dx = item.center.x - origin.x;
-    const dy = item.center.y - origin.y;
-    const sideX = (-dy / distance) * 0.18;
-    const sideY = (dx / distance) * 0.18;
-    const sampleCount = Math.max(10, Math.ceil(distance / 0.08));
-    for (let step = 1; step < sampleCount; step += 1) {
-      const amount = step / sampleCount;
-      const center = {
-        x: origin.x + dx * amount,
-        y: origin.y + dy * amount,
-      };
-      const samples = [
-        center,
-        { x: center.x + sideX, y: center.y + sideY },
-        { x: center.x - sideX, y: center.y - sideY },
-      ];
-      if (
-        samples.some((sample) => clearanceFromWalls(sample, walls) < 0.03) ||
-        furniture.some(
-          (blocker) =>
-            blocker !== item &&
-            !isWalkableFurniture(blocker.category) &&
-            insideFurniture(center, blocker, 0.02),
-        )
-      ) {
-        sightlineClear = false;
-        break;
-      }
-    }
-    if (!sightlineClear) continue;
-    const category = item.category.toLowerCase();
-    const interestPenalty = /(sofa|couch|chair|table|bed)/.test(category)
-      ? 0
-      : /(counter|sink|stove|plant)/.test(category)
-        ? 0.35
-        : 0.7;
-    const score = Math.abs(distance - 3) + interestPenalty;
-    if (!best || score < best.score) best = { target: item.center, score };
-  }
-  return best?.target ?? null;
-}
-
-function useKeys() {
+function useKeys(enabled: boolean) {
   const keys = useRef<Record<string, boolean>>({});
   useEffect(() => {
-    const down = (e: KeyboardEvent) => (keys.current[e.code] = true);
+    keys.current = {};
+    if (!enabled) return;
+    const down = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLElement && (e.target.matches("input, textarea, select") || e.target.isContentEditable)) return;
+      if (!["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "ShiftLeft", "ShiftRight"].includes(e.code)) return;
+      e.preventDefault();
+      keys.current[e.code] = true;
+    };
     const up = (e: KeyboardEvent) => (keys.current[e.code] = false);
     const clear = () => {
       keys.current = {};
@@ -268,8 +69,9 @@ function useKeys() {
       window.removeEventListener("keyup", up);
       window.removeEventListener("blur", clear);
       document.removeEventListener("visibilitychange", visibility);
+      clear();
     };
-  }, []);
+  }, [enabled]);
   return keys;
 }
 
@@ -288,7 +90,7 @@ function TouchLookControls({ enabled }: { enabled: boolean }) {
     element.style.touchAction = "none";
 
     const down = (event: PointerEvent) => {
-      if (event.pointerType !== "touch" || !event.isPrimary) return;
+      if (event.pointerType !== "touch" || drag.current) return;
       const bounds = element.getBoundingClientRect();
       if (event.clientX < bounds.left + bounds.width * 0.45) return;
       drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
@@ -338,6 +140,8 @@ interface PlayerProps {
   joystick: React.MutableRefObject<{ x: number; y: number }>;
   tour: Curve<Vector3> | null;
   tourActive: boolean;
+  movementEnabled: boolean;
+  resetNonce: number;
   onLeaveTour: () => void;
 }
 
@@ -348,10 +152,12 @@ function Player({
   joystick,
   tour,
   tourActive,
+  movementEnabled,
+  resetNonce,
   onLeaveTour,
 }: PlayerProps) {
   const camera = useThree((s) => s.camera);
-  const keys = useKeys();
+  const keys = useKeys(movementEnabled);
   const position = useRef(start.clone());
   const tourT = useRef(0);
   const previousTourPoint = useRef<Vector3 | null>(null);
@@ -364,7 +170,7 @@ function Player({
       segment: new Line3(),
       vector: new Vector3(),
       vector2: new Vector3(),
-      matrix: new Matrix4(),
+      up: new Vector3(0, 1, 0),
       forward: new Vector3(),
       right: new Vector3(),
       move: new Vector3(),
@@ -380,7 +186,7 @@ function Player({
     if (initialLookAt && initialLookAt.distanceToSquared(start) > 1e-6) {
       camera.lookAt(initialLookAt);
     }
-  }, [camera, initialLookAt, start]);
+  }, [camera, initialLookAt, start, resetNonce]);
 
   useEffect(() => {
     if (tourActive && tour) {
@@ -462,21 +268,21 @@ function Player({
         keys.current.KeyD ||
         Math.abs(joystick.current.x) > 0.05 ||
         Math.abs(joystick.current.y) > 0.05;
-    } else {
+    } else if (movementEnabled) {
       // Movement input: WASD + mobile joystick, camera-relative on the ground plane.
       camera.getWorldDirection(temp.forward);
       temp.forward.y = 0;
       temp.forward.normalize();
-      temp.right.crossVectors(temp.forward, new Vector3(0, 1, 0));
+      temp.right.crossVectors(temp.forward, temp.up);
       temp.move.set(0, 0, 0);
-      const fw = (keys.current.KeyW ? 1 : 0) - (keys.current.KeyS ? 1 : 0) + joystick.current.y;
+      const fw = (keys.current.KeyW || keys.current.ArrowUp ? 1 : 0) - (keys.current.KeyS || keys.current.ArrowDown ? 1 : 0) + joystick.current.y;
       const side =
-        (keys.current.KeyD ? 1 : 0) - (keys.current.KeyA ? 1 : 0) + joystick.current.x;
+        (keys.current.KeyD || keys.current.ArrowRight ? 1 : 0) - (keys.current.KeyA || keys.current.ArrowLeft ? 1 : 0) + joystick.current.x;
       temp.move.addScaledVector(temp.forward, fw).addScaledVector(temp.right, side);
       if (temp.move.lengthSq() > 0) {
-        temp.move
-          .normalize()
-          .multiplyScalar(WALK_SPEED * (keys.current.ShiftLeft ? 2.0 : 1.0) * delta);
+        temp.move.clampLength(0, 1).multiplyScalar(
+          WALK_SPEED * (keys.current.ShiftLeft || keys.current.ShiftRight ? 2.0 : 1.0) * delta,
+        );
         position.current.add(temp.move);
       }
     }
@@ -558,43 +364,16 @@ function Player({
   return null;
 }
 
-function isStructuralColliderName(name: string): boolean {
-  return (
-    (/^Wall_/i.test(name) && !/^Wall_Cap_/i.test(name)) ||
-    /^Walls_Joined(?:_|$)/i.test(name) ||
-    /^DoorLeaf_/i.test(name) ||
-    /^Window(?:Glass|_)/i.test(name) ||
-    /^Special_/i.test(name)
-  );
-}
-
-function furnitureProxyHeight(category: string): number {
-  const normalized = category.toLowerCase().replace(/[- ]/g, "_");
-  if (/(wardrobe|cabinet|closet|appliance)/.test(normalized)) return 1.8;
-  if (/(counter|sink|stove|cooktop)/.test(normalized)) return 1.0;
-  if (/(bed|sofa|couch|chair|table|plant)/.test(normalized)) return 0.9;
-  return 1.0;
-}
-
-function isWalkableFurniture(category: string): boolean {
-  const normalized = category.toLowerCase().replace(/[- ]/g, "_");
-  const tokens = new Set(normalized.split("_").filter(Boolean));
-  return (
-    normalized.includes("floor_patch") ||
-    tokens.has("rug") ||
-    tokens.has("carpet") ||
-    tokens.has("door")
-  );
-}
-
 function Scene({
   url,
   furniture,
   onCollider,
+  coarsePointer,
 }: {
   url: string;
   furniture: FurniturePlacement[];
   onCollider: (mesh: Mesh | null) => void;
+  coarsePointer: boolean;
 }) {
   const { scene } = useGLTF(url, "/draco/");
   // Never mount drei's cached scene directly: previews and Strict Mode mounts
@@ -618,7 +397,7 @@ function Scene({
     const proxies = furniture
       .filter((item) => !isWalkableFurniture(item.category))
       .map((item, index) => {
-        const height = furnitureProxyHeight(item.category);
+        const height = item.height_m ?? furnitureProxyHeight(item.category);
         const proxy = new Mesh(new BoxGeometry(item.width_m, height, item.depth_m));
         proxy.name = `FurnitureProxy_${index.toString().padStart(3, "0")}`;
         proxy.position.set(item.center.x, height / 2, -item.center.y);
@@ -632,8 +411,7 @@ function Scene({
         proxy.geometry.dispose();
         if (!Array.isArray(proxy.material)) proxy.material.dispose();
       }
-      onCollider(null);
-      return;
+      throw new Error("This model has no walkable structure. Return to the editor to review the walls and regenerate it.");
     }
     // Generate directly from the original meshes. Reparenting clones loses
     // transforms inherited from GLTF node groups and misaligns collisions.
@@ -661,9 +439,13 @@ function Scene({
       onCollider(null);
       (merged as any).boundsTree?.dispose?.();
       merged.dispose();
+      if (!Array.isArray(collider.material)) collider.material.dispose();
     };
   }, [furniture, model, onCollider]);
-  return <primitive object={model} />;
+  return <>
+    <primitive object={model} />
+    <ModelShadows model={model} coarsePointer={coarsePointer} />
+  </>;
 }
 
 function LoadingOverlay({ ready }: { ready: boolean }) {
@@ -678,7 +460,7 @@ function LoadingOverlay({ ready }: { ready: boolean }) {
 
 export default function WalkthroughPage() {
   const { jobId = "" } = useParams();
-  const [collider, setCollider] = useState<Mesh | null>(null);
+  const [collisionState, setCollisionState] = useState<{ url: string | null; mesh: Mesh | null }>({ url: null, mesh: null });
   const [plan, setPlan] = useState<FloorPlanModel | null>(null);
   const [job, setJob] = useState<JobRecord | null>(null);
   const [tourActive, setTourActive] = useState(false);
@@ -686,10 +468,17 @@ export default function WalkthroughPage() {
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [sceneError, setSceneError] = useState<string | null>(null);
   const [sceneRetry, setSceneRetry] = useState(0);
+  const [resetNonce, setResetNonce] = useState(0);
   const joystick = useRef({ x: 0, y: 0 });
   const coarsePointer = useCoarsePointer();
   // Versioned URL: never render a stale cached GLB after a Blender rebuild.
   const url = job?.glb_url ? versionedGlbUrl(jobId, job.glb_version) : null;
+  // Associate readiness with the loaded version. Clearing it in a parent
+  // effect races the child's collider effect when a model is already cached.
+  const collider = collisionState.url === url ? collisionState.mesh : null;
+  const handleCollider = useCallback((mesh: Mesh | null) => {
+    setCollisionState({ url, mesh });
+  }, [url]);
   const sceneResetKey = url ? `${url}:${sceneRetry}` : null;
   // New jobs publish the actual bake preset. Fall back to the legacy source
   // marker only for records created before bake-mode metadata existed.
@@ -703,11 +492,13 @@ export default function WalkthroughPage() {
     let timer: number | null = null;
     let knownVersion: number | undefined;
     let planLoaded = false;
+    setJob(null);
+    setPlan(null);
+    setRefreshError(null);
     const refresh = async () => {
       try {
         const nextJob = await getJob(jobId);
         if (cancelled) return;
-        setJob(nextJob);
         setRefreshError(null);
         if (!planLoaded || nextJob.glb_version !== knownVersion) {
           try {
@@ -721,8 +512,12 @@ export default function WalkthroughPage() {
             if (!cancelled) {
               setRefreshError(`Could not refresh the walkthrough layout: ${String(error)}`);
             }
+            return;
           }
         }
+        // Publish the GLB version only after its matching plan is ready.
+        // A failed refresh preserves the last consistent model/collider pair.
+        if (!cancelled) setJob(nextJob);
       } catch (error) {
         if (!cancelled) setRefreshError(`Could not refresh model status: ${String(error)}`);
       } finally {
@@ -737,8 +532,8 @@ export default function WalkthroughPage() {
   }, [jobId]);
 
   useEffect(() => {
-    setCollider(null);
     setTourActive(false);
+    setLocked(false);
     setSceneError(null);
     setSceneRetry(0);
   }, [url]);
@@ -758,10 +553,12 @@ export default function WalkthroughPage() {
       joystick.current = { x: 0, y: 0 };
       manager.destroy();
     };
-  }, [coarsePointer]);
+  }, [coarsePointer, collider, tourActive]);
 
   const furnitureObstacles = useMemo(
-    () => [...(plan?.furniture ?? []), ...(plan?.asset_placements ?? [])],
+    () => resolveFurniture(plan?.furniture ?? [], plan?.asset_placements ?? []).filter(
+      (item) => !isWalkableFurniture(item.category),
+    ),
     [plan],
   );
   const start = useMemo(() => {
@@ -846,11 +643,15 @@ export default function WalkthroughPage() {
           ← exit walkthrough
         </Link>
         <div className="row">
+          <button type="button" disabled={!collider || !plan} onClick={() => {
+            setTourActive(false);
+            setResetNonce((value) => value + 1);
+          }}>Reset position</button>
           {tour && (
             <button
               type="button"
               aria-pressed={tourActive}
-              disabled={!collider}
+              disabled={!collider || !plan}
               onClick={() => setTourActive((v) => !v)}
             >
               {tourActive ? "take manual control" : "guided tour"}
@@ -870,7 +671,7 @@ export default function WalkthroughPage() {
           resetKey={sceneResetKey}
           fallback={
             <div className="walkthrough-error" role="alert">
-              <span>This model could not be loaded for walkthrough.</span>
+              <span>{sceneError ?? "This model could not be loaded for walkthrough."}</span>
               <button
                 type="button"
                 onClick={() => {
@@ -889,7 +690,8 @@ export default function WalkthroughPage() {
             aria-label="First-person architectural walkthrough"
             camera={{ position: start.toArray(), fov: coarsePointer ? 68 : 62, near: 0.05 }}
             dpr={coarsePointer ? [1, 1.25] : [1, 1.75]}
-            gl={{ toneMapping: ACESFilmicToneMapping, outputColorSpace: SRGBColorSpace }}
+            shadows
+            gl={{ toneMapping: NoToneMapping, outputColorSpace: SRGBColorSpace }}
           >
             <color attach="background" args={["#c9ced3"]} />
             <NeutralEnvironment />
@@ -902,8 +704,9 @@ export default function WalkthroughPage() {
               <Scene
                 key={sceneResetKey}
                 url={url}
-                furniture={plan?.furniture ?? []}
-                onCollider={setCollider}
+                furniture={furnitureObstacles}
+                onCollider={handleCollider}
+                coarsePointer={coarsePointer}
               />
             </Suspense>
             {collider && plan && (
@@ -914,27 +717,27 @@ export default function WalkthroughPage() {
                 joystick={joystick}
                 tour={tour}
                 tourActive={tourActive}
+                movementEnabled={coarsePointer || locked}
+                resetNonce={resetNonce}
                 onLeaveTour={() => setTourActive(false)}
               />
             )}
             {collider && !tourActive && !coarsePointer && (
-              <PointerLockControls onLock={() => setLocked(true)} onUnlock={() => setLocked(false)} />
+              <PointerLockControls selector=".walkthrough-root canvas" onLock={() => setLocked(true)} onUnlock={() => setLocked(false)} />
             )}
             <TouchLookControls enabled={Boolean(collider && coarsePointer && !tourActive)} />
-            {!baked && (
-              <EffectComposer multisampling={0}>
-                <N8AO
+            <EffectComposer multisampling={0}>
+                {[...(!baked ? [<N8AO key="ao"
                   aoRadius={0.35}
                   intensity={1.8}
                   distanceFalloff={1}
                   quality={coarsePointer ? "performance" : "medium"}
                   halfRes={coarsePointer}
                   depthAwareUpsampling
-                />
-                <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
-                <SMAA />
-              </EffectComposer>
-            )}
+                />] : []),
+                <ToneMapping key="tone" mode={ToneMappingMode.ACES_FILMIC} />,
+                <SMAA key="antialias" />]}
+            </EffectComposer>
           </Canvas>
         </SceneErrorBoundary>
       ) : (
@@ -943,7 +746,11 @@ export default function WalkthroughPage() {
         </div>
       )}
       {coarsePointer && collider && !tourActive && <div id="joystick-zone" aria-label="Movement joystick" />}
-      {url && !sceneError && <LoadingOverlay ready={Boolean(collider && plan)} />}
+      {url && !sceneError && (!refreshError || plan) && <LoadingOverlay ready={Boolean(collider && plan)} />}
+      {url && refreshError && !plan && <div className="walkthrough-error" role="alert">
+        <span>{refreshError}</span>
+        <Link className="button-link" to={`/jobs/${jobId}/edit`}>Return to editor</Link>
+      </div>}
       {refreshError && job && <div className="walkthrough-notice">{refreshError}</div>}
     </div>
   );

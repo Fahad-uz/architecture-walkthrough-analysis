@@ -30,6 +30,7 @@ from architecture_walkthrough.geometry.balcony_ownership import (
 )
 from architecture_walkthrough.geometry.floorplan import load_corrected_floorplan
 from architecture_walkthrough.geometry.models import FloorPlanModel, ValidationIssue
+from architecture_walkthrough.geometry.stair_voids import infer_stair_ceiling_voids
 from architecture_walkthrough.geometry.validation import (
     evaluate_quality,
     load_source_evidence,
@@ -166,10 +167,75 @@ def _semantic_review_issues(model: FloorPlanModel) -> list[ValidationIssue]:
     return recovered
 
 
-def _carried_local_review_issues(model: FloorPlanModel) -> list[ValidationIssue]:
-    """Keep image-derived ambiguity that cannot be recomputed from JSON alone."""
+def _carried_local_review_issues(
+    model: FloorPlanModel, *, previous: FloorPlanModel | None = None,
+) -> list[ValidationIssue]:
+    """Keep source-image review findings when validation is recomputed."""
 
-    return [issue for issue in model.validation_issues if issue.code == "ambiguous_opening"]
+    issues = [issue for issue in model.validation_issues if issue.code == "ambiguous_opening"]
+    # OCR label polygons are not persisted, so correction validation cannot
+    # establish whether a missing source room has been recovered. Keep that
+    # finding from the authoritative saved model even if the browser omits it.
+    # A fresh image analysis can resolve it using the original label evidence.
+    source_model = previous if previous is not None else model
+    issues.extend(
+        issue for issue in source_model.validation_issues
+        if issue.code == "unreconstructed_labeled_room"
+    )
+    stair_void_inferences = model.metadata.get("ceiling_void_inferences", [])
+    stair_void_inferences = stair_void_inferences if isinstance(stair_void_inferences, list) else []
+    stair_void_ids = {
+        str(candidate["room_id"])
+        for candidate in stair_void_inferences
+        if isinstance(candidate, dict) and candidate.get("room_id")
+    }
+    if stair_void_ids:
+        issues.extend(
+            issue for issue in infer_stair_ceiling_voids(model.rooms, model.special_elements).issues
+            if issue.element_id in stair_void_ids
+        )
+    if model.metadata.get("reviewed_source_trace_invalidated"):
+        issues.append(
+            ValidationIssue(
+                code="reviewed_trace_invalidated",
+                severity="warning",
+                message=(
+                    "Room-defining geometry changed. "
+                    "Review rebuilt room boundaries against the source plan."
+                ),
+            )
+        )
+    inferred_ids = {
+        str(candidate["room_id"])
+        for candidate in model.metadata.get("floor_boundary_inferences", [])
+        if isinstance(candidate, dict) and candidate.get("room_id")
+    }
+    for room in model.rooms:
+        if room.id in inferred_ids:
+            issues.append(
+                ValidationIssue(
+                    code="inferred_open_floor_boundary",
+                    severity="warning",
+                    element_id=room.id,
+                    message=(
+                        f'Floor boundary for "{room.name}" crosses an open entrance inferred from '
+                        "aligned wall ends. No physical wall or door was added. "
+                        "Review this floor edge before export."
+                    ),
+                )
+            )
+    if model.metadata.get("floor_boundary_inferences_invalidated"):
+        issues.append(
+            ValidationIssue(
+                code="inferred_open_floor_boundary_invalidated",
+                severity="warning",
+                message=(
+                    "Room-defining geometry changed. Previously inferred open floor boundaries "
+                    "were removed. Review rebuilt room boundaries against the source plan."
+                ),
+            )
+        )
+    return issues
 
 
 def _deduplicate_issues(issues: list[ValidationIssue]) -> list[ValidationIssue]:
@@ -1174,6 +1240,28 @@ class LocalJobRunner:
         )
 
 
+def _room_topology_signature(model: FloorPlanModel) -> dict[str, list[str]]:
+    """Compare room-defining geometry without labels, materials or furniture."""
+    walls = {"id", "start", "end", "thickness_m"}
+    openings = {
+        "id", "wall_id", "center", "width_m", "offset_m", "start_offset_m", "end_offset_m",
+    }
+    rooms = {"id", "points"}
+    return {
+        name: sorted(
+            json.dumps(item.model_dump(include=fields), sort_keys=True)
+            for item in items
+        )
+        for name, items, fields in (
+            ("walls", model.walls, walls),
+            ("doors", model.doors, openings),
+            ("windows", model.windows, openings),
+            ("rooms", model.rooms, rooms),
+            ("balconies", model.balconies, rooms),
+        )
+    }
+
+
 def _apply_correction_revision(
     model: FloorPlanModel,
     record: JobRecord,
@@ -1183,36 +1271,108 @@ def _apply_correction_revision(
 ) -> dict[str, object]:
     """Rebuild and commit every correction artifact while the job is claimed."""
 
+    previous_path = job_dir / "floorplan.corrected.json"
+    if not previous_path.exists():
+        previous_path = job_dir / "floorplan.optimized.json"
+    previous = FloorPlanModel.load_json(previous_path) if previous_path.exists() else None
+    previously_reviewed = (
+        previous is not None
+        and previous.metadata.get("geometry_origin") == "reviewed_source_trace"
+    )
+    previous_inferences = (
+        previous.metadata.get("floor_boundary_inferences", []) if previous is not None else []
+    )
+    preserve_explicit_rooms = (
+        (previously_reviewed or bool(previous_inferences))
+        and previous is not None
+        and _room_topology_signature(previous) == _room_topology_signature(model)
+    )
+    metadata = dict(model.metadata)
+    # Provenance belongs to the persisted analysis, not the browser payload.
+    for key in (
+        "geometry_origin", "reviewed_source_trace_invalidated",
+        "floor_boundary_inferences", "floor_boundary_inferences_invalidated",
+    ):
+        metadata.pop(key, None)
+        if previous is not None and key in previous.metadata:
+            metadata[key] = previous.metadata[key]
     face_result = enumerate_faces(
         model.walls,
         model.doors,
         model.windows,
         unconfirmed_opening_range_m=(0.55, 1.40),
     )
-    regenerated = match_faces_to_rooms(
-        face_result.faces,
-        [*model.rooms, *model.balconies],
-    )
-    balcony_ownership = reconcile_room_balcony_ownership(
-        regenerated,
-        model.balconies,
-    )
-    model = model.model_copy(
-        update={
-            "rooms": balcony_ownership.rooms,
-            "balconies": balcony_ownership.balconies,
-            "camera_waypoints": [],
-            "metadata": {
-                **model.metadata,
-                "balcony_topology_faces_matched": (
-                    balcony_ownership.matched_topology_faces
-                ),
-                "rooms_trimmed_for_balconies": (
-                    balcony_ownership.subtracted_room_count
-                ),
-            },
+    if preserve_explicit_rooms:
+        # Reviewed and inferred open floors may not form a closed wall-graph
+        # face. An upholstery or label edit must not erase their floor slabs.
+        if previously_reviewed:
+            metadata.pop("reviewed_source_trace_invalidated", None)
+        previous_rooms = {room.id: room for room in previous.rooms} if previous else {}
+        rooms = [
+            room.model_copy(update={
+                "evidence_source": previous_rooms[room.id].evidence_source,
+                "confidence": previous_rooms[room.id].confidence,
+            })
+            if room.id in previous_rooms else room
+            for room in model.rooms
+        ]
+        model = model.model_copy(
+            update={"rooms": rooms, "camera_waypoints": [], "metadata": metadata}
+        )
+    else:
+        regenerated = match_faces_to_rooms(
+            face_result.faces,
+            [*model.rooms, *model.balconies],
+        )
+        balcony_ownership = reconcile_room_balcony_ownership(
+            regenerated,
+            model.balconies,
+        )
+        metadata = {
+            **metadata,
+            "balcony_topology_faces_matched": balcony_ownership.matched_topology_faces,
+            "rooms_trimmed_for_balconies": balcony_ownership.subtracted_room_count,
         }
+        if metadata.get("geometry_origin") == "reviewed_source_trace":
+            metadata.pop("geometry_origin", None)
+        if previously_reviewed:
+            metadata["reviewed_source_trace_invalidated"] = True
+        metadata.pop("floor_boundary_inferences", None)
+        if previous_inferences:
+            metadata["floor_boundary_inferences_invalidated"] = True
+        model = model.model_copy(
+            update={
+                "rooms": balcony_ownership.rooms,
+                "balconies": balcony_ownership.balconies,
+                "camera_waypoints": [],
+                "metadata": metadata,
+            }
+        )
+    # Room IDs can survive a changed boundary; a previously inferred stairwell
+    # opening must not omit the ceiling over an unrelated replacement room.
+    # Recheck labels and stair footprints too, even if wall topology is unchanged.
+    previous_metadata = previous.metadata if previous is not None else {}
+    previous_voids = previous_metadata.get("ceiling_void_inferences", [])
+    previous_voids = previous_voids if isinstance(previous_voids, list) else []
+    inferred_void_ids = {
+        str(candidate["room_id"])
+        for candidate in previous_voids
+        if isinstance(candidate, dict) and candidate.get("room_id")
+    }
+    requested_void_ids = model.metadata.get(
+        "ceiling_void_room_ids", previous_metadata.get("ceiling_void_room_ids", [])
     )
+    requested_void_ids = requested_void_ids if isinstance(requested_void_ids, list) else []
+    manual_void_ids = [
+        room_id for room_id in requested_void_ids
+        if isinstance(room_id, str) and room_id not in inferred_void_ids
+    ]
+    stair_voids = infer_stair_ceiling_voids(model.rooms, model.special_elements)
+    model = model.model_copy(update={"metadata": {
+        **model.metadata,
+        "ceiling_void_room_ids": list(dict.fromkeys([*manual_void_ids, *stair_voids.room_ids])),
+        "ceiling_void_inferences": stair_voids.inferences,
+    }})
     try:
         route = camera_waypoints_for_model(model)
         model = model.model_copy(update={"camera_waypoints": route})
@@ -1225,7 +1385,7 @@ def _apply_correction_revision(
     issues = _deduplicate_issues(
         [
             *validate_reconstruction(model, evidence),
-            *_carried_local_review_issues(model),
+            *_carried_local_review_issues(model, previous=previous),
             *gap_issues,
             *_semantic_review_issues(model),
         ]

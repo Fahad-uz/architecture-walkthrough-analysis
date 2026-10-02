@@ -344,22 +344,14 @@ def detect_furniture_from_image(
         text_regions=text_regions,
     )
     for footprint in footprints:
-        width_m = max(footprint.width_px / pixels_per_metre, 0.25)
-        depth_m = max(footprint.depth_px / pixels_per_metre, 0.25)
-        if width_m > 5.0 or depth_m > 5.0:
-            continue
-        placements.append(
-            FurniturePlacement(
-                category=footprint.category,
-                center=Point2D(
-                    x=footprint.center.x / pixels_per_metre,
-                    y=(image_height_px - footprint.center.y) / pixels_per_metre,
-                ),
-                width_m=width_m,
-                depth_m=depth_m,
-                rotation_deg=footprint.rotation_deg,
-            )
+        placement = _placement_from_footprint(
+            footprint,
+            footprint.category,
+            pixels_per_metre,
+            image_height_px,
         )
+        if placement is not None:
+            placements.append(placement)
 
     return _deduplicate_furniture(placements)
 
@@ -382,7 +374,10 @@ def _placement_from_footprint(
         ),
         width_m=width_m,
         depth_m=depth_m,
-        rotation_deg=footprint.rotation_deg,
+        # Image coordinates point down on Y; metric coordinates point up.
+        # Reflect the footprint's angle along with its center so an oblique
+        # sofa stays aligned to the measured pixels instead of being mirrored.
+        rotation_deg=-footprint.rotation_deg,
     )
 
 

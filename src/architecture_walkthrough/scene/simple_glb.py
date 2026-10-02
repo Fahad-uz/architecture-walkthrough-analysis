@@ -17,6 +17,7 @@ from architecture_walkthrough.geometry.models import (
     WallSegment,
 )
 from architecture_walkthrough.scene.ceiling_builder import ceiling_meshes
+from architecture_walkthrough.scene.furniture import render_furniture
 from architecture_walkthrough.scene.door_builder import door_meshes
 from architecture_walkthrough.scene.floor_builder import (
     fallback_floor_mesh,
@@ -24,6 +25,7 @@ from architecture_walkthrough.scene.floor_builder import (
     room_floor_meshes,
 )
 from architecture_walkthrough.scene.opening_builder import nearest_wall_index, openings_for_wall
+from architecture_walkthrough.scene.stair_builder import stair_parts, stair_placement
 from architecture_walkthrough.scene.trim_builder import skirting_meshes
 from architecture_walkthrough.scene.uv_mapping import apply_planar_uv
 from architecture_walkthrough.scene.wall_builder import split_wall_meshes
@@ -884,6 +886,54 @@ def _fixture_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
     ]
 
 
+def _toilet_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
+    """A close-coupled toilet with an open bowl, distinct seat and rear cistern."""
+    width, depth = item.width_m, item.depth_m
+
+    def revolved_part(profile: list[tuple[float, float]], name: str) -> trimesh.Trimesh:
+        mesh = trimesh.creation.revolve(np.asarray(profile), sections=24)
+        mesh.apply_scale([width / 2, depth * 0.74 / 2, 1.0])
+        x, y = _oriented_offset(item, 0, -depth * 0.12)
+        transform = trimesh.transformations.rotation_matrix(
+            math.radians(item.rotation_deg), [0, 0, 1]
+        )
+        transform[:3, 3] = [x, y, 0]
+        mesh.apply_transform(transform)
+        return _named(_paint(mesh, COLORS["fixture"]), name)
+
+    return [
+        _named(
+            _cylinder_part(item, 0, -depth * 0.09, width * 0.48, depth * 0.43,
+                           0.28, COLORS["fixture"], 0.14, sections=24),
+            "Pedestal",
+        ),
+        revolved_part(
+            [(0.48, 0.18), (0.90, 0.36), (0.94, 0.44), (0.78, 0.44),
+             (0.58, 0.27), (0.12, 0.22), (0.12, 0.18), (0.48, 0.18)],
+            "Bowl",
+        ),
+        revolved_part(
+            [(0.78, 0.44), (0.99, 0.44), (0.99, 0.48), (0.78, 0.48), (0.78, 0.44)],
+            "Seat",
+        ),
+        _named(
+            _part(item, 0, depth * 0.36, width * 0.88, depth * 0.24,
+                  0.38, COLORS["fixture"], 0.57),
+            "Cistern",
+        ),
+        _named(
+            _part(item, 0, depth * 0.36, width * 0.92, depth * 0.27,
+                  0.035, COLORS["fixture"], 0.7775),
+            "Cistern_Lid",
+        ),
+        _named(
+            _cylinder_part(item, 0, depth * 0.36, width * 0.12, depth * 0.08,
+                           0.012, COLORS["metal"], 0.801, sections=12),
+            "Flush_Button",
+        ),
+    ]
+
+
 def _plant_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
     width = item.width_m
     depth = item.depth_m
@@ -981,12 +1031,14 @@ def _furniture_family(category: str) -> str:
         return "bed"
     if "sofa" in tokens or "couch" in tokens:
         return "sofa"
-    if {"wardrobe", "cabinet", "shelf", "closet"} & tokens:
+    if {"wardrobe", "cabinet", "shelf", "bookshelf", "bookcase", "closet"} & tokens:
         return "wardrobe"
+    if "toilet" in tokens or "wc" in tokens:
+        return "toilet"
     # Kitchen sinks and stoves have already been handled above.
     if "counter" in tokens or "kitchen" in tokens:
         return "counter"
-    if {"fixture", "toilet", "bath", "bathtub"} & tokens or "bath" in normalized:
+    if {"fixture", "bath", "bathtub"} & tokens or "bath" in normalized:
         return "fixture"
     if "plant" in tokens:
         return "plant"
@@ -1030,6 +1082,8 @@ def _furniture_meshes(item: FurniturePlacement) -> list[trimesh.Trimesh]:
         return _counter_meshes(item)
     if family == "fixture":
         return _fixture_meshes(item)
+    if family == "toilet":
+        return _toilet_meshes(item)
     if family == "plant":
         return _plant_meshes(item)
     if family == "rug":
@@ -1060,25 +1114,15 @@ def _special_placement(element: ArchitecturalElement) -> FurniturePlacement:
     )
 
 
-def _staircase_meshes(item: FurniturePlacement, step_count: int) -> list[trimesh.Trimesh]:
-    steps = max(4, min(14, step_count))
-    step_depth = item.depth_m / steps
+def _staircase_meshes(
+    item: FurniturePlacement, step_count: int, metadata: dict | None = None,
+) -> list[trimesh.Trimesh]:
+    settings = {"step_count": step_count, **(metadata or {})}
     meshes: list[trimesh.Trimesh] = []
-    for index in range(steps):
-        local_y = -item.depth_m / 2 + step_depth * (index + 0.5)
-        height = 0.16 * (index + 1)
-        meshes.append(
-            _part(
-                item,
-                0,
-                local_y,
-                item.width_m,
-                step_depth * 0.94,
-                height,
-                COLORS["step"],
-                height / 2,
-            )
-        )
+    for part in stair_parts(item.width_m, item.depth_m, settings):
+        mesh = _part(item, part["x"], part["y"], part["width"], part["depth"],
+                     part["height"], COLORS["step"], part["z"])
+        meshes.append(_named(mesh, part["name"]))
     return meshes
 
 
@@ -1097,7 +1141,8 @@ def _special_element_meshes(element: ArchitecturalElement) -> list[trimesh.Trime
     kind = element.kind.lower().replace("-", "_").replace(" ", "_")
     placement = _special_placement(element)
     if kind in {"stair", "stairs", "staircase"}:
-        return _staircase_meshes(placement, int(element.metadata.get("step_count") or 10))
+        placement = FurniturePlacement(category=kind, **stair_placement(element.model_dump()))
+        return _staircase_meshes(placement, int(element.metadata.get("step_count") or 10), element.metadata)
     if kind == "lift":
         return _lift_meshes(placement)
     if kind in {"counter", "kitchen_counter"}:
@@ -1179,11 +1224,14 @@ def export_simple_glb(model: FloorPlanModel, output_glb: Path) -> Path:
             )
 
     if model.ceiling.enabled and model.rooms:
-        for index, mesh in enumerate(
-            ceiling_meshes(
-                model.rooms, model.ceiling.height_m, model.ceiling.thickness_m, COLORS["wall"]
-            )
-        ):
+        void_ids = model.metadata.get("ceiling_void_room_ids", [])
+        void_ids = void_ids if isinstance(void_ids, list) else []
+        for index, room in enumerate(model.rooms):
+            if room.id in void_ids:
+                continue
+            mesh = ceiling_meshes(
+                [room], model.ceiling.height_m, model.ceiling.thickness_m, COLORS["wall"]
+            )[0]
             scene.add_geometry(
                 apply_planar_uv(mesh),
                 node_name=f"Ceiling_{index:03d}",
@@ -1195,8 +1243,13 @@ def export_simple_glb(model: FloorPlanModel, output_glb: Path) -> Path:
             mesh, node_name=f"Skirting_{index:03d}", geom_name=f"Skirting_{index:03d}"
         )
 
-    for index, item in enumerate(model.furniture):
-        for part_index, mesh in enumerate(_furniture_meshes(item)):
+    for index, item in enumerate(render_furniture(model)):
+        parts = _furniture_meshes(item)
+        top = max((float(mesh.bounds[1, 2]) for mesh in parts), default=0.0)
+        if item.height_m is not None and top > 0:
+            for mesh in parts:
+                mesh.apply_scale([1.0, 1.0, item.height_m / top])
+        for part_index, mesh in enumerate(parts):
             category = _safe_name(item.category)
             part_name = _safe_name(mesh.metadata.get("part_name") or f"Part_{part_index:02d}")
             name = f"Furniture_{index:03d}_{part_index:02d}_{category}_{part_name}"

@@ -7,9 +7,9 @@
     "@gltf-transform/extensions": "^4.4.2",
     "@gltf-transform/functions": "^4.4.2",
     "draco3dgltf": "~1.5.7",
-    "sharp": "0.35.3"
+    "sharp": "0.35.4"
   },
   "overrides": {
-    "sharp": "0.35.3"
+    "sharp": "0.35.4"
   }
 }

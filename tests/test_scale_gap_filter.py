@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import pytest
+
 from architecture_walkthrough.geometry.models import Point2D, WallSegment
 from architecture_walkthrough.pipeline import (
     _scale_constraints_from_dimension_annotations,
     _scale_constraints_from_door_gaps,
 )
 from architecture_walkthrough.vision.ocr import OCRText
+from architecture_walkthrough.vision.wall_detection import WallBand
 
 
 def _pair(y: float, gap: float) -> list[WallSegment]:
@@ -92,4 +95,27 @@ def test_open_plan_dimension_without_four_boundaries_is_not_scale_evidence() -> 
         WallSegment(id="bottom", start=Point2D(x=0, y=150), end=Point2D(x=200, y=150)),
     ]
 
+    assert _scale_constraints_from_dimension_annotations([label], walls) == []
+
+
+def test_dimension_label_ray_through_door_uses_its_own_room_and_clear_wall_faces():
+    walls = [
+        WallSegment(id="left", source_band_id="left", start=Point2D(x=0,y=0), end=Point2D(x=0,y=310)),
+        WallSegment(id="right", source_band_id="right", start=Point2D(x=410,y=0), end=Point2D(x=410,y=310)),
+        WallSegment(id="top", source_band_id="top", start=Point2D(x=0,y=0), end=Point2D(x=410,y=0)),
+        WallSegment(id="bottom_a", source_band_id="bottom_a", start=Point2D(x=0,y=310), end=Point2D(x=180,y=310)),
+        WallSegment(id="bottom_b", source_band_id="bottom_b", start=Point2D(x=230,y=310), end=Point2D(x=410,y=310)),
+        WallSegment(id="next_room", start=Point2D(x=0,y=510), end=Point2D(x=410,y=510)),
+    ]
+    bands = [WallBand(w.id, "h", (0,0,0,0), (w.start.x,w.start.y,w.end.x,w.end.y), 10, 1) for w in walls[:-1]]
+    label=OCRText("4m x 3m",[(165,140),(245,140),(245,160),(165,160)],.99,"4m x 3m","dimension")
+    result = _scale_constraints_from_dimension_annotations([label], walls, bands)
+    assert len(result) == 1
+    assert result[0].measured_px == pytest.approx((400,300))
+
+
+def test_inconsistent_annotation_rectangle_is_not_a_scale_reference():
+    walls = [WallSegment(start=Point2D(x=a,y=b),end=Point2D(x=c,y=d))
+             for a,b,c,d in [(0,0,400,0),(400,0,400,200),(400,200,0,200),(0,200,0,0)]]
+    label=OCRText("3m x 3m",[(100,90),(200,90),(200,110),(100,110)],.99,"3m x 3m","dimension")
     assert _scale_constraints_from_dimension_annotations([label], walls) == []

@@ -218,13 +218,14 @@ def _valid_room_polygons(model: FloorPlanModel) -> list[Polygon]:
 
 def _polygon_parts(geometry: BaseGeometry) -> list[Polygon]:
     if isinstance(geometry, Polygon):
-        return [geometry]
+        # Intersections can return POLYGON EMPTY when a narrow or obstructed
+        # room has no camera clearance. Never pass it to the label solver.
+        return [geometry] if not geometry.is_empty and geometry.area > 0.01 else []
     if hasattr(geometry, "geoms"):
         return [
             polygon
             for member in geometry.geoms
             for polygon in _polygon_parts(member)
-            if polygon.area > 0.01
         ]
     return []
 

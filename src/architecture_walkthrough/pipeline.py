@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -33,13 +34,13 @@ from architecture_walkthrough.geometry.balcony_ownership import (
     reconcile_room_balcony_ownership,
 )
 from architecture_walkthrough.geometry.furniture_layout import fit_furniture_to_rooms
+from architecture_walkthrough.geometry.fixture_layout import fixture_furniture_from_regions
 from architecture_walkthrough.geometry.reconstruction import reconstruct_walls
-from architecture_walkthrough.geometry.room_extraction import (
-    extract_rooms_from_geometry_mask,
-    extract_rooms_from_walls,
-)
+from architecture_walkthrough.geometry.open_floor_recovery import recover_open_labeled_floors
+from architecture_walkthrough.geometry.room_extraction import extract_rooms_from_walls, missing_room_label_issues
 from architecture_walkthrough.geometry.scale import ScaleConverter
 from architecture_walkthrough.geometry.scale_solver import ScaleConstraint, solve_scale
+from architecture_walkthrough.geometry.stair_voids import infer_stair_ceiling_voids
 from architecture_walkthrough.geometry.wall_graph import collinear_gaps
 from architecture_walkthrough.geometry.validation import (
     SourceEvidence,
@@ -212,8 +213,8 @@ def _convert_walls_to_metres(
 def _manual_pixels_per_metre(manual_scale: float | None) -> float | None:
     if manual_scale is None:
         return None
-    if manual_scale <= 0:
-        raise ValueError("manual scale must be positive metres per pixel")
+    if not math.isfinite(manual_scale) or manual_scale <= 0:
+        raise ValueError("manual scale must be finite positive metres per pixel")
     return 1.0 / manual_scale
 
 
@@ -400,6 +401,7 @@ def _scale_constraints_from_door_gaps(walls_px: list[WallSegment]) -> list[Scale
 def _scale_constraints_from_dimension_annotations(
     labels: list[OCRText],
     walls_px: list[WallSegment],
+    bands: list[WallBand] | None = None,
 ) -> list[ScaleConstraint]:
     """Match OCR dimension pairs to four locally measured room boundaries.
 
@@ -410,8 +412,9 @@ def _scale_constraints_from_dimension_annotations(
     rectangles are rejected later by the scale solver's aspect residual.
     """
 
-    horizontal: list[tuple[float, float, float]] = []
-    vertical: list[tuple[float, float, float]] = []
+    horizontal: list[tuple[float, float, float, float]] = []
+    vertical: list[tuple[float, float, float, float]] = []
+    widths = {band.id: band.thickness_px for band in bands or []}
     for wall in walls_px:
         dx = abs(wall.end.x - wall.start.x)
         dy = abs(wall.end.y - wall.start.y)
@@ -421,6 +424,7 @@ def _scale_constraints_from_dimension_annotations(
                     (wall.start.y + wall.end.y) / 2.0,
                     min(wall.start.x, wall.end.x),
                     max(wall.start.x, wall.end.x),
+                    widths.get(wall.source_band_id or "", 0.0),
                 )
             )
         elif dy >= dx * 2.5:
@@ -429,6 +433,7 @@ def _scale_constraints_from_dimension_annotations(
                     (wall.start.x + wall.end.x) / 2.0,
                     min(wall.start.y, wall.end.y),
                     max(wall.start.y, wall.end.y),
+                    widths.get(wall.source_band_id or "", 0.0),
                 )
             )
 
@@ -442,25 +447,45 @@ def _scale_constraints_from_dimension_annotations(
             continue
         center_x = sum(point[0] for point in label.polygon) / len(label.polygon)
         center_y = sum(point[1] for point in label.polygon) / len(label.polygon)
+        # Use the text's actual span rather than a single ray through its
+        # centre. That ray can pass exactly through a doorway and hit the
+        # next room's wall. A small text-height padding handles OCR box jitter;
+        # this associates measurements only and never closes wall geometry.
+        x0 = min(point[0] for point in label.polygon)
+        x1 = max(point[0] for point in label.polygon)
+        y0 = min(point[1] for point in label.polygon)
+        y1 = max(point[1] for point in label.polygon)
+        pad = max(2.0, min(10.0, (y1 - y0) * 0.3))
         crossing_vertical = [
-            coordinate
-            for coordinate, start, end in vertical
-            if start - 2.0 <= center_y <= end + 2.0
+            (coordinate, thickness)
+            for coordinate, start, end, thickness in vertical
+            if start <= y1 + pad and end >= y0 - pad
         ]
         crossing_horizontal = [
-            coordinate
-            for coordinate, start, end in horizontal
-            if start - 2.0 <= center_x <= end + 2.0
+            (coordinate, thickness)
+            for coordinate, start, end, thickness in horizontal
+            if start <= x1 + pad and end >= x0 - pad
         ]
-        left = [coordinate for coordinate in crossing_vertical if coordinate < center_x]
-        right = [coordinate for coordinate in crossing_vertical if coordinate > center_x]
-        above = [coordinate for coordinate in crossing_horizontal if coordinate < center_y]
-        below = [coordinate for coordinate in crossing_horizontal if coordinate > center_y]
+        left = [bound for bound in crossing_vertical if bound[0] < center_x]
+        right = [bound for bound in crossing_vertical if bound[0] > center_x]
+        above = [bound for bound in crossing_horizontal if bound[0] < center_y]
+        below = [bound for bound in crossing_horizontal if bound[0] > center_y]
         if not left or not right or not above or not below:
             continue
-        measured_width = min(right) - max(left)
-        measured_height = min(below) - max(above)
+        left_edge, right_edge = max(left), min(right)
+        top_edge, bottom_edge = max(above), min(below)
+        # Room dimensions measure clear space, excluding the enclosing wall
+        # bands. When no band evidence exists, retain centre-line measurement.
+        measured_width = right_edge[0] - left_edge[0] - (right_edge[1] + left_edge[1]) / 2
+        measured_height = bottom_edge[0] - top_edge[0] - (bottom_edge[1] + top_edge[1]) / 2
         if measured_width <= 4.0 or measured_height <= 4.0:
+            continue
+        ratios = [a / b for a, b in zip(
+            sorted((measured_width, measured_height)), sorted((parsed.width_m, parsed.height_m))
+        )]
+        if abs(ratios[0] - ratios[1]) / (sum(ratios) / 2) > 0.15:
+            # A room annotation that contradicts its candidate rectangle is
+            # not a reliable ruler, even when its OCR confidence is high.
             continue
         constraints.append(
             ScaleConstraint(
@@ -700,6 +725,7 @@ def analyze_image(
     require_ai_success: bool = False,
     crop_rect: tuple[int, int, int, int] | None = None,
 ) -> FloorPlanModel:
+    source_pixels_per_metre = _manual_pixels_per_metre(manual_scale)
     output_dir.mkdir(parents=True, exist_ok=True)
     debug_dir = output_dir / "debug"
     stages = StageLogger()
@@ -727,6 +753,7 @@ def analyze_image(
         options=config.preprocessing.model_dump(),
     )
     resized_height, resized_width = preprocessing.resized_shape[:2]
+    resize_ratio = max(resized_height, resized_width) / max(preprocessing.original_shape[:2])
     stages.record("preprocess_layers", started, layers={key: str(value) for key, value in preprocessing.layers.items()})
 
     started = time.perf_counter()
@@ -879,7 +906,7 @@ def analyze_image(
 
     started = time.perf_counter()
     constraints = [
-        *_scale_constraints_from_dimension_annotations(ocr_results, candidate_walls_px),
+        *_scale_constraints_from_dimension_annotations(ocr_results, candidate_walls_px, wall_detection.bands),
         *_scale_constraints_from_rooms(preliminary_rooms),
         *_scale_constraint_from_plan_extent(
             candidate_walls_px,
@@ -894,7 +921,10 @@ def analyze_image(
     ]
     scale_result = solve_scale(
         constraints,
-        manual_pixels_per_metre=_manual_pixels_per_metre(manual_scale),
+        manual_pixels_per_metre=(
+            source_pixels_per_metre * resize_ratio
+            if source_pixels_per_metre is not None else None
+        ),
         min_pixels_per_metre=config.scale_solver.min_pixels_per_metre,
         max_pixels_per_metre=config.scale_solver.max_pixels_per_metre,
         outlier_mad_factor=config.scale_solver.outlier_mad_factor,
@@ -935,7 +965,10 @@ def analyze_image(
         preprocessing.layers["furniture_fixture_mask"],
         "furniture/fixture mask",
     )
-    thin_mask = build_thin_line_mask(adaptive_mask, dark_mask, colored_mask)
+    analysis_image_bgr = cv2.imread(str(analysis_image_path), cv2.IMREAD_COLOR)
+    thin_mask = build_thin_line_mask(
+        adaptive_mask, dark_mask, colored_mask, source_image_bgr=analysis_image_bgr
+    )
     local_openings = detect_local_openings(
         reconstruction.walls,
         dark_mask,
@@ -944,7 +977,7 @@ def analyze_image(
         resized_height,
         config.opening_detection,
         config.defaults,
-        color_image=cv2.imread(str(analysis_image_path), cv2.IMREAD_COLOR),
+        color_image=analysis_image_bgr,
     )
     final_walls = local_openings.walls
     stages.record(
@@ -966,15 +999,20 @@ def analyze_image(
         windows=local_openings.windows,
         bridge_ambiguous_openings=True,
     )
-    final_rooms = room_result.rooms
+    open_floors = recover_open_labeled_floors(
+        final_walls,
+        room_result.rooms,
+        all_room_labels,
+        pixels_per_metre,
+        resized_height,
+        doors=local_openings.doors,
+        windows=local_openings.windows,
+    )
+    final_rooms = open_floors.rooms
     unclosed_gap_reports = room_result.rejected
-    if not final_rooms:
-        final_rooms = extract_rooms_from_geometry_mask(
-            preprocessing.layers["cleaned_geometry_only"],
-            all_room_labels,
-            pixels_per_metre=pixels_per_metre,
-            image_height_px=resized_height,
-        ).rooms
+    # Failure to close the measured wall graph is evidence for review. A
+    # morphological mask fallback used to close 90-pixel gaps indiscriminately
+    # and invent rooms that disagreed with the walls rendered in the GLB.
     stages.record("extract_final_rooms", started, room_count=len(final_rooms), unclosed_gaps=len(unclosed_gap_reports))
 
     started = time.perf_counter()
@@ -995,6 +1033,7 @@ def analyze_image(
     )
     final_rooms = balcony_ownership.rooms
     balconies = balcony_ownership.balconies
+    stair_voids = infer_stair_ceiling_voids(final_rooms, special_elements)
     stages.record(
         "classify_special_elements",
         started,
@@ -1017,7 +1056,14 @@ def analyze_image(
         pixels_per_metre,
         min_confidence=config.ai.gemini_min_confidence,
     )
-    local_furniture = grounded_furniture.furniture
+    outlined_fixtures = fixture_furniture_from_regions(
+        wall_detection.fixture_detail_regions,
+        final_rooms,
+        pixels_per_metre,
+        resized_height,
+        walls=final_walls,
+    )
+    local_furniture = [*grounded_furniture.furniture, *outlined_fixtures]
     furniture = fit_furniture_to_rooms(
         local_furniture,
         final_rooms,
@@ -1030,6 +1076,8 @@ def analyze_image(
         gemini_furniture_matched=grounded_furniture.matched_hint_count,
         gemini_furniture_rejected=grounded_furniture.rejected_hint_count,
         accepted_furniture=len(furniture),
+        outlined_fixture_regions=len(wall_detection.fixture_detail_regions),
+        outlined_fixture_items=len(outlined_fixtures),
     )
 
     raw_model = FloorPlanModel(
@@ -1068,6 +1116,8 @@ def analyze_image(
             "roi_image": str(analysis_image_path),
             "scale_source": scale_result.source,
             "scale_confidence": scale_result.confidence,
+            "analysis_resize_ratio": resize_ratio,
+            "manual_source_metres_per_pixel": manual_scale,
             "ai_provider": "gemini",
             "ai_assist_enabled": config.ai.gemini_enabled,
             "ai_assist_attempted": ai_analysis.attempted,
@@ -1082,10 +1132,17 @@ def analyze_image(
             "gemini_semantic_label_count": len(semantic_room_labels) + len(semantic_special_labels),
             "gemini_dimension_text_count": len(gemini_dimension_labels),
             "unclosed_wall_gaps": unclosed_gap_reports,
+            "floor_boundary_inferences": open_floors.candidates,
+            "ceiling_void_room_ids": stair_voids.room_ids,
+            "ceiling_void_inferences": stair_voids.inferences,
             "local_furniture_count": len(local_furniture),
             "gemini_furniture_count": grounded_furniture.matched_hint_count,
             "gemini_furniture_rejected_unmatched": grounded_furniture.rejected_hint_count,
             "accepted_furniture_count": len(furniture),
+            "outlined_fixture_region_count": len(wall_detection.fixture_detail_regions),
+            "fixture_front_walls_rejected": len(wall_detection.rejected_fixture_bands),
+            "outlined_fixture_item_count": len(outlined_fixtures),
+            "outlined_fixture_semantics": "Category and height inferred from room context; review counter/wardrobe choices.",
             "raw_wall_count": len(wall_detection.walls),
             "wall_band_count": len(wall_detection.bands),
             "grounded_ai_wall_count": len(grounded_hints.walls),
@@ -1146,6 +1203,9 @@ def analyze_image(
         band_mask=band_mask,
     )
     issues = validate_reconstruction(model, evidence)
+    issues.extend(open_floors.issues)
+    issues.extend(stair_voids.issues)
+    issues.extend(missing_room_label_issues(final_rooms, all_room_labels, pixels_per_metre, resized_height))
     for report in ambiguous_openings:
         issues.append(ValidationIssue(code="ambiguous_opening", severity="warning", message=report))
     for gap_report in unclosed_gap_reports:
@@ -1241,7 +1301,12 @@ def build_model(
             issue
             for issue in model.validation_issues
             if issue.code.startswith("gemini_")
-            or issue.code in {"ambiguous_opening", "unclosed_wall_gap"}
+            or issue.code in {
+                "ambiguous_opening", "unclosed_wall_gap", "unreconstructed_labeled_room",
+                "inferred_open_floor_boundary", "inferred_open_floor_boundary_invalidated",
+                "reviewed_trace_invalidated",
+                "inferred_stair_ceiling_void",
+            }
         ]
         issues: list[ValidationIssue] = []
         seen: set[tuple[str, str]] = set()

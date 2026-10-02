@@ -87,6 +87,9 @@ exec(compile(template_path.read_text(encoding="utf-8"), str(template_path), "exe
 sys.argv = saved_argv
 
 scene = bpy.context.scene
+for light in bpy.data.lights:
+    if "bake_energy" in light:
+        light.energy = light["bake_energy"]
 available_engines = {{
     item.identifier
     for item in bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items
