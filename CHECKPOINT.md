@@ -28,34 +28,44 @@ normal merge commits, never squash. Author: verified GitHub account Fahad-uz.
   `outputs/a731b8ed69234c5d84ba219e52fca930/source.jpeg`.
 - Prior automatic job: `outputs/a03a9f4e550e4eb7a53bfec4f05525c9`.
 
-## Resume status
+## Completed milestones
 
-The previous session stopped at the usage limit before any feature implementation
-or new baseline run was saved. This checkpoint and the complete upgrade brief
-are now being published first. Starting allowance on resume: 82% remaining.
+- `eaf21226d03bb4725ceb3e0b7a4f2612ea04c638`: upgrade brief and initial checkpoint.
+- `ed2b21e7ce196453efd11ec13df362658f813a50`: compatible PlanStride branding.
+- `f9e330cf54256720e228f4ec7db843e62211ad80`: image preview, source-coordinate crop,
+  precise bounds, reset, crop undo/redo and duplicate-submit guard.
+- `a17db7eacfcc86263ba9df4d2d252637dcad3393`: editor undo/redo, grouped drags,
+  five versioned local drafts, autosave/recovery and stale-response protection.
+- `900a1e22b75085bc6e6faaf47efd21e59e58f0a6`: licensed dataset acquisition tool.
+- Automatic baseline runner and protocol are now ready for publication. See
+  `docs/baseline.md`; private image artifacts stay local, never committed.
+- 100 CubiCasa5K plans acquired: 70 development and 30 quarantined, with images
+  and SVG annotations. Manifest confirms complete. Total stored download bytes:
+  39,876,235. Source/license/checksum inventory is in ignored
+  `outputs/benchmark-data/cubicasa5k/manifest.json`; see `docs/benchmark-sources.md`.
+- Tests: 425 Python passed, 9 Blender-dependent tests skipped (Blender not in test
+  PATH), 21 frontend passed, frontend typecheck/build passed, Ruff passed.
+  Full Python log: `../planstride-python-tests.log`.
+- Private automatic baseline: 22 walls, 8 floor polygons, 0 identified doors or
+  windows; requires review. Elapsed 1.2587s; peak worker memory 561,823,744 bytes.
+  These counts and internal quality score are NOT geometric accuracy.
 
-## Completed this session
+## Current work and next steps
 
-- Published upgrade brief and initial checkpoint: `eaf21226d03bb4725ceb3e0b7a4f2612ea04c638`.
-- Renamed the UI, browser title, API title, fallback page and README to PlanStride.
-  Existing routes, package names and saved projects are unchanged.
-  Checks: frontend typecheck/build and API upload tests.
+1. Publish runner/tests/baseline document and checkpoint, inspect browser behavior,
+   then merge PR #12 normally after checks. Preserve every focused commit.
+2. Score development examples against source SVG annotations with validated
+   coordinate mapping. Never evaluate/tune on the 30 quarantined examples.
+3. Add actionable 2D editor warnings and persistent confirmations which do not
+   raise confidence and invalidate when relevant geometry changes.
+4. Finish rotation/straightening/perspective preparation, furnishing/material/
+   lighting editing, 3D warning focus and broader end-to-end verification.
 
-- Compatible PlanStride branding published: `ed2b21e7ce196453efd11ec13df362658f813a50`.
-- Upload preview and crop selection implemented with original-image preservation,
-  reset, precise controls, crop undo/redo and image-size guidance. Uses existing
-  crop transform/ROI pipeline; rotation and perspective correction remain pending.
-  Checks: crop geometry tests, frontend typecheck and production build.
-
-## Current work
-
-1. Establish reproducible automatic baseline, with AI disabled and no manual
-   tracing. Report measured results and failures, not just successful examples.
-2. Investigate licensed real-plan sources and acquire 100 local examples, with
-   at least 30 untouched evaluation examples. Verify family/building separation
-   and near duplicates before calling any set a valid final evaluation set.
-3. Implement editor undo/redo and recoverable versioned local drafts.
-4. Review and publish each tested milestone, then merge normally into main.
+PR: https://github.com/Fahad-uz/architecture-walkthrough-analysis/pull/12
+Working HEAD before this checkpoint: `900a1e22b75085bc6e6faaf47efd21e59e58f0a6`.
+No user files overwritten. Only pending tracked work is the baseline runner,
+its tests/documentation and this checkpoint. Subsequent agent edits must be
+inspected using `git status` before continuing.
 
 ## Remaining full upgrade scope
 
@@ -75,12 +85,14 @@ are now being published first. Starting allowance on resume: 82% remaining.
 - No guaranteed perfect geometry from images lacking dimensions or elevations.
 - No generated redraw may be treated as structural evidence.
 - Restricted datasets stay in ignored local outputs, never distributable assets.
-- No new downloads yet. Record source, version, license, bytes and purpose for each.
+- Downloaded CubiCasa5K v1.0 selected images/annotations and provenance (39,876,235
+  bytes) for noncommercial local evaluation, CC BY-NC 4.0. No new software or
+  model weights. FloorPlanCAD downloads deferred because drawing rights are unclear.
 - CLI GitHub authentication is unavailable; the connected GitHub tool can publish
   commits as the verified user. Public git fetch works. Never store credentials.
 
-## Next checkpoint contents
+## Checkpoint policy
 
-Replace this initial status with completed commits, check results, acquired data,
-remaining files/tasks and exact next steps before stopping. The commit containing
-this file is discoverable with `git log -1 -- CHECKPOINT.md`.
+The commit containing this checkpoint is discoverable with
+`git log -1 -- CHECKPOINT.md`. Refresh this file at every completed milestone,
+not only at the usage threshold; concurrent work can consume the allowance quickly.
