@@ -18,7 +18,7 @@ normal merge commits, never squash. Author: verified GitHub account Fahad-uz.
 ## Repository and baseline
 
 - Repository: https://github.com/Fahad-uz/architecture-walkthrough-analysis
-- Working branch: `agent/planstride-foundation`.
+- Working branch: `agent/planstride-accuracy-review`.
 - Starting main commit: `f5a298f5b618ed7926d52badb46a367127f541c8`.
 - Previous repairs are on main; all nine old branch tips are ancestors.
 - Previous checks: 416 Python tests, 9 frontend navigation tests, lint, typing,
@@ -52,8 +52,13 @@ normal merge commits, never squash. Author: verified GitHub account Fahad-uz.
 
 ## Current work and next steps
 
-1. Publish runner/tests/baseline document and checkpoint, inspect browser behavior,
-   then merge PR #12 normally after checks. Preserve every focused commit.
+1. PR #12 MERGED normally, preserving all six commits, at
+   `1c7106d17c96c4ccc3d6800750f1624b1205996b`. All 3 GitHub checks passed.
+   Baseline commit: `bbd2b29c5637d45689f55038f5b917fb120eff74`.
+   Browser verification: upload/preview/crop undo, fresh automatic analysis,
+   local edit autosave/manual draft, refresh recovery, restore and undo all passed.
+   Fresh test job: `6e00fb89eafc435087f4b43c65296840`; temporary wall was undone
+   and server model unchanged. Recovery screenshot: `../../outputs/PlanStride-editor-recovery.png`.
 2. Score development examples against source SVG annotations with validated
    coordinate mapping. Never evaluate/tune on the 30 quarantined examples.
 3. Add actionable 2D editor warnings and persistent confirmations which do not
@@ -62,10 +67,13 @@ normal merge commits, never squash. Author: verified GitHub account Fahad-uz.
    lighting editing, 3D warning focus and broader end-to-end verification.
 
 PR: https://github.com/Fahad-uz/architecture-walkthrough-analysis/pull/12
-Working HEAD before this checkpoint: `900a1e22b75085bc6e6faaf47efd21e59e58f0a6`.
-No user files overwritten. Only pending tracked work is the baseline runner,
-its tests/documentation and this checkpoint. Subsequent agent edits must be
-inspected using `git status` before continuing.
+Working HEAD before next milestone: `1c7106d17c96c4ccc3d6800750f1624b1205996b`.
+No user files overwritten. Baseline tooling is committed. Pending work: development
+metrics and actionable editor warnings. Inspect `docs/warning-progress.md`,
+`docs/baseline.md` and `git status` before resuming any interrupted work.
+The 70-example baseline is complete: 67 completed, 3 failed. All30 quarantined
+examples remain untouched. Results: `outputs/benchmark-development-baseline/report.json`.
+Counts are not accuracy; evaluate against annotations next. No detectorchanges yet.
 
 ## Remaining full upgrade scope
 
@@ -90,6 +98,31 @@ inspected using `git status` before continuing.
   model weights. FloorPlanCAD downloads deferred because drawing rights are unclear.
 - CLI GitHub authentication is unavailable; the connected GitHub tool can publish
   commits as the verified user. Public git fetch works. Never store credentials.
+
+## Usage checkpoint: unfinished work preserved locally
+
+Latest check: 11% remaining; stopping new work early to reserve checkpoint time.
+Main is functional at PR #12 merge `1c7106d17c96c4ccc3d6800750f1624b1205996b`.
+All completed foundation commits are pushed and merged. The new branch
+`agent/planstride-accuracy-review` starts from that merge.
+
+Do not publish or claim these unfinished features as verified:
+
+- `frontend/src/editorWarnings.ts` and changes to
+  `frontend/src/pages/EditorPage.tsx`: actionable 2D warnings, acknowledgement
+  fingerprints, generation-session guards. Read `docs/warning-progress.md` for
+  exact state. Focused regression tests, typecheck/build and browser checks must
+  pass before a feature commit. 3D warning focus is not implemented.
+- `tools/benchmark/evaluate_structure.py`: draft SVG agreement metrics. Read
+  `docs/baseline.md`. Verify mapping using real overlays and analytical tests,
+  then score only development cases; do not report unverified metric numbers.
+- Any added tests reported by `git status` belong to these unfinished milestones.
+
+Next resume: check allowance, read the two progress documents, inspect diff,
+finish checks, commit each finished feature separately, then open a new PR and
+merge normally after CI. Do not rerun the completed 70-plan baseline unless
+code/config/input changes justify a new experiment. No new software downloads;
+CubiCasa inventory remains exactly the manifest above.
 
 ## Checkpoint policy
 
