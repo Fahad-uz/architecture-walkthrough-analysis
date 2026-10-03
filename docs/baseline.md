@@ -120,3 +120,51 @@ complete**. Do not turn these proposed thresholds into reported achievements.
    recognition, including wall/door collisions, stairs, floor boundaries,
    furniture clearance, and lighting. This analysis runner does not exercise
    Blender export or browser rendering.
+
+## Development annotation agreement, 3 October 2026
+
+All 70 development analyses finished:67 completed and 3 failed. The 30 quarantined
+examples remain untouched. Evaluation completed with 66 scored cases and 4 explicit
+annotation/geometry errors. Failed analyses count as empty predictions when
+annotations are usable. Unscorable cases are reported, but excluded from the
+means below. This is upstream annotation agreement, not independently reviewed
+accuracy, a final evaluation or an accuracy guarantee.
+
+| Style | Scored/attempted | Wall footprint IoU | Room-floor IoU | Room instance F 1 |
+| --- | --- | --- | --- | --- |
+| colorful | 23/24 | 0.201 | 0.186 | 0.118 |
+| high_quality | 20/23 | 0.291 | 0.322 | 0.227 |
+| high_quality_architectural | 23/23 | 0.256 | 0.456 | 0.267 |
+| Overall | 66/70 | 0.247 | 0.321 | 0.203 |
+
+Overall wall footprint F 1 is 0.374; with 0.5% image-diagonal tolerance it is 0.542.
+These are polygon-area scores, not the centreline F 1 target above. Rooms use
+one-to-one matching at IoU>=0.5. Two SVG cases contain a polygon outside the image
+(colorful/9192, high_quality/230); two have a GEOS overlay error (high_quality/8488,
+high_quality/1429). Errors are recorded per sample without aborting evaluation,
+silently changing labels, or reporting partial metrics. Eight focused tests pass,
+including coordinate mapping, duplicate-room penalties and geometry-error recovery.
+
+Visual alignment checked on colorful/10706, high_quality/932 and
+high_quality_architectural/926: blue label boundaries align with drawing ink;
+red predictions reveal missing colored walls and false walls on furniture,
+door swings and dimension lines. This is an alignment spot check, not a complete
+independent review of the annotations. Overlays include interior polygon rings.
+
+Reproduce without rerunning recognition:
+
+```sh
+.venv/bin/python tools/benchmark/evaluate_structure.py \
+  --manifest outputs/benchmark-data/cubicasa5k/manifest.json \
+  --baseline outputs/benchmark-development-baseline/report.json \
+  --output outputs/benchmark-development-metrics-new
+```
+
+Complete local reports: `outputs/benchmark-development-baseline/report.json` and
+`outputs/benchmark-development-metrics-v3/report.json`. Source images, SVGs and
+overlays remain ignored local data under CubiCasa5K CC BY-NC 4.0. No dependencies
+or models were downloaded. Source-family independence, independent annotation
+review, openings/scale/adjacency metrics and untouched final evaluation remain
+outstanding. Next: measure cautious colored-wall recovery and report regressions.
+
+Worker runtime including startup: median 1.481 s, 95th percentile 2.548 s on the development Mac.

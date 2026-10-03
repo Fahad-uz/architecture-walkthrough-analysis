@@ -63,21 +63,64 @@ def strip_border_bars(mask: np.ndarray) -> np.ndarray:
     return cleaned
 
 
+def _colored_wall_network_mask(colored: np.ndarray) -> np.ndarray:
+    """Recover only large, sparse networks of substantial orthogonal bands.
+
+    Saturation alone cannot distinguish walls from fixtures or room fills.
+    Require connected evidence in both axes, leaving isolated colored strokes
+    and small fixtures out. This intentionally does not recover every colored
+    wall fragment; it also does not connect gaps or infer missing wall pixels.
+    """
+    height, width = colored.shape
+    recovered = np.zeros_like(colored)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(colored, connectivity=8)
+    band_width = max(3, round(min(height, width) * 0.003))
+    h_kernel = cv2.getStructuringElement(
+        cv2.MORPH_RECT, (max(15, round(width * 0.1)), band_width),
+    )
+    v_kernel = cv2.getStructuringElement(
+        cv2.MORPH_RECT, (band_width, max(15, round(height * 0.1))),
+    )
+    for label in range(1, count):
+        x, y, w, h, area = stats[label]
+        # A room-sized extent with low occupancy is evidence of a network,
+        # whereas solid counters/room shading and small furniture are not.
+        if w < width * 0.2 or h < height * 0.2:
+            continue
+        if max(w / width, h / height) < 0.4 or area > w * h * 0.25:
+            continue
+        component = (labels[y:y + h, x:x + w] == label).astype(np.uint8) * 255
+        horizontal = cv2.morphologyEx(
+            component, cv2.MORPH_OPEN, h_kernel, borderType=cv2.BORDER_CONSTANT, borderValue=0,
+        )
+        vertical = cv2.morphologyEx(
+            component, cv2.MORPH_OPEN, v_kernel, borderType=cv2.BORDER_CONSTANT, borderValue=0,
+        )
+        if min(cv2.countNonZero(horizontal), cv2.countNonZero(vertical)) < area * 0.1:
+            continue
+        if cv2.countNonZero(cv2.bitwise_or(horizontal, vertical)) < area * 0.65:
+            continue
+        recovered[y:y + h, x:x + w] |= component
+    return recovered
+
+
 def structural_ink_mask(
     image_bgr: np.ndarray,
     dark_threshold: int,
     max_saturation: int,
 ) -> np.ndarray:
-    """Dark AND desaturated pixels: true black/grey linework.
+    """Black/grey ink plus colored ink with connected wall-band evidence.
 
-    Colored dark fills (kitchen counters, brick hatches, furniture) fail the
-    saturation gate, so they never masquerade as walls.
+    Colored fills and fixture linework remain excluded unless their component
+    has the geometry of a large, sparse structural network.
     """
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
     saturation = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)[:, :, 1]
     dark = cv2.threshold(gray, dark_threshold, 255, cv2.THRESH_BINARY_INV)[1]
     desaturated = cv2.threshold(saturation, max_saturation, 255, cv2.THRESH_BINARY_INV)[1]
-    return strip_border_bars(cv2.bitwise_and(dark, desaturated))
+    neutral = cv2.bitwise_and(dark, desaturated)
+    colored = cv2.bitwise_and(dark, cv2.bitwise_not(desaturated))
+    return strip_border_bars(cv2.bitwise_or(neutral, _colored_wall_network_mask(colored)))
 
 
 def preprocess_array(image: np.ndarray, debug_dir: Path, max_side: int = 1600, options: dict[str, Any] | None = None) -> PreprocessingResult:
