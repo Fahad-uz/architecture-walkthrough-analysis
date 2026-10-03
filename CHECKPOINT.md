@@ -101,7 +101,9 @@ Counts are not accuracy; evaluate against annotations next. No detectorchanges y
 
 ## Usage checkpoint: unfinished work preserved locally
 
-Latest check: 11% remaining; stopping new work early to reserve checkpoint time.
+Resumed with99% allowance. Structural evaluator now finishes all70 cases:66
+scored and4 errors retained. Eight metric tests passed; three source overlays
+visually checked for alignment. Details and limitations: docs/baseline.md.
 Main is functional at PR #12 merge `1c7106d17c96c4ccc3d6800750f1624b1205996b`.
 All completed foundation commits are pushed and merged. The new branch
 `agent/planstride-accuracy-review` starts from that merge.
@@ -113,9 +115,10 @@ Do not publish or claim these unfinished features as verified:
   fingerprints, generation-session guards. Read `docs/warning-progress.md` for
   exact state. Focused regression tests, typecheck/build and browser checks must
   pass before a feature commit. 3D warning focus is not implemented.
-- `tools/benchmark/evaluate_structure.py`: draft SVG agreement metrics. Read
-  `docs/baseline.md`. Verify mapping using real overlays and analytical tests,
-  then score only development cases; do not report unverified metric numbers.
+- `tools/benchmark/evaluate_structure.py` and8tests are complete and ready for
+  their focused commit. Reports at outputs/benchmark-development-metrics-v3.
+  Developing a cautious colored-wall recovery separately; inspect
+  docs/colored-wall-progress.md before continuing that experiment.
 - Any added tests reported by `git status` belong to these unfinished milestones.
 
 Next resume: check allowance, read the two progress documents, inspect diff,

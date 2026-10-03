@@ -121,51 +121,50 @@ complete**. Do not turn these proposed thresholds into reported achievements.
    furniture clearance, and lighting. This analysis runner does not exercise
    Blender export or browser rendering.
 
-## Development evaluation checkpoint
+## Development annotation agreement, 3 October 2026
 
-3 October 2026: acquired collection is complete (70 development, 30 quarantined).
-Automatic analysis of all70 development images completed (67 completed, 3 failed).
-Report: `outputs/benchmark-development-baseline/report.json`. Now implementing
-SVG polygon agreement metrics in original scaled-image coordinates. The official
-CubiCasa loader uses those pixel coordinates directly; SVG viewBox dimensions
-must not be used to stretch annotations to image dimensions. Quarantine remains
-untouched. No detector changes or new dependencies are part of this stage.
+All 70 development analyses finished:67 completed and 3 failed. The 30 quarantined
+examples remain untouched. Evaluation completed with 66 scored cases and 4 explicit
+annotation/geometry errors. Failed analyses count as empty predictions when
+annotations are usable. Unscorable cases are reported, but excluded from the
+means below. This is upstream annotation agreement, not independently reviewed
+accuracy, a final evaluation or an accuracy guarantee.
 
-Next: validate coordinate conversion with analytic fixtures and source overlays;
-report wall footprint precision/recall/IoU, room one-to-one IoU matching, and
-failures by style as agreement with unreviewed upstream labels. Centreline,
-opening and metric-scale evaluation remain separate until reliably annotated.
+| Style | Scored/attempted | Wall footprint IoU | Room-floor IoU | Room instance F 1 |
+| --- | --- | --- | --- | --- |
+| colorful | 23/24 | 0.201 | 0.186 | 0.118 |
+| high_quality | 20/23 | 0.291 | 0.322 | 0.227 |
+| high_quality_architectural | 23/23 | 0.256 | 0.456 | 0.267 |
+| Overall | 66/70 | 0.247 | 0.321 | 0.203 |
 
-### Saved development metric progress
+Overall wall footprint F 1 is 0.374; with 0.5% image-diagonal tolerance it is 0.542.
+These are polygon-area scores, not the centreline F 1 target above. Rooms use
+one-to-one matching at IoU>=0.5. Two SVG cases contain a polygon outside the image
+(colorful/9192, high_quality/230); two have a GEOS overlay error (high_quality/8488,
+high_quality/1429). Errors are recorded per sample without aborting evaluation,
+silently changing labels, or reporting partial metrics. Eight focused tests pass,
+including coordinate mapping, duplicate-room penalties and geometry-error recovery.
 
-Automatic analysis completed on all 70 development images: 67 completed, 3 failed;
-30 quarantined images were not run. Local report:
-`outputs/benchmark-development-baseline/report.json`.
+Visual alignment checked on colorful/10706, high_quality/932 and
+high_quality_architectural/926: blue label boundaries align with drawing ink;
+red predictions reveal missing colored walls and false walls on furniture,
+door swings and dimension lines. This is an alignment spot check, not a complete
+independent review of the annotations. Overlays include interior polygon rings.
 
-Implemented `tools/benchmark/evaluate_structure.py` and seven focused tests in
-`tests/test_benchmark_metrics.py`; all seven tests and focused ruff checks passed.
-Partial local metric report: `outputs/benchmark-development-metrics/report.json`.
-The real-data evaluator STOPPED after 40 saved rows with an uncaught
-Shapely GEOS overlay AssertionFailedException while computing room-floor
-intersection. The metric runner is unfinished and must not be claimed complete.
-One earlier SVG also has a structural polygon with no image-area overlap.
-First resume task: handle GEOS exceptions per sample, retain/report annotation
-invalidity, add a regression case, and complete evaluation in a fresh output
-directory. Then inspect overlay alignment before publishing aggregate scores.
+Reproduce without rerunning recognition:
 
-Summary (includes analysis failures as empty predictions; upstream labels are
-not independently reviewed):
-
-```json
-{
-  "status": "in progress"
-}
+```sh
+.venv/bin/python tools/benchmark/evaluate_structure.py \
+  --manifest outputs/benchmark-data/cubicasa5k/manifest.json \
+  --baseline outputs/benchmark-development-baseline/report.json \
+  --output outputs/benchmark-development-metrics-new
 ```
 
-Next unfinished verification: inspect saved blue-ground-truth/red-prediction
-wall overlays for coordinate alignment across all three drawing styles, review
-metric exceptions/annotation repairs, and document by-style scores and runtime
-statistics before presenting these numbers as reliable dataset agreement.
-No detector changes were made. New dependencies: none. Dataset remains local
-and subject to CubiCasa5K CC-BY-NC-4.0. Building/source-family independence and
-independent annotation review remain unverified; this is not final evaluation.
+Complete local reports: `outputs/benchmark-development-baseline/report.json` and
+`outputs/benchmark-development-metrics-v3/report.json`. Source images, SVGs and
+overlays remain ignored local data under CubiCasa5K CC BY-NC 4.0. No dependencies
+or models were downloaded. Source-family independence, independent annotation
+review, openings/scale/adjacency metrics and untouched final evaluation remain
+outstanding. Next: measure cautious colored-wall recovery and report regressions.
+
+Worker runtime including startup: median 1.481 s, 95th percentile 2.548 s on the development Mac.
