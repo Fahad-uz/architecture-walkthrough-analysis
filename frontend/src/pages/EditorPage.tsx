@@ -7,7 +7,11 @@ import {
   appendDraft, createHistory, draftStorageKey, parseDraft, recordEdit, redoEdit, undoEdit, writeDraft,
   type DraftEnvelope, type DraftVersion, type EditHistory,
 } from "../editorHistory";
-import type { FloorPlanModel, Opening, Point2D, QualityReport, RoomPolygon, SanityWarning, WallSegment } from "../types";
+import {
+  acknowledgeIssue, acknowledgementState, collectReviewIssues, issueGuidance, reviewTargetPoints,
+  type ReviewIssue,
+} from "../editorWarnings";
+import type { FloorPlanModel, Opening, Point2D, QualityReport, RoomPolygon, WallSegment } from "../types";
 
 type Tool = "select" | "wall" | "door" | "window" | "scale";
 type BakeMode = "final" | "draft" | "none";
@@ -228,6 +232,7 @@ export default function EditorPage() {
   const [pending, setPending] = useState<Point2D | null>(null); // first click of 2-point tools (metres)
   const [status, setStatus] = useState("loading…");
   const [report, setReport] = useState<QualityReport | null>(null);
+  const [focusedIssueId, setFocusedIssueId] = useState<string | null>(null);
   // Iterate quickly while geometry is still under review. A final bake is an
   // explicit last step because it can take tens of minutes.
   const [bakeMode, setBakeMode] = useState<BakeMode>("draft");
@@ -310,6 +315,7 @@ export default function EditorPage() {
     setHover(null);
     setPending(null);
     setReport(null);
+    setFocusedIssueId(null);
     setDirty(false);
     setSaving(false);
     setGenerating(false);
@@ -708,8 +714,9 @@ export default function EditorPage() {
 
   const generate = async () => {
     if (generating) return;
+    const generationSession = sessionRef.current;
     const result = await save();
-    if (!result) return;
+    if (!result || sessionRef.current !== generationSession) return;
     const blocking = result.issues.filter((issue) => ["error", "severe"].includes(issue.severity));
     if (blocking.length > 0 && !force) {
       setStatus(
@@ -741,13 +748,13 @@ export default function EditorPage() {
       const generationJobId = jobId;
       setGenerating(true);
       await generateModel(generationJobId, blocking.length > 0 && force, bakeMode);
-      if (currentJobIdRef.current !== generationJobId) return;
+      if (currentJobIdRef.current !== generationJobId || sessionRef.current !== generationSession) return;
       setStatus(`Blender build started (${bakeMode})…`);
       if (pollRef.current !== null) window.clearTimeout(pollRef.current);
       const poll = async () => {
         try {
           const job = await getJob(generationJobId);
-          if (currentJobIdRef.current !== generationJobId) return;
+          if (currentJobIdRef.current !== generationJobId || sessionRef.current !== generationSession) return;
           if (job.status === "model_generated") {
             pollRef.current = null;
             setGenerating(false);
@@ -760,16 +767,16 @@ export default function EditorPage() {
             return;
           }
         } catch (exc) {
-          if (currentJobIdRef.current !== generationJobId) return;
+          if (currentJobIdRef.current !== generationJobId || sessionRef.current !== generationSession) return;
           setStatus(`waiting for model status: ${String(exc)}`);
         }
-        if (currentJobIdRef.current === generationJobId) {
+        if (currentJobIdRef.current === generationJobId && sessionRef.current === generationSession) {
           pollRef.current = window.setTimeout(() => void poll(), 2000);
         }
       };
       pollRef.current = window.setTimeout(() => void poll(), 500);
     } catch (exc) {
-      if (currentJobIdRef.current === jobId) {
+      if (currentJobIdRef.current === jobId && sessionRef.current === generationSession) {
         setGenerating(false);
         setStatus(String(exc));
       }
@@ -793,8 +800,32 @@ export default function EditorPage() {
   };
 
   const selectedItem: any = selection && model ? (model as any)[selection.kind][selection.index] : null;
-  const warnings: SanityWarning[] = (model?.metadata?.sanity_warnings as SanityWarning[]) ?? [];
+  const reviewIssues = useMemo(() => model ? collectReviewIssues(model, report?.issues) : [], [model, report]);
+  const focusedIssue = reviewIssues.find((issue) => issue.id === focusedIssueId);
   const blockingIssueCount = report?.issues.filter((issue) => ["error", "severe"].includes(issue.severity)).length ?? 0;
+
+  const focusIssue = (issue: ReviewIssue) => {
+    if (!model) return;
+    setFocusedIssueId(issue.id);
+    setTool("select");
+    setPending(null);
+    const target = issue.targets.find((item) => ["walls", "doors", "windows", "rooms", "balconies"].includes(item.kind));
+    setSelection(target ? { kind: target.kind as NonNullable<Selection>["kind"], index: target.index } : null);
+    const points = issue.targets.flatMap((item) => reviewTargetPoints(model, item).map(toPx));
+    if (issue.location) points.push({ x: issue.location.x * imageWidth, y: issue.location.y * imageHeight });
+    if (!points.length || !image) {
+      fitToPlan();
+      setStatus(`This is a whole-plan finding, or its referenced object is no longer present. No exact location is available. ${issueGuidance(issue)}`);
+      return;
+    }
+    const minX = Math.min(...points.map((point) => point.x));
+    const maxX = Math.max(...points.map((point) => point.x));
+    const minY = Math.min(...points.map((point) => point.y));
+    const maxY = Math.max(...points.map((point) => point.y));
+    const scale = Math.max(0.1, Math.min(3, stageSize.width / Math.max(180, maxX - minX + 100), stageSize.height / Math.max(180, maxY - minY + 100)));
+    setView({ scale, x: stageSize.width / 2 - (minX + maxX) / 2 * scale, y: stageSize.height / 2 - (minY + maxY) / 2 * scale });
+    setStatus(issueGuidance(issue));
+  };
 
   return (
     <div className="editor-layout">
@@ -1032,16 +1063,28 @@ export default function EditorPage() {
                   );
                 }),
               )}
-              {warnings.map((w, index) => (
-                <Group key={`warn-${index}`} x={w.x * imageWidth} y={w.y * imageHeight}>
+              {focusedIssue?.targets.map((target) => {
+                const points = reviewTargetPoints(model, target).map(toPx);
+                return points.length === 1 ? (
+                  <Circle key={`review-${target.kind}-${target.id}`} x={points[0].x} y={points[0].y}
+                    radius={18 / view.scale} stroke="#c02e00" strokeWidth={3 / view.scale} listening={false} />
+                ) : points.length > 1 ? (
+                  <Line key={`review-${target.kind}-${target.id}`} points={points.flatMap((point) => [point.x, point.y])}
+                    closed={["rooms", "balconies", "slabs", "special_elements"].includes(target.kind)}
+                    stroke="#c02e00" strokeWidth={5 / view.scale} dash={[8 / view.scale, 5 / view.scale]}
+                    listening={false} />
+                ) : null;
+              })}
+              {reviewIssues.filter((issue) => issue.location).map((issue) => (
+                <Group key={issue.id} x={issue.location!.x * imageWidth} y={issue.location!.y * imageHeight}>
                   <Circle
-                    radius={11}
+                    radius={focusedIssueId === issue.id ? 16 : 11}
                     fill="rgba(233,84,32,0.25)"
                     stroke="#e95420"
                     strokeWidth={2}
                     onMouseDown={(e) => {
                       e.cancelBubble = true;
-                      setStatus(`Review note: [${w.kind}] ${w.description}`);
+                      focusIssue(issue);
                     }}
                   />
                   <Text text="!" x={-3} y={-7} fontSize={14} fontStyle="bold" fill="#e95420" listening={false} />
@@ -1302,20 +1345,36 @@ export default function EditorPage() {
                 </div>
               ))}
             </div>
-            <div
-              role="list"
-              aria-label="Validation issues"
-              style={{ fontSize: 12, color: "#7a5a10", maxHeight: 140, overflow: "auto" }}
-            >
-              {report.issues.map((issue, index) => (
-                <div
-                  role="listitem"
-                  key={`${issue.code}-${index}`}
-                  style={{ color: ["error", "severe"].includes(issue.severity) ? "#a12622" : undefined }}
-                >
-                  [{issue.severity}] {issue.message}
-                </div>
-              ))}
+          </div>
+        )}
+        {!!reviewIssues.length && model && (
+          <div className="panel">
+            <strong>Review findings ({reviewIssues.length})</strong>
+            <p style={{ fontSize: 12 }}>Confirming records your review; warnings, quality scores and export checks still apply. Save changes to keep confirmations in the project.</p>
+            {dirty && <p style={{ fontSize: 12 }}>Findings are from the last validation. Save and validate after corrections.</p>}
+            <div role="list" aria-label="Validation issues" style={{ maxHeight: 360, overflow: "auto" }}>
+              {reviewIssues.map((issue) => {
+                const state = acknowledgementState(model, issue);
+                const located = issue.targets.length > 0 || !!issue.location;
+                return (
+                  <div role="listitem" key={issue.id} style={{ padding: "10px 0", borderBottom: "1px solid #ddd" }}>
+                    <button type="button" aria-pressed={focusedIssueId === issue.id} onClick={() => focusIssue(issue)}
+                      style={{ textAlign: "left", color: ["error", "severe"].includes(issue.severity) ? "#a12622" : "#72510c" }}>
+                      [{issue.severity}] {issue.message}
+                    </button>
+                    <div style={{ fontSize: 12, marginTop: 4 }}>
+                      {located ? "Select the finding to focus its source location." : "Whole-plan finding or unavailable object; no exact source location is provided."}
+                    </div>
+                    {focusedIssueId === issue.id && <p style={{ fontSize: 12 }}>{issueGuidance(issue)}</p>}
+                    <label className="row" style={{ display: "flex", fontSize: 12 }}>
+                      <input type="checkbox" checked={state === "confirmed"}
+                        onChange={(event) => update((current) => acknowledgeIssue(current, issue, event.target.checked))} />
+                      Reviewed against source
+                    </label>
+                    {state === "stale" && <div role="status" style={{ color: "#a12622", fontSize: 12 }}>Layout changed since confirmation. Review this finding again.</div>}
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
