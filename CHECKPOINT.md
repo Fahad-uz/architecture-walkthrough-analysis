@@ -1,6 +1,7 @@
 # PlanStride checkpoint
 
-Updated 3 October 2026 (Asia/Kolkata). The full upgrade is NOT complete.
+Updated 11 October 2026 (Asia/Kolkata). Branch consolidation is complete.
+The full PlanStride upgrade is NOT complete.
 
 ## Resume and publication rules
 
@@ -16,18 +17,29 @@ No secrets, private plans or restricted dataset assets in Git.
 ## Published work
 
 Repository: https://github.com/Fahad-uz/architecture-walkthrough-analysis
-Working branch: agent/planstride-accuracy-review.
+Working branch: main. Only main remains locally and on GitHub.
+Prepared from commit 610602b4c819f1a435bf43e74a7fa7abac937346.
+The commit containing this checkpoint can be found with git log -1.
 PR #12 merged at1c7106d17c96c4ccc3d6800750f1624b1205996b, preserving six commits:
 branding, image preview/crop/reset/history, editor undo/redo and recoverable local
 drafts, dataset acquisition, automatic baseline runner and initial brief.
 All three GitHub checks passed. Browser crop/undo/draft recovery was verified.
-Current PR: https://github.com/Fahad-uz/architecture-walkthrough-analysis/pull/13
+PR #13 merged normally at bd56cdf59717df56966570a14cea4498ddf6054b:
+https://github.com/Fahad-uz/architecture-walkthrough-analysis/pull/13
+All five individual feature/checkpoint commits are preserved.
+Local master history merged at b3f51445da26654ee809d75e95f19c99d6b3997b.
+Its original snapshot is identical to upstream 4168810, already in main;
+the merge preserved the original import commit without changing project files.
+All 17 local/remote branch references were verified as ancestors of main.
+At the user's request, 11 remote branches and four local branches were deleted
+after checking their history; only main remains. Detailed inventory and checks:
+docs/branch-consolidation.md.
 Metric commit:31afb2adc0cede3c31546f9c5de558f8589a4958.
 Use git log for subsequent feature/checkpoint commit hashes and merge status.
-GitHub CLI has no authentication; connected GitHub tools publish commits.
-Public git fetch works. Local identity matches the verified GitHub profile.
+GitHub CLI is now authenticated as Fahad-uz. Local commit identity and GitHub
+attribution were verified. Commits and both normal merges are pushed.
 
-## Completed milestones pending final publication/merge verification
+## Completed and merged milestones
 
 - Structural evaluation:70 development analyses,67 completed/3 failed;
  66 scorable,4 explicit evaluation errors. Wall footprint IoU0.247, room-floor
@@ -44,7 +56,16 @@ Public git fetch works. Local identity matches the verified GitHub profile.
  and limits:docs/colored-wall-progress.md. No new dependencies or models.
 - Full current check logs:../planstride-current-tests.log,
  ../planstride-current-frontend.log, ../planstride-current-build.log.
- Inspect final exit/check results before saying the latest full suite passed.
+ These record 447 Python passes/9 integration skips, 29 frontend passes,
+ lint/type checks and the production build. All three PR #13 checks passed.
+- Fresh main checks on 11 October: Python and frontend passed; the GLB audit
+ found the newly published Sharp advisory GHSA-wq5f-xc86-pv6w.
+ Commit 610602b upgrades both the direct dependency and override to Sharp 0.35.5.
+ Local runtime audit reports zero vulnerabilities, SVG/PNG/WebP conversion passes,
+ and furnished GLB optimization preserves all active nodes, geometry bounds and
+ 35,846 nondegenerate triangles. Twelve zero-area triangles are removed by Draco.
+ All three GitHub checks passed on 610602b:
+ https://github.com/Fahad-uz/architecture-walkthrough-analysis/actions/runs/38137172904
 
 ## Data and reproducible outputs
 
@@ -55,6 +76,9 @@ Local noncommercial evaluation only, CC BY-NC4.0; no redistribution.
 No exact/hash-near duplicates found, but building/source-family independence and
 independent annotation review remain UNVERIFIED. Quarantine is not final eval.
 FloorPlanCAD downloads deferred because drawing rights are unclear.
+Additional installed packages this session: Sharp 0.35.5, its macOS ARM64 native
+binding 0.35.5 and libvips bundle 1.3.4. Sources, licenses and installed sizes are
+listed in docs/branch-consolidation.md. No new plans, models or asset packs.
 
 - Baseline:outputs/benchmark-development-baseline/report.json (complete70).
 - Metrics:outputs/benchmark-development-metrics-v3/report.json (complete70).
@@ -69,15 +93,13 @@ FloorPlanCAD downloads deferred because drawing rights are unclear.
 
 ## Exact next steps
 
-1. Verify latest focused commits pushed, PR #13 CI and normal merge status.
-   Preserve any unfinished working-tree files; inspect status before editing.
-2. Run full70 candidate pipeline comparison in a NEW output directory; do not
+1. Run full70 candidate pipeline comparison in a NEW output directory; do not
    replace/rerun the preserved baseline. Keep all failures and annotation errors.
-3. Investigate native crash and false walls on furniture/dimensions. Improve
+2. Investigate native crash and false walls on furniture/dimensions. Improve
    based on development evidence, with regressions checked across styles.
-4. Complete rotation/straightening/perspective prep and transform tracking;
+3. Complete rotation/straightening/perspective prep and transform tracking;
    furniture/material/lighting editing;3D warning focus and end-to-end checks.
-5. Establish independent source/building groups, reviewed annotations and broader
+4. Establish independent source/building groups, reviewed annotations and broader
    permitted sources before final untouched evaluation. Openings, adjacency,
    scale error and correction-effort measurements remain outstanding.
 
@@ -86,7 +108,11 @@ elevations or ambiguous geometry require explicit assumptions/review.
 
 ## Stop status
 
-Allowance reached0%; no new tasks started. Full Python run447passed/9skipped;
-color-wall dtype repair rechecked14tests; mypy82files passed. Frontend tests,
-typecheck/build passed. Remaining work follows Exact next steps above.
-Latest features are being pushed separately; PR13 merge awaits its final CI.
+The requested branch consolidation and cleanup are complete. All feature,
+dependency-fix and merge commits are pushed; all three GitHub checks pass on the
+validated code commit 610602b. The accompanying documentation/checkpoint update
+is a separate commit, with publication verified after pushing.
+Five-hour allowance at checkpoint preparation: 29% remaining;
+this session did not stop for quota. Preserve the untracked .DS_Store files in
+the repository root and frontend; they are not project changes and were not pushed.
+No unfinished code edits remain. The broader unfinished upgrade is listed above.
