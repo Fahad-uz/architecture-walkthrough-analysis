@@ -1,6 +1,6 @@
 # PlanStride checkpoint
 
-Updated 11 October 2026 (Asia/Kolkata). Branch consolidation is complete.
+Updated 12 October 2026 (Asia/Kolkata). Branch consolidation is complete.
 The full PlanStride upgrade is NOT complete.
 
 ## Resume and publication rules
@@ -18,7 +18,7 @@ No secrets, private plans or restricted dataset assets in Git.
 
 Repository: https://github.com/Fahad-uz/architecture-walkthrough-analysis
 Working branch: main. Only main remains locally and on GitHub.
-Prepared from commit 610602b4c819f1a435bf43e74a7fa7abac937346.
+Prepared from commit 4762f72f19da9e723f25c6b202e799c15348530f.
 The commit containing this checkpoint can be found with git log -1.
 PR #12 merged at1c7106d17c96c4ccc3d6800750f1624b1205996b, preserving six commits:
 branding, image preview/crop/reset/history, editor undo/redo and recoverable local
@@ -91,6 +91,27 @@ listed in docs/branch-consolidation.md. No new plans, models or asset packs.
  Use .venv Python, AI disabled; Blender at ../tools/Blender.app/Contents/MacOS/Blender.
  Browser source/recovery screenshot:../../outputs/PlanStride-editor-recovery.png.
 
+## API key check, 12 October 2026
+
+Checked main at 4762f72f19da9e723f25c6b202e799c15348530f against the freshly
+fetched GitHub main. Gitleaks 8.30.1 scanned 225 tracked files and all 128
+reachable commits, including merge-parent diffs. Both scans found zero secrets.
+Default scanner rules were used; repository ignore files and inline allow
+comments were not allowed to suppress findings. No secret values were printed
+or saved in the summary.
+
+The tracked .env.example contains an empty GEMINI_API_KEY setting. No local
+.env file was present. This checks repository content, not credentials held in
+GitHub settings or elsewhere on the Mac.
+
+Local summary: outputs/secret-check-2026-10-12/summary.json (ignored by Git).
+Additional download: Gitleaks 8.30.1 for macOS ARM64, MIT license,
+7,897,593 compressed bytes, used for this local secret check:
+https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_darwin_arm64.tar.gz
+The archive was verified against the release's SHA256 digest. It is stored at
+../tools/gitleaks-8.30.1; its source, size and checksum inventory is recorded in
+../gitleaks-download-inventory-2026-10-12.json. No runtime dependencies changed.
+
 ## Exact next steps
 
 1. Run full70 candidate pipeline comparison in a NEW output directory; do not
@@ -112,7 +133,7 @@ The requested branch consolidation and cleanup are complete. All feature,
 dependency-fix and merge commits are pushed; all three GitHub checks pass on the
 validated code commit 610602b. The accompanying documentation/checkpoint update
 is a separate commit, with publication verified after pushing.
-Five-hour allowance at checkpoint preparation: 29% remaining;
+Five-hour allowance at the 11 October consolidation checkpoint: 29% remaining;
 this session did not stop for quota. Preserve the untracked .DS_Store files in
 the repository root and frontend; they are not project changes and were not pushed.
 No unfinished code edits remain. The broader unfinished upgrade is listed above.
