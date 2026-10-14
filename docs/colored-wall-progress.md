@@ -43,3 +43,47 @@
 - No quarantine data were accessed, inspected, analyzed, or tuned against. No broad claim or final evaluation was performed.
 - Recommended handoff: keep this as one focused commit after root review. Any full 70-image pipeline follow-up must remain development-only and should preserve failures and annotation errors in reporting.
 - Final usage check: 21% five-hour allowance remains (79% consumed), 88% weekly remains. Stopped starting work at this check to preserve the root agent's reserve; no further experiments started.
+
+
+## Full development comparison, 14 October 2026
+
+The full 70-image candidate run at `f2ee7af` is complete. It preserves the original
+baseline and uses all development samples, with no quarantine access or edits.
+Python source SHA256:
+`a03a6217494b14338994739a551b6787a5011eb45b3755863697a3782a982fd4`.
+
+| Metric | Original baseline | Current candidate |
+| --- | ---: | ---: |
+| Completed analyses / attempted | 67 / 70 | 67 / 70 |
+| Scorable / annotation errors | 66 / 4 | 66 / 4 |
+| Mean wall polygon F1 | 0.374279 | 0.380963 |
+| Mean wall polygon IoU | 0.247304 | 0.251971 |
+| Mean tolerant wall polygon F1 | 0.541514 | 0.547857 |
+| Mean room instance F1 | 0.203121 | 0.203121 |
+| Mean room floor IoU | 0.321408 | 0.321791 |
+
+Six scored plans improved wall F1; all other scored wall F1 values are unchanged.
+Improved development IDs: high_quality/11538 and colorful/619, 7806, 6360, 7967,
+9769. Failures remain colorful/10706, high_quality/10635 and high_quality/13719,
+all native exit -11. The same four annotation/geometry errors remain unscorable.
+This is modest improvement in agreement with unreviewed upstream annotations;
+it does not establish general accuracy, improved room detection, or perfection.
+
+Per-style candidate wall F1: colorful 0.327879 (23 scored of 24), high_quality
+0.423761 (20 of 23), high_quality_architectural 0.396832 (23 of 23).
+Failures count as empty predictions when annotations are usable.
+
+Local reports, source images and overlays remain ignored:
+- `outputs/benchmark-development-candidate-2026-10-14/report.json`
+- `outputs/benchmark-development-candidate-metrics-2026-10-14/report.json`
+
+Reproduce evaluation without rerunning analysis:
+
+```sh
+.venv/bin/python tools/benchmark/evaluate_structure.py \
+  --manifest outputs/benchmark-data/cubicasa5k/manifest.json \
+  --baseline outputs/benchmark-development-candidate-2026-10-14/report.json \
+  --output outputs/benchmark-development-candidate-metrics-new
+```
+
+The crash investigation and unfinished fixes are recorded in `CHECKPOINT.md`.
