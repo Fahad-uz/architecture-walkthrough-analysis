@@ -142,22 +142,17 @@ The archive was verified against the release's SHA256 digest. It is stored at
   SHA256:caf60c071ec391ba51ed00a4a920f996d0b64e3e46068aac1f646b5de0326a19.
   Verified download inventory:outputs/native-crash-diagnosis/opencv413/inventory.json.
 
-## Unfinished saved edits — NOT tested or pushed
+## Crop validation completed
 
-- src/architecture_walkthrough/api/app.py
-- src/architecture_walkthrough/vision/plan_roi.py
-- tests/test_crop_validation.py
-
-A partial crop-validation fix is saved locally:shared integer/positive/in-bounds
-validator, defensive direct ROI validation, API rejection of incomplete crop
-fields instead of silently analyzing the full image. New tests have been saved
-but NOT run; review before publishing. They cover invalid/valid crops, padding,
-original byte preservation, and all8 EXIF orientations across JPEG/PNG/WebP.
-EXIF orientation can swap browser/OpenCV image
-dimensions relative to PIL's raw dimensions, so resolve that consistency first.
-No frontend changes. The dependency/native crash fix is complete and pushed;
-the crop implementation and tests remain unfinished and uncommitted.
-Preserve unrelated untracked .DS_Store and frontend/.DS_Store.
+API crop parsing, direct ROI validation and orientation-aware upload dimensions
+are complete. Invalid/partial/malformed/out-of-bounds crops fail clearly before
+analysis. Original upload bytes and valid padding behavior are preserved.
+All8 EXIF orientations across JPEG/PNG/WebP decode consistently; only upload
+validation needed an axis swap for orientations5–8. No decoder replacement.
+175 focused tests passed, affected-file Ruff and mypy passed, diff check passed.
+Files:api/app.py,vision/plan_roi.py,security/file_validation.py,
+tests/test_crop_validation.py. These form one focused bug-fix commit.
+No new download. Unrelated .DS_Store files remain untracked.
 
 ## Exact next steps
 
@@ -168,10 +163,8 @@ Preserve unrelated untracked .DS_Store and frontend/.DS_Store.
    All70 analyses complete;66scored/4same annotation errors. Wall F1 .380963→.403484,
    wall IoU .251971→.268075,room F1 .203121→.216164. One small wall F1 regression
    on architectural/7104 (-.003731); details:docs/native-resize-fix.md.
-3. Run tests/test_crop_validation.py to establish EXIF mismatch evidence, review
-   the saved API/ROI patch, resolve EXIF dimension consistency in validation
-   (canonical decoder only if tests prove codec mismatch), then run focused/full
-   relevant checks and commit/push the completed crop fix separately.
+3. Crop validation is complete; inspect git log for its published commit.
+   Restart server and verify a fresh upload after image preparation integration.
 4. Continue generalized structural accuracy on development evidence; false
    walls on furniture/dimensions and weak room detection remain.
 5. Image preparation:quarter-turn rotation first, then straightening and
@@ -191,7 +184,7 @@ Preserve unrelated untracked .DS_Store and frontend/.DS_Store.
 Never claim perfect reconstruction from every image. Missing measurements,
 elevations or ambiguous geometry require explicit assumptions/review.
 
-## Pause status and verified completed fix
+## Prior pause status and verified completed fix
 
 Paused at the user's request, not for quota. Five-hour allowance after the fix
 commit:68% remaining. All agents and bounded benchmark processes have stopped.
@@ -230,3 +223,7 @@ for EXIF orientations5–8 are wrong; JPEG/PNG/WebP decoded pixels already agree
 Crop author is applying a minimal orientation-aware validation fix plus boundary
 and dimension-limit tests. Do not commit that unit until focused checks pass.
 Usage on resume:62% remaining; checked again before the next major task.
+
+The crop-validation unit has completed on resume. Next active milestone is
+quarter-turn image preparation with explicit coordinate mapping; straightening
+and perspective remain later work. No model/asset downloads are required.

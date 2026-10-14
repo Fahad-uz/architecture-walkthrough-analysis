@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from numbers import Integral
 from pathlib import Path
 
 import cv2
@@ -15,6 +16,19 @@ class ROIExtractionResult:
     roi: PlanROI
     transform: tuple[int, int]
     debug_path: Path | None = None
+
+
+def validate_crop_rect(crop_rect: tuple[int, int, int, int], width: int, height: int) -> None:
+    """Require a nonempty integer crop fully inside the unpadded source image."""
+    if len(crop_rect) != 4 or any(
+        isinstance(value, bool) or not isinstance(value, Integral) for value in crop_rect
+    ):
+        raise ValueError("crop coordinates and dimensions must be integers")
+    x, y, crop_width, crop_height = crop_rect
+    if x < 0 or y < 0 or crop_width <= 0 or crop_height <= 0:
+        raise ValueError("crop origin must be nonnegative and dimensions must be positive")
+    if x + crop_width > width or y + crop_height > height:
+        raise ValueError("crop must lie entirely within the image")
 
 
 def _write_debug_overlay(image: np.ndarray, roi: PlanROI, debug_dir: Path | None) -> Path | None:
@@ -47,6 +61,7 @@ def _manual_roi(
     padding_px: int,
 ) -> PlanROI:
     height, width = image.shape[:2]
+    validate_crop_rect(crop_rect, width, height)
     x, y, w, h = crop_rect
     x0 = max(0, x - padding_px)
     y0 = max(0, y - padding_px)

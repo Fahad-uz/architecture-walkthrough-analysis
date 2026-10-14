@@ -40,6 +40,7 @@ from architecture_walkthrough.geometry.wall_graph import enumerate_faces, match_
 from architecture_walkthrough.pipeline import analyze_image, build_model, prepare_walkthrough_floorplan
 from architecture_walkthrough.scene.simple_glb import export_simple_glb
 from architecture_walkthrough.vision.overlay import write_analysis_overlay
+from architecture_walkthrough.vision.plan_roi import validate_crop_rect
 from architecture_walkthrough.security.file_validation import (
     create_job_dir,
     ensure_within_directory,
@@ -1486,10 +1487,10 @@ def create_app() -> FastAPI:
         file: UploadFile = File(...),
         use_gemini: bool = Form(True),
         manual_scale: float | None = Form(None),
-        crop_x: int | None = Form(None),
-        crop_y: int | None = Form(None),
-        crop_width: int | None = Form(None),
-        crop_height: int | None = Form(None),
+        crop_x: str | None = Form(None),
+        crop_y: str | None = Form(None),
+        crop_width: str | None = Form(None),
+        crop_height: str | None = Form(None),
     ) -> JobRecord:
         form = await request.form()
         allowed_fields = {
@@ -1509,6 +1510,19 @@ def create_app() -> FastAPI:
                     await value.close()
             raise HTTPException(status_code=400, detail="unexpected or duplicate multipart field")
 
+        crop_rect = None
+        if any(name in field_names for name in ("crop_x", "crop_y", "crop_width", "crop_height")):
+            if crop_x is None or crop_y is None or crop_width is None or crop_height is None:
+                await file.close()
+                raise HTTPException(status_code=400, detail="crop requires x, y, width and height")
+            try:
+                crop_rect = (int(crop_x), int(crop_y), int(crop_width), int(crop_height))
+            except ValueError as exc:
+                await file.close()
+                raise HTTPException(
+                    status_code=400, detail="crop coordinates and dimensions must be integers"
+                ) from exc
+
         record = runner.create_job()
         job_dir = config.paths.work_root / record.job_id
         suffix = Path(file.filename or "").suffix.lower()
@@ -1520,6 +1534,8 @@ def create_app() -> FastAPI:
                 config.limits.max_upload_mb * 1024 * 1024,
             )
             validated = validate_image_file(upload_path, config.limits, file.content_type)
+            if crop_rect is not None:
+                validate_crop_rect(crop_rect, validated.width, validated.height)
         except ValueError as exc:
             upload_path.unlink(missing_ok=True)
             runner.publish(
@@ -1533,9 +1549,6 @@ def create_app() -> FastAPI:
         upload_path.replace(safe_path)
         job_config = config.model_copy(deep=True)
         job_config.ai.gemini_enabled = use_gemini
-        crop_rect = None
-        if crop_x is not None and crop_y is not None and crop_width is not None and crop_height is not None:
-            crop_rect = (crop_x, crop_y, crop_width, crop_height)
         try:
             runner.start_analysis(record, safe_path, job_config, manual_scale, crop_rect)
         except HTTPException as exc:

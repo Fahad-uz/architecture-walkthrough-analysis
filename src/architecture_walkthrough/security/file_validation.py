@@ -4,7 +4,7 @@ import re
 import uuid
 from pathlib import Path
 
-from PIL import Image, UnidentifiedImageError
+from PIL import ExifTags, Image, UnidentifiedImageError
 from pydantic import BaseModel
 
 from architecture_walkthrough.config import LimitSettings
@@ -76,6 +76,11 @@ def validate_image_file(path: Path, limits: LimitSettings, declared_mime: str | 
             image.verify()
         with Image.open(path) as image:
             width, height = image.size
+            # Crop coordinates use the displayed image, as do browser previews
+            # and OpenCV's default orientation-aware decoder. Keep upload bytes
+            # unchanged while reporting dimensions in that same coordinate frame.
+            if image.getexif().get(ExifTags.Base.Orientation) in {5, 6, 7, 8}:
+                width, height = height, width
             fmt = (image.format or "").lower()
     except (UnidentifiedImageError, OSError) as exc:
         raise ValueError("image integrity validation failed") from exc
