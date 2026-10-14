@@ -5,7 +5,9 @@ import sys
 from pathlib import Path
 
 import pytest
-from shapely.geometry import box
+from shapely.geometry import Polygon, box
+
+from architecture_walkthrough.geometry.models import FloorPlanModel
 
 MODULE = Path(__file__).resolve().parents[1] / "tools/benchmark/evaluate_structure.py"
 sys.path.insert(0, str(MODULE.parent))
@@ -39,15 +41,90 @@ def test_svg_inherited_transforms_and_polygon_transform(tmp_path: Path) -> None:
     assert actual["rooms"][0].bounds == (15, 20, 25, 30)
 
 
-def test_prediction_inverse_crop_resize_and_y_flip() -> None:
+@pytest.mark.parametrize("metadata", [None, {}, {"image_preparation": None}])
+def test_prediction_inverse_crop_resize_and_y_flip(metadata) -> None:
     model = {"plan_roi": {"rect": {"x": 100, "y": 200, "width": 400, "height": 200}},
              "pixels_per_metre": 10, "walls": [
                  {"start": {"x": 0, "y": 0}, "end": {"x": 10, "y": 0}, "thickness_m": 1}
              ], "rooms": [{"points": [{"x": 0, "y": 0}, {"x": 10, "y": 0},
                                          {"x": 10, "y": 5}, {"x": 0, "y": 5}]}]}
+    if metadata is not None:
+        model["metadata"] = metadata
     result = metrics.prediction_geometry(model, (200, 100), (1000, 1000))
     assert result["walls"][0].bounds == (100, 390, 300, 410)
     assert result["rooms"][0].bounds == (100, 300, 300, 400)
+
+
+def prepared_prediction() -> dict:
+    # A 200×120 source rotated clockwise, cropped at (10, 20) to 91×151,
+    # then resized to 60×99. Integer rounding gives unequal axis scales.
+    model = {
+        "metadata": {"image_preparation": {
+            "version": 1, "rotation_quarter_turns": 1,
+            "source_width_px": 200, "source_height_px": 120,
+            "prepared_width_px": 120, "prepared_height_px": 200,
+            "analysis_width_px": 60, "analysis_height_px": 99,
+            "source_to_analysis": [[0, -60 / 91, 110 * 60 / 91],
+                                   [99 / 151, 0, -20 * 99 / 151], [0, 0, 1]],
+            "analysis_to_source": [[0, 151 / 99, 20], [-91 / 60, 0, 110], [0, 0, 1]],
+        }},
+        "plan_roi": {"rect": {"x": 10, "y": 20, "width": 91, "height": 151},
+                     "confidence": 1.0, "source": "manual"},
+        "pixels_per_metre": 10,
+        "walls": [{"start": {"x": 1, "y": 2}, "end": {"x": 4, "y": 6},
+                   "thickness_m": 0.5}],
+        "rooms": [{"points": [{"x": 1, "y": 1}, {"x": 4, "y": 1},
+                               {"x": 4, "y": 6}, {"x": 1, "y": 6}]}],
+    }
+    return FloorPlanModel.model_validate(model).model_dump(mode="json")
+
+
+def test_prediction_inverse_rotation_crop_actual_resize_and_y_flip() -> None:
+    result = metrics.prediction_geometry(prepared_prediction(), (60, 99), (200, 120))
+
+    def source_point(x, y):
+        return 171 - y * 1510 / 99, 110 - x * 91 / 6
+
+    # A diagonal wall makes transforming its entire buffered footprint
+    # observably different from buffering its transformed centreline.
+    expected_wall = Polygon([source_point(x, y) for x, y in
+                             [(0.8, 2.15), (3.8, 6.15), (4.2, 5.85), (1.2, 1.85)]])
+    expected_room = Polygon([source_point(x, y) for x, y in
+                             [(1, 1), (4, 1), (4, 6), (1, 6)]])
+    assert result["walls"][0].symmetric_difference(expected_wall).area == pytest.approx(0, abs=1e-10)
+    assert result["rooms"][0].symmetric_difference(expected_room).area == pytest.approx(0, abs=1e-10)
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("version", 2),
+    ("version", True),
+    ("rotation_quarter_turns", 4),
+    ("rotation_quarter_turns", True),
+    ("source_width_px", 201),
+    ("source_height_px", 0),
+    ("prepared_width_px", 121),
+    ("analysis_height_px", 100),
+    ("analysis_width_px", 60.0),
+    ("source_to_analysis", [[1, 0], [0, 1]]),
+    ("source_to_analysis", [[1, 0, float("nan")], [0, 1, 0], [0, 0, 1]]),
+    ("source_to_analysis", [[1, 0, 0], [0, 1, 0], [0.01, 0, 1]]),
+    ("source_to_analysis", [[0, 0, 0], [0, 0, 0], [0, 0, 1]]),
+    ("source_to_analysis", "invalid"),
+    ("analysis_to_source", [[0, 151 / 99, 20], [-91 / 60, 0, float("inf")], [0, 0, 1]]),
+    ("analysis_to_source", [[1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+])
+def test_prediction_rejects_malformed_preparation(field, value) -> None:
+    model = prepared_prediction()
+    model["metadata"]["image_preparation"][field] = value
+    with pytest.raises(ValueError, match="Invalid image preparation transform"):
+        metrics.prediction_geometry(model, (60, 99), (200, 120))
+
+
+def test_prediction_rejects_incomplete_preparation() -> None:
+    model = prepared_prediction()
+    del model["metadata"]["image_preparation"]["analysis_to_source"]
+    with pytest.raises(ValueError, match="Invalid image preparation transform"):
+        metrics.prediction_geometry(model, (60, 99), (200, 120))
 
 
 def test_metric_does_not_hide_shift_or_missed_wall() -> None:

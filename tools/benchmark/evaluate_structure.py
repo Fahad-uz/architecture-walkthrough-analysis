@@ -107,15 +107,62 @@ def load_svg(path: Path, width: int, height: int) -> dict[str, Any]:
 
 def prediction_geometry(model: dict[str, Any], analysis_size: tuple[int, int],
                         image_size: tuple[int, int]) -> dict[str, Any]:
-    roi = model["plan_roi"]["rect"]
     ppm = float(model["pixels_per_metre"])
     aw, ah = analysis_size
-    if min(aw, ah, ppm, roi["width"], roi["height"]) <= 0:
+    if min(aw, ah, ppm) <= 0 or not math.isfinite(ppm):
         raise ValueError("Invalid prediction coordinate transform")
-    # The pipeline works in metres with Y up. Undo the actual resized ROI
-    # dimensions independently on each axis to handle integer resize rounding.
-    factors = [ppm * roi["width"] / aw, 0, 0, -ppm * roi["height"] / ah,
-               roi["x"], roi["y"] + roi["height"]]
+    metadata = model.get("metadata", {})
+    if not isinstance(metadata, dict):
+        raise ValueError("Invalid prediction metadata")
+    preparation = metadata.get("image_preparation")
+    if preparation is not None:
+        try:
+            if not isinstance(preparation, dict):
+                raise ValueError("Expected an image preparation record")
+            if type(preparation["version"]) is not int or preparation["version"] != 1:
+                raise ValueError("Unsupported image preparation version")
+            turns = preparation["rotation_quarter_turns"]
+            if type(turns) is not int or turns not in range(4):
+                raise ValueError("Invalid quarter-turn rotation")
+            dimensions = {}
+            for frame in ("source", "prepared", "analysis"):
+                size = tuple(preparation[f"{frame}_{axis}_px"] for axis in ("width", "height"))
+                if any(type(value) is not int or value <= 0 for value in size):
+                    raise ValueError("Invalid preparation dimensions")
+                dimensions[frame] = size
+            if dimensions["source"] != image_size or dimensions["analysis"] != analysis_size:
+                raise ValueError("Preparation dimensions do not match image artifacts")
+            expected_prepared = image_size[::-1] if turns % 2 else image_size
+            if dimensions["prepared"] != expected_prepared:
+                raise ValueError("Prepared dimensions do not match quarter-turn rotation")
+            forward = np.asarray(preparation["source_to_analysis"], dtype=float)
+            inverse = np.asarray(preparation["analysis_to_source"], dtype=float)
+            for matrix in (forward, inverse):
+                if matrix.shape != (3, 3) or not np.isfinite(matrix).all():
+                    raise ValueError("Invalid preparation matrix")
+                if not np.allclose(matrix[2], [0, 0, 1], rtol=0, atol=1e-12):
+                    raise ValueError("Preparation matrix must be affine")
+            computed_inverse = np.linalg.inv(forward)
+            if (not np.isfinite(computed_inverse).all()
+                    or not np.allclose(inverse, computed_inverse, rtol=1e-9, atol=1e-9)
+                    or not np.allclose(forward @ inverse, np.eye(3), rtol=0, atol=1e-9)
+                    or not np.allclose(inverse @ forward, np.eye(3), rtol=0, atol=1e-9)):
+                raise ValueError("Inconsistent preparation inverse")
+        except (KeyError, TypeError, ValueError, np.linalg.LinAlgError) as exc:
+            raise ValueError(f"Invalid image preparation transform: {exc}") from exc
+        # Source/display pixels use image edges; model metres have Y up.
+        # Transform complete footprints, including thickness, after composition.
+        metre_to_analysis = np.array([[ppm, 0, 0], [0, -ppm, ah], [0, 0, 1]])
+        mapping = inverse @ metre_to_analysis
+        factors = [*mapping[0, :2], *mapping[1, :2], *mapping[:2, 2]]
+    else:
+        roi = model["plan_roi"]["rect"]
+        if min(roi["width"], roi["height"]) <= 0:
+            raise ValueError("Invalid prediction coordinate transform")
+        # Legacy records have only an axis-aligned ROI. Undo actual resize
+        # dimensions independently to handle integer rounding on each axis.
+        factors = [ppm * roi["width"] / aw, 0, 0, -ppm * roi["height"] / ah,
+                   roi["x"], roi["y"] + roi["height"]]
     bounds = box(0, 0, *image_size)
     walls = []
     for wall in model["walls"]:
