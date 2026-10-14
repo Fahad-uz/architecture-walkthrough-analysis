@@ -19,7 +19,7 @@ No secrets, private plans or restricted dataset assets in Git.
 
 Repository: https://github.com/Fahad-uz/architecture-walkthrough-analysis
 Working branch: main. Only main remains locally and on GitHub.
-Prepared from commit 9bd67d52fa651a8a2089acf95efeb9815e7adf71.
+Prepared from commit 7ed52109f95ba00cc5a8dc4891c1bcce89580775.
 The commit containing this checkpoint can be found with git log -1.
 PR #12 merged at1c7106d17c96c4ccc3d6800750f1624b1205996b, preserving six commits:
 branding, image preview/crop/reset/history, editor undo/redo and recoverable local
@@ -154,76 +154,68 @@ Files:api/app.py,vision/plan_roi.py,security/file_validation.py,
 tests/test_crop_validation.py. These form one focused bug-fix commit.
 No new download. Unrelated .DS_Store files remain untracked.
 
+## Completed rotation milestone, 14 October 2026
+
+Quarter-turn preparation is implemented across frontend,API,pipeline and metric
+mapping. Rotate left/right, clear crop, reset original, original comparison and
+shared undo/redo preserve the original File. Rotation clears the old crop; undo
+restores the prior crop and orientation. Multipart rotation_quarter_turns is
+integer0..3 clockwise; crop coordinates use the prepared frame. Default0 keeps
+legacy uploads working. Backend rotates before ROI without interpolation;
+manual metres-per-pixel survives quarter-turns. Metadata image_preparation v1
+records EXIF-oriented source/prepared/analysis dimensions and forward/inverse
+3x3 matrices in continuous pixel-edge coordinates. Actual padded ROI and exact
+per-axis resize are composed. Correction saves retain server-owned provenance
+and PlanROI. /original-image serves exact uploaded bytes; /source-image remains
+the analysis ROI. Evaluator now consumes nested metadata and retains legacy
+fallback. It transforms whole wall footprints including thickness.
+
+Validation:608Python tests passed,9optional integration skips,2deprecation
+warnings; full log ../planstride-rotation-tests.log. The final51rotation/evaluator
+tests also passed after the final integration fixture was saved. Ruff passed,
+mypy passed83source files. Frontend32tests,typecheck and productionbuild passed.
+A corrected asymmetric rotated fixture produces identical analysis pixels and
+walls/openings/rooms/balconies/scale. No runtime dependency/model/asset downloads.
+
+Runtime restarted with the project venv and AI disabled; server PID6141 saved in
+../walkthrough-server.pid, log ../walkthrough-server.log. Health returnedok.
+Fresh real-development-plan API smoke test uploaded a counterclockwise variant
+of high_quality/932 with corrective clockwise quarter-turn and manual scale.
+Job1790674bc15b457c982b3637f1bfe4f8 completed needs_review,39walls/7rooms/0doors/
+2windows; original-image bytes matched exactly. This tests workflow/mapping,
+not accuracy. Details:outputs/rotation-browser-smoke.json.
+Editor:http://127.0.0.1:8001/#/jobs/1790674bc15b457c982b3637f1bfe4f8/edit
+
+Browser visual QA is INCOMPLETE:initial tab opened before the server was ready
+and showed connectionrefused. Subsequent binding was blocked on its data:error
+page. No security bypass was attempted; a new ordinary localhost tab should be
+opened on resume. Do not claim browser rotate/crop/undo or freshGLBwalkthrough
+verification from the API smoke test.
+
 ## Exact next steps
 
-1. Read this checkpoint and inspect git diff. Do not rerun the completed full70
-   pre-fix comparison or original baseline.
-2. Post-fix geometric evaluation is complete. Do NOT rerun the analyses or
-   completed metrics. Report:outputs/benchmark-opencv413-development-metrics-2026-10-14/report.json.
-   All70 analyses complete;66scored/4same annotation errors. Wall F1 .380963→.403484,
-   wall IoU .251971→.268075,room F1 .203121→.216164. One small wall F1 regression
-   on architectural/7104 (-.003731); details:docs/native-resize-fix.md.
-3. Crop validation is complete; inspect git log for its published commit.
-   Restart server and verify a fresh upload after image preparation integration.
-4. Continue generalized structural accuracy on development evidence; false
-   walls on furniture/dimensions and weak room detection remain.
-5. Image preparation:quarter-turn rotation first, then straightening and
-   perspective. Preserve original bytes; record versioned source/prepared/
-   analysis dimensions and forward/inverse3x3 mapping. Compose preparation,
-   padded ROI and exact per-axis resize; retain editor/metre frame. Use one
-   crop/rotation history. Preserve mapping as server-owned provenance on saves.
-   Keep existing source-image endpoint serving analysis ROI; add original
-   comparison separately. Extend evaluator to invert mapping before scoring.
-   Perspective needs verified rectangle proportions; don't carry scalar source
-   metres-per-pixel through a homography. Test EXIF and transformed equivalents.
-6. Furniture/material/lighting editing,3D warning focus and full walkthrough
-   checks remain. Establish independent source/building groups, reviewed labels
-   and broader permitted sources before untouched final evaluation. Openings,
-   adjacency,scale error and correction effort metrics remain outstanding.
+1. Read this checkpoint, inspect git status and GitHub checks. Do not rerun the
+   completed70-image analyses or metrics. Latest metrics and limitations:
+   docs/native-resize-fix.md. Only main remains.
+2. Open a NEW http://127.0.0.1:8001/ browser tab; test real upload preview,
+   rotate/crop/undo/redo/reset/originalcomparison, then editor alignment and
+   correction save. Use Gemini disabled. Verify freshGLB/export/walkthrough.
+3. Add fine-angle straightening, then perspective as separate logical units.
+   Preserve original and transformprovenance. Perspective needs known rectangle
+   proportions and scale recalibration; don't silently invent proportions.
+4. Continue generalized structural accuracy; false walls on furniture/dimensions,
+   room detection and absent openings remain weak. Add development regressions.
+5. Furniture/material/lighting editing,3Dwarningfocus and fullwalkthrough checks
+   remain. Independent building/sourcegroups, reviewedannotations and broader
+   permitted sources are needed before untouched final evaluation. Opening,
+   adjacency,scaleerror and correctioneffort metrics remain outstanding.
 
-Never claim perfect reconstruction from every image. Missing measurements,
-elevations or ambiguous geometry require explicit assumptions/review.
+## Quota stop status
 
-## Prior pause status and verified completed fix
-
-Paused at the user's request, not for quota. Five-hour allowance after the fix
-commit:68% remaining. All agents and bounded benchmark processes have stopped.
-
-Native resize crash fix committed and pushed separately:
-4e343b31be2ec990a7bb62654670ffaaeae55a77
-https://github.com/Fahad-uz/architecture-walkthrough-analysis/commit/4e343b31be2ec990a7bb62654670ffaaeae55a77
-Both pyproject.toml and requirements.txt pin opencv-python4.13.0.92. The saved,
-verified local wheel was installed via existing uv; no additional download.
-Compatibility check:all66 installed packages compatible. New subprocess
-regressions cover the known crash and two odd-dimension resizes with independent
-bilinear pixel checks,20second timeout and disabled core dumps.3tests passed.
-Existing full Python suite:447passed,9integration skips,2deprecation warnings.
-Ruff passed; mypy passed all82source files; git diff --check passed.
-Full-suite log:../planstride-opencv413-tests.log.
-
-Post-fix development analyses:70/70 completed,0 failures. All three prior native
-crashes now complete. This is completion evidence, NOT accuracy verification;
-post-fix geometric metrics have NOT yet been evaluated. Pre-fix comparison and
-original baseline remain intact. Completed report:
-outputs/benchmark-opencv413-development-2026-10-14/report.json.
-The report records starting HEADc3cc82b and the saved unchanged crop patch;
-runtime Python source SHA256:2d9d018892e80530219b965eb2fc975e8e81f435f53bbf2fc3fb3ed92f9d77f5.
-Those source files remained static for the full run. All workers used4.13.0.92.
-
-The three unfinished crop files listed above are saved locally and excluded
-from commits. No application restart or fresh browser validation was performed;
-restart the server after finishing crop changes so it uses the corrected runtime.
-No new models or assets were downloaded. Resume only on the user's request.
-
-## Current resumed status
-
-Post-fix development metrics completed and saved; no new download or rerun of
-analysis. Crop tests established89passes/12failures:only validation dimensions
-for EXIF orientations5–8 are wrong; JPEG/PNG/WebP decoded pixels already agree.
-Crop author is applying a minimal orientation-aware validation fix plus boundary
-and dimension-limit tests. Do not commit that unit until focused checks pass.
-Usage on resume:62% remaining; checked again before the next major task.
-
-The crop-validation unit has completed on resume. Next active milestone is
-quarter-turn image preparation with explicit coordinate mapping; straightening
-and perspective remain later work. No model/asset downloads are required.
+Five-hour remaining allowance fell to2%,below the user's7% threshold. No new
+task started after that reading. All files saved; completed evaluator support
+and fullrotationfeature are being committed/pushed separately. Root verifies
+publication before reply. All agents finished and no benchmark is running.
+The server remains available. No unfinished code edits should remain after
+these commits; preserve untracked .DS_Store and frontend/.DS_Store.
+The full PlanStride upgrade remains incomplete. Never claim perfect results.

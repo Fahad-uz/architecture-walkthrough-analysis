@@ -3,11 +3,11 @@ import { Link } from "react-router-dom";
 import { getJob, uploadPlan } from "../api";
 import type { JobRecord } from "../types";
 import ImagePreparation from "../components/ImagePreparation";
-import type { CropRect } from "../crop";
+import { originalPreparation } from "../imagePreparation";
 
 export default function UploadPage() {
   const [file, setFile] = useState<File | null>(null);
-  const [crop, setCrop] = useState<CropRect | null>(null);
+  const [preparation, setPreparation] = useState(originalPreparation);
   const [fileVersion, setFileVersion] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const submitRef = useRef(false);
@@ -58,7 +58,7 @@ export default function UploadPage() {
     try {
       submitRef.current = true;
       setSubmitting(true);
-      const record = await uploadPlan(file, useGemini, manualScale, crop);
+      const record = await uploadPlan(file, useGemini, manualScale, preparation.crop, preparation.rotationQuarterTurns);
       if (!mountedRef.current) return;
       setJob(record);
       startPolling(record.job_id);
@@ -82,10 +82,10 @@ export default function UploadPage() {
       <label>
         Plan image
         <input type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={(e) => {
-          setFile(e.target.files?.[0] ?? null); setCrop(null); setJob(null); setError(""); setFileVersion((v) => v + 1);
+          setFile(e.target.files?.[0] ?? null); setPreparation(originalPreparation()); setJob(null); setError(""); setFileVersion((v) => v + 1);
         }} />
       </label>
-      {file && <ImagePreparation key={fileVersion} file={file} crop={crop} onCrop={setCrop} disabled={busy} />}
+      {file && <ImagePreparation key={fileVersion} file={file} preparation={preparation} onChange={setPreparation} disabled={busy} />}
       <label className="row" style={{ display: "flex" }}>
         <input type="checkbox" checked={useGemini} onChange={(e) => setUseGemini(e.target.checked)} />
         Use Gemini for room labels / dimension text / sanity check (never geometry)

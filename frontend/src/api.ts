@@ -9,11 +9,12 @@ async function json<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
-export async function uploadPlan(file: File, useGemini: boolean, manualScale: string, crop?: CropRect | null): Promise<JobRecord> {
+export async function uploadPlan(file: File, useGemini: boolean, manualScale: string, crop?: CropRect | null, rotationQuarterTurns = 0): Promise<JobRecord> {
   const form = new FormData();
   form.append("file", file);
   form.append("use_gemini", String(useGemini));
   if (manualScale.trim()) form.append("manual_scale", manualScale.trim());
+  if (rotationQuarterTurns) form.append("rotation_quarter_turns", String(rotationQuarterTurns));
   if (crop) {
     for (const field of ["x", "y", "width", "height"] as const) form.append(`crop_${field}`, String(crop[field]));
   }

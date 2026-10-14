@@ -71,6 +71,7 @@ from architecture_walkthrough.vision.semantic_filter import (
 from architecture_walkthrough.vision.local_openings import build_thin_line_mask, detect_local_openings
 from architecture_walkthrough.vision.overlay import write_analysis_overlay
 from architecture_walkthrough.vision.plan_roi import detect_plan_roi
+from architecture_walkthrough.vision.image_preparation import preparation_metadata, rotate_image
 from architecture_walkthrough.vision.preprocessing import load_image, preprocess_array
 from architecture_walkthrough.vision.providers import build_geometry_provider
 from architecture_walkthrough.vision.wall_detection import RepetitiveDetailRegion, WallBand
@@ -724,6 +725,7 @@ def analyze_image(
     manual_scale: float | None = None,
     require_ai_success: bool = False,
     crop_rect: tuple[int, int, int, int] | None = None,
+    rotation_quarter_turns: int = 0,
 ) -> FloorPlanModel:
     source_pixels_per_metre = _manual_pixels_per_metre(manual_scale)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -733,6 +735,8 @@ def analyze_image(
     started = time.perf_counter()
     image = load_image(input_path)
     stages.record("validate_input", started, image_shape=list(image.shape))
+    source_height, source_width = image.shape[:2]
+    image = rotate_image(image, rotation_quarter_turns)
 
     started = time.perf_counter()
     roi_result = detect_plan_roi(
@@ -754,6 +758,10 @@ def analyze_image(
     )
     resized_height, resized_width = preprocessing.resized_shape[:2]
     resize_ratio = max(resized_height, resized_width) / max(preprocessing.original_shape[:2])
+    image_preparation = preparation_metadata(
+        source_width, source_height, rotation_quarter_turns, roi_result.roi,
+        resized_width, resized_height,
+    )
     stages.record("preprocess_layers", started, layers={key: str(value) for key, value in preprocessing.layers.items()})
 
     started = time.perf_counter()
@@ -1085,7 +1093,11 @@ def analyze_image(
         pixels_per_metre=pixels_per_metre,
         plan_roi=roi_result.roi,
         walls=wall_detection.walls,
-        metadata={"source_image": str(input_path), "coordinate_note": "raw wall coordinates are ROI pixels"},
+        metadata={
+            "source_image": str(input_path),
+            "coordinate_note": "raw wall coordinates are ROI pixels",
+            "image_preparation": image_preparation,
+        },
     )
     raw_model.save_json(output_dir / "floorplan.raw.json")
 
@@ -1114,6 +1126,7 @@ def analyze_image(
         metadata={
             "source_image": str(input_path),
             "roi_image": str(analysis_image_path),
+            "image_preparation": image_preparation,
             "scale_source": scale_result.source,
             "scale_confidence": scale_result.confidence,
             "analysis_resize_ratio": resize_ratio,
@@ -1360,6 +1373,7 @@ def convert_image_to_glb(
     run_blender: bool = False,
     require_ai_success: bool = False,
     crop_rect: tuple[int, int, int, int] | None = None,
+    rotation_quarter_turns: int = 0,
 ) -> Path:
     validate_image_file(input_image, config.limits)
     if output_glb.suffix.lower() != ".glb":
@@ -1373,6 +1387,7 @@ def convert_image_to_glb(
         manual_scale=manual_scale,
         require_ai_success=require_ai_success,
         crop_rect=crop_rect,
+        rotation_quarter_turns=rotation_quarter_turns,
     )
     return build_model(work_dir, output_glb, config, run_blender=run_blender)
 

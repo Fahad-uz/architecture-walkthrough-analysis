@@ -28,7 +28,8 @@ def upload_client(tmp_path: Path, monkeypatch):
     app = api_app.create_app()
     calls = []
 
-    def capture_analysis(record, image_path, config, manual_scale, crop_rect):
+    def capture_analysis(record, image_path, config, manual_scale, crop_rect, rotation_quarter_turns=0):
+        assert rotation_quarter_turns == 0
         calls.append((image_path, image_path.read_bytes(), crop_rect))
 
     monkeypatch.setattr(app.state.runner, "start_analysis", capture_analysis)

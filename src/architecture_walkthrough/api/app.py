@@ -41,6 +41,10 @@ from architecture_walkthrough.pipeline import analyze_image, build_model, prepar
 from architecture_walkthrough.scene.simple_glb import export_simple_glb
 from architecture_walkthrough.vision.overlay import write_analysis_overlay
 from architecture_walkthrough.vision.plan_roi import validate_crop_rect
+from architecture_walkthrough.vision.image_preparation import (
+    prepared_dimensions,
+    validate_quarter_turns,
+)
 from architecture_walkthrough.security.file_validation import (
     create_job_dir,
     ensure_within_directory,
@@ -383,6 +387,7 @@ def _analysis_worker_entry(
     config_payload: dict[str, object],
     manual_scale: float | None,
     crop_rect: tuple[int, int, int, int] | None,
+    rotation_quarter_turns: int = 0,
 ) -> None:
     """Run the CPU-heavy analysis outside the API process.
 
@@ -401,6 +406,7 @@ def _analysis_worker_entry(
             manual_scale=manual_scale,
             require_ai_success=False,
             crop_rect=crop_rect,
+            rotation_quarter_turns=rotation_quarter_turns,
         )
         export_simple_glb(model, staging_dir / "building.glb")
     except Exception as exc:
@@ -744,6 +750,7 @@ class LocalJobRunner:
         job_config: AppConfig,
         manual_scale: float | None,
         crop_rect: tuple[int, int, int, int] | None,
+        rotation_quarter_turns: int = 0,
     ) -> BaseProcess:
         return self._analysis_context.Process(
             target=_analysis_worker_entry,
@@ -753,6 +760,7 @@ class LocalJobRunner:
                 job_config.model_dump(mode="json"),
                 manual_scale,
                 crop_rect,
+                rotation_quarter_turns,
             ),
             daemon=True,
         )
@@ -837,6 +845,7 @@ class LocalJobRunner:
         job_config: AppConfig,
         manual_scale: float | None,
         crop_rect: tuple[int, int, int, int] | None,
+        rotation_quarter_turns: int = 0,
     ) -> None:
         self._reap_unmonitored_analyses()
         if not self._analysis_slots.acquire(blocking=False):
@@ -874,6 +883,7 @@ class LocalJobRunner:
                     job_config,
                     manual_scale,
                     crop_rect,
+                    rotation_quarter_turns,
                 )
                 operation = _AnalysisOperation(
                     process=process,
@@ -1276,6 +1286,8 @@ def _apply_correction_revision(
     if not previous_path.exists():
         previous_path = job_dir / "floorplan.optimized.json"
     previous = FloorPlanModel.load_json(previous_path) if previous_path.exists() else None
+    if previous is not None:
+        model = model.model_copy(update={"plan_roi": previous.plan_roi})
     previously_reviewed = (
         previous is not None
         and previous.metadata.get("geometry_origin") == "reviewed_source_trace"
@@ -1293,6 +1305,8 @@ def _apply_correction_revision(
     for key in (
         "geometry_origin", "reviewed_source_trace_invalidated",
         "floor_boundary_inferences", "floor_boundary_inferences_invalidated",
+        "image_preparation", "source_image", "roi_image", "analysis_resize_ratio",
+        "manual_source_metres_per_pixel",
     ):
         metadata.pop(key, None)
         if previous is not None and key in previous.metadata:
@@ -1491,6 +1505,7 @@ def create_app() -> FastAPI:
         crop_y: str | None = Form(None),
         crop_width: str | None = Form(None),
         crop_height: str | None = Form(None),
+        rotation_quarter_turns: str | None = Form(None),
     ) -> JobRecord:
         form = await request.form()
         allowed_fields = {
@@ -1501,6 +1516,7 @@ def create_app() -> FastAPI:
             "crop_y",
             "crop_width",
             "crop_height",
+            "rotation_quarter_turns",
         }
         form_items = list(form.multi_items())
         field_names = [name for name, _value in form_items]
@@ -1509,6 +1525,17 @@ def create_app() -> FastAPI:
                 if isinstance(value, StarletteUploadFile):
                     await value.close()
             raise HTTPException(status_code=400, detail="unexpected or duplicate multipart field")
+
+        try:
+            if "rotation_quarter_turns" in field_names and rotation_quarter_turns is None:
+                raise ValueError("rotation_quarter_turns must be an integer from 0 to 3")
+            turns = int(rotation_quarter_turns) if rotation_quarter_turns is not None else 0
+            validate_quarter_turns(turns)
+        except ValueError as exc:
+            await file.close()
+            raise HTTPException(
+                status_code=400, detail="rotation_quarter_turns must be an integer from 0 to 3"
+            ) from exc
 
         crop_rect = None
         if any(name in field_names for name in ("crop_x", "crop_y", "crop_width", "crop_height")):
@@ -1535,7 +1562,8 @@ def create_app() -> FastAPI:
             )
             validated = validate_image_file(upload_path, config.limits, file.content_type)
             if crop_rect is not None:
-                validate_crop_rect(crop_rect, validated.width, validated.height)
+                width, height = prepared_dimensions(validated.width, validated.height, turns)
+                validate_crop_rect(crop_rect, width, height)
         except ValueError as exc:
             upload_path.unlink(missing_ok=True)
             runner.publish(
@@ -1550,7 +1578,7 @@ def create_app() -> FastAPI:
         job_config = config.model_copy(deep=True)
         job_config.ai.gemini_enabled = use_gemini
         try:
-            runner.start_analysis(record, safe_path, job_config, manual_scale, crop_rect)
+            runner.start_analysis(record, safe_path, job_config, manual_scale, crop_rect, turns)
         except HTTPException as exc:
             if exc.status_code in {429, 503}:
                 runner.discard_created_job(record)
@@ -1602,6 +1630,7 @@ def create_app() -> FastAPI:
             "job_id": job_id,
             "corrected": floorplan.name == "floorplan.corrected.json",
             "image_url": f"/jobs/{job_id}/source-image",
+            "original_image_url": f"/jobs/{job_id}/original-image",
             "model": model.model_dump(mode="json"),
         }
 
@@ -1612,6 +1641,31 @@ def create_app() -> FastAPI:
         path = source_image_path(job_dir)
         media_type = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
         return FileResponse(path, media_type=media_type, filename=path.name)
+
+    @app.get("/jobs/{job_id}/original-image")
+    def original_image(job_id: str) -> FileResponse:
+        runner.get(job_id)
+        job_dir = ensure_within_directory(config.paths.work_root, config.paths.work_root / job_id)
+        # Use analysis provenance, never a path supplied by an editor payload.
+        for name in ("floorplan.optimized.json", "floorplan.raw.json", "floorplan.json"):
+            model_path = job_dir / name
+            if not model_path.is_file():
+                continue
+            model = FloorPlanModel.load_json(model_path)
+            source = model.metadata.get("source_image")
+            if not isinstance(source, str):
+                continue
+            try:
+                path = ensure_within_directory(job_dir, Path(source))
+            except ValueError:
+                continue
+            media_type = {
+                ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                ".webp": "image/webp",
+            }.get(path.suffix.lower())
+            if path.is_file() and media_type:
+                return FileResponse(path, media_type=media_type, filename=path.name)
+        raise HTTPException(status_code=404, detail="original image artifact not found")
 
     @app.post("/jobs/{job_id}/corrections")
     def corrections(job_id: str, correction: dict) -> dict[str, object]:
