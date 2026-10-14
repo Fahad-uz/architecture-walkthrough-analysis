@@ -3,7 +3,8 @@ uvicorn[standard]>=0.30,<1
 pydantic>=2.7,<3
 pydantic-settings>=2.2,<3
 numpy>=1.26,<2.5
-opencv-python>=4.9,<5
+# 4.14.0's ARM resize path crashes during OCR; retain the verified runtime.
+opencv-python==4.13.0.92
 Pillow>=12.3,<13
 Shapely>=2.0,<3
 PyYAML>=6,<7
