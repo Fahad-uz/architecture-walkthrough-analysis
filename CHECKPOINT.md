@@ -1,6 +1,6 @@
 # PlanStride checkpoint
 
-Updated 14 October 2026 (Asia/Kolkata). Paused at the user's explicit request.
+Updated 14 October 2026 (Asia/Kolkata). Resumed at the user's request.
 Branch consolidation is complete.
 The full PlanStride upgrade is NOT complete.
 
@@ -19,7 +19,7 @@ No secrets, private plans or restricted dataset assets in Git.
 
 Repository: https://github.com/Fahad-uz/architecture-walkthrough-analysis
 Working branch: main. Only main remains locally and on GitHub.
-Prepared from commit 4e343b31be2ec990a7bb62654670ffaaeae55a77.
+Prepared from commit 9bd67d52fa651a8a2089acf95efeb9815e7adf71.
 The commit containing this checkpoint can be found with git log -1.
 PR #12 merged at1c7106d17c96c4ccc3d6800750f1624b1205996b, preserving six commits:
 branding, image preview/crop/reset/history, editor undo/redo and recoverable local
@@ -163,14 +163,11 @@ Preserve unrelated untracked .DS_Store and frontend/.DS_Store.
 
 1. Read this checkpoint and inspect git diff. Do not rerun the completed full70
    pre-fix comparison or original baseline.
-2. The OpenCV fix and full70 analysis run are complete. Do NOT rerun either
-   baseline or the completed post-fix run. Evaluate its saved outputs:
-   .venv/bin/python tools/benchmark/evaluate_structure.py
-     --manifest outputs/benchmark-data/cubicasa5k/manifest.json
-     --baseline outputs/benchmark-opencv413-development-2026-10-14/report.json
-     --output outputs/benchmark-opencv413-development-metrics-2026-10-14
-   (Run the lines above as one command.) Compare with the saved pre-fix candidate
-   metrics. Report all annotation errors and output changes; no quarantine use.
+2. Post-fix geometric evaluation is complete. Do NOT rerun the analyses or
+   completed metrics. Report:outputs/benchmark-opencv413-development-metrics-2026-10-14/report.json.
+   All70 analyses complete;66scored/4same annotation errors. Wall F1 .380963→.403484,
+   wall IoU .251971→.268075,room F1 .203121→.216164. One small wall F1 regression
+   on architectural/7104 (-.003731); details:docs/native-resize-fix.md.
 3. Run tests/test_crop_validation.py to establish EXIF mismatch evidence, review
    the saved API/ROI patch, resolve EXIF dimension consistency in validation
    (canonical decoder only if tests prove codec mismatch), then run focused/full
@@ -224,3 +221,12 @@ The three unfinished crop files listed above are saved locally and excluded
 from commits. No application restart or fresh browser validation was performed;
 restart the server after finishing crop changes so it uses the corrected runtime.
 No new models or assets were downloaded. Resume only on the user's request.
+
+## Current resumed status
+
+Post-fix development metrics completed and saved; no new download or rerun of
+analysis. Crop tests established89passes/12failures:only validation dimensions
+for EXIF orientations5–8 are wrong; JPEG/PNG/WebP decoded pixels already agree.
+Crop author is applying a minimal orientation-aware validation fix plus boundary
+and dimension-limit tests. Do not commit that unit until focused checks pass.
+Usage on resume:62% remaining; checked again before the next major task.
