@@ -1,4 +1,7 @@
-"""Fetch the CubiCasa5k pretrained weights for the segmentation provider.
+"""Fetch research weights only when the segmentation provider supports inference.
+
+The current provider is a stub. Downloaded weights alone do not enable it;
+the readiness check exits before requesting optional packages or downloads.
 
 The CubiCasa5k baseline model (hg_furukawa architecture) is published by the
 CubiCasa5k authors; the pretrained checkpoint `model_best_val_loss_var.pkl`
@@ -28,6 +31,15 @@ GDRIVE_FILE_ID = "1gRB7ez1e2-1KYFVSAdw5eArAdRZAX-Vw"  # from the CubiCasa5k READ
 
 
 def main() -> int:
+    from architecture_walkthrough.vision.providers import CubiCasaGeometryProvider
+
+    if not CubiCasaGeometryProvider.inference_implemented:
+        print(
+            "CubiCasa segmentation inference is not implemented; downloading weights "
+            "will not enable it. The wallband_cv provider remains active. "
+            "See docs/segmentation-model-review.md for the current assessment."
+        )
+        return 1
     try:
         import torch  # noqa: F401
     except ImportError:
