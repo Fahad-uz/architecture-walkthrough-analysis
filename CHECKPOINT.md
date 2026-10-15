@@ -1,6 +1,6 @@
 # PlanStride checkpoint
 
-Updated 14 October 2026 (Asia/Kolkata). Resumed at the user's request.
+Updated 15 October 2026 (Asia/Kolkata). Resumed at the user's request.
 Branch consolidation is complete.
 The full PlanStride upgrade is NOT complete.
 
@@ -19,7 +19,7 @@ No secrets, private plans or restricted dataset assets in Git.
 
 Repository: https://github.com/Fahad-uz/architecture-walkthrough-analysis
 Working branch: main. Only main remains locally and on GitHub.
-Prepared from commit 7ed52109f95ba00cc5a8dc4891c1bcce89580775.
+Prepared from commit 1b61df4 (use git log for the full commit and later documentation commits).
 The commit containing this checkpoint can be found with git log -1.
 PR #12 merged at1c7106d17c96c4ccc3d6800750f1624b1205996b, preserving six commits:
 branding, image preview/crop/reset/history, editor undo/redo and recoverable local
@@ -192,30 +192,52 @@ page. No security bypass was attempted; a new ordinary localhost tab should be
 opened on resume. Do not claim browser rotate/crop/undo or freshGLBwalkthrough
 verification from the API smoke test.
 
+## Completed on 15 October 2026
+
+- Browser quarter-turn/crop/undo/redo/reset/original comparison and correction
+  saving verified on the original privateplan. All GitHub CI checks passed on
+  a6628fd. No repetition of the completed70-image analyses/metrics.
+- Found and fixed ignored low-score export override in EditorPage.generate:
+  b6abc77. Fresh Blender export, preview loading, walkthrough and guided/manual
+  controls verified through the browser. Quality39% still requires review;
+  forced export is not automatic-accuracy evidence.
+- Fine straightening feature pushed at1b61df4:finite±15°clockwise, expandedwhite
+  canvas, exact edge/index warp mapping, crop/quarterturn/angle history, preserved
+  original and manualscale, version2 provenance/evaluator support. Zeroangle
+  retains version1 and original lossless path. Browser invalid16°,+/−2.5°,crop
+  undo/redo and save/provenance tests passed. A deliberatelytilted privateplan
+  returned upright after correction;22walls/7rooms,not accuracy certification.
+-700Python passes/9optional skips,34frontend passes,Ruff,mypy83files,typecheck,
+  productionbuild pass. Logs:../planstride-straightening-tests.log and
+  ../planstride-straightening-frontend.log. Independent coordinate review passed.
+- Current server PID2521; ../walkthrough-server.pid/log. Healthok. AI disabled.
+  Current browser/editor job:f7c01bb7af734d088de0b63c792ce565.
+  http://127.0.0.1:8001/#/jobs/f7c01bb7af734d088de0b63c792ce565/edit
+- Detailed supported-input/mapping/browser evidence:docs/image-preparation.md.
+  Private artifacts:outputs/straightening-qa-2026-10-15/browser-verification.json.
+  Screenshots are in parentworkspace outputs,not Git. No new downloads.
+
 ## Exact next steps
 
-1. Read this checkpoint, inspect git status and GitHub checks. Do not rerun the
-   completed70-image analyses or metrics. Latest metrics and limitations:
-   docs/native-resize-fix.md. Only main remains.
-2. Open a NEW http://127.0.0.1:8001/ browser tab; test real upload preview,
-   rotate/crop/undo/redo/reset/originalcomparison, then editor alignment and
-   correction save. Use Gemini disabled. Verify freshGLB/export/walkthrough.
-3. Add fine-angle straightening, then perspective as separate logical units.
-   Preserve original and transformprovenance. Perspective needs known rectangle
-   proportions and scale recalibration; don't silently invent proportions.
-4. Continue generalized structural accuracy; false walls on furniture/dimensions,
-   room detection and absent openings remain weak. Add development regressions.
-5. Furniture/material/lighting editing,3Dwarningfocus and fullwalkthrough checks
-   remain. Independent building/sourcegroups, reviewedannotations and broader
-   permitted sources are needed before untouched final evaluation. Opening,
-   adjacency,scaleerror and correctioneffort metrics remain outstanding.
+1. Inspect git state and CI,then continue structuralaccuracy work from saved
+   development evidence. No need to repeat completed70-image runs or metrics.
+   CurrentwallF1 .403484,roomF1 .216164 againstunreviewedlabels remain weak.
+2. Root is investigating suitable local segmentationmodel references; a read-only
+   false-wall review is inspecting developmentcases/code. No implementation or
+   model download started yet. Do not access30quarantined examples.
+3. Perspective preparation remains:needs verified rectangular referenceproportions
+   and explicit scale recalibration,not silent guessed proportions. Preserve
+   source/provenance and testcrop/straightening/perspective composition.
+4. Furniture/material/lighting editing,3Dwarningfocus and broader fullwalkthrough
+   verification remain. Independent building/sourcegroups,reviewedannotations
+   and broader permitted sources are needed before final untouchedevaluation.
+   Opening,adjacency,scaleerror and correctioneffort metrics remain outstanding.
 
-## Quota stop status
+## Current work status
 
-Five-hour remaining allowance fell to2%,below the user's7% threshold. No new
-task started after that reading. All files saved; completed evaluator support
-and fullrotationfeature are being committed/pushed separately. Root verifies
-publication before reply. All agents finished and no benchmark is running.
-The server remains available. No unfinished code edits should remain after
-these commits; preserve untracked .DS_Store and frontend/.DS_Store.
-The full PlanStride upgrade remains incomplete. Never claim perfect results.
+Resumed with100% five-hour allowance;69%remained after featurepublication.
+Completed code is pushed. The accompanying preparationguide/checkpoint is being
+published separately. No unfinished code edits remain,only ongoing read-only
+accuracy investigation. Preserve untracked.DS_Store and frontend/.DS_Store.
+Stop new tasks and checkpoint again below7%,as the user instructed.
+The full PlanStride upgrade is incomplete;never claim perfect reconstruction.
