@@ -256,3 +256,27 @@ extraction. It ownswall_detection.py and focusedtests/ignoredsubsetexperiments.
 No improvement is claimed yet. Candidate must pass adversesubset and then a NEW
 full70development comparison before publication. Do not alter saved baselines or
 accessquarantine. Source static is required during any full benchmark run.
+
+## Repeated-detail fix completed
+
+Code d507bc6 is pushed. Full70 candidate complete/0failures;66scored/4sameerrors.
+MeanwallF1 .403484→.404386,roomF1 .216164→.217387. Only5016's scoredwallF1 changed;
+rooms36→13 with2annotatedrooms. False sauna/dimension walls remain.
+Evidence:docs/repetitive-detail-progress.md. No accuracy/perfection claim.
+Reports:outputs/benchmark-repetitive-detail-development-2026-10-15/report.json and
+outputs/benchmark-repetitive-detail-metrics-2026-10-15/report.json.
+Source SHA256:db763326a9b39aa559000bf2d60a7752d9cb911f7a08b8766461cea6a0e13ad5.
+Source stayed static throughoutthe70run.706Pythonpasses/9skips,Ruff+mypy83pass.
+No new download. Do not repeat thiscompletedrun.
+
+## Furniture editing in progress
+
+Frontend agent owns EditorPage.tsx,types.ts,furniture helpers/tests; selection,
+move/rotate/resize/delete/add and undo/autosave preservation are in progress.
+Root added optional stableid/provenance fields to FurniturePlacement and marks
+fresh locally detected items only;legacy origin staysunknown. Three backend
+roundtrip/empty-furnishing tests pass. Backendfiles models.py,pipeline.py and
+newtests/test_furniture_edit_roundtrip.py are NOTyetcommitted with this docupdate.
+Complete frontend/runtime/browser/fullchecks before publishing the furnitureunit.
+No walls or rooms should be edited by furniture controls. No automaticfurnishing
+injection. Model/asset downloads remain unchanged.
