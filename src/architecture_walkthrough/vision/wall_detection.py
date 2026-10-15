@@ -20,6 +20,10 @@ class WallBand:
     thickness_px: float
     confidence: float
     external: bool = False
+    # Raster drift inflates the bounding-box width of thin scanned strokes.
+    # Detail recognition may use their measured cross-section; geometry and
+    # every wall-pairing/fixture decision retain thickness_px above.
+    ink_thickness_px: float | None = None
 
 
 @dataclass(frozen=True)
@@ -156,6 +160,9 @@ def _components_to_bands(
             center = x + w / 2
             centerline = (float(center), float(y), float(center), float(y + h))
         confidence = max(0.1, min(1.0, fill_ratio * min(1.0, long_side / (min_length_px * 3))))
+        component = labels[y:y + h, x:x + w] == label
+        cross_sections = np.count_nonzero(component, axis=0 if orientation == "h" else 1)
+        ink_thickness = float(np.median(cross_sections[cross_sections > 0]))
         bands.append(
             WallBand(
                 id=f"{prefix}{len(bands):03d}",
@@ -164,6 +171,7 @@ def _components_to_bands(
                 centerline=centerline,
                 thickness_px=float(thickness),
                 confidence=confidence,
+                ink_thickness_px=ink_thickness,
             )
         )
     return bands
@@ -520,7 +528,9 @@ def _suppress_repetitive_detail_bands(
         eligible = [
             band
             for band in bands
-            if band.orientation == orientation and band.thickness_px <= thin_limit
+            if band.orientation == orientation
+            and (band.ink_thickness_px if band.ink_thickness_px is not None else band.thickness_px)
+            <= thin_limit
         ]
         parents = list(range(len(eligible)))
 
@@ -555,33 +565,38 @@ def _suppress_repetitive_detail_bands(
         for index, band in enumerate(eligible):
             grouped.setdefault(find(index), []).append(band)
         for group in grouped.values():
-            sequence, spacing = _longest_regular_sequence(
-                group,
-                min_count=min_count,
-                min_spacing_px=min_spacing,
-                max_spacing_px=max_spacing,
-            )
-            if not sequence:
-                continue
-            for band in sequence:
-                rejected_ids.add(id(band))
-            span_start = min(_band_span(band)[0] for band in sequence)
-            span_end = max(_band_span(band)[1] for band in sequence)
-            coordinate_start = min(_band_coordinate(band) for band in sequence) - spacing * 0.5
-            coordinate_end = max(_band_coordinate(band) for band in sequence) + spacing * 0.5
-            rect = (
-                (span_start, coordinate_start, span_end - span_start, coordinate_end - coordinate_start)
-                if orientation == "h"
-                else (coordinate_start, span_start, coordinate_end - coordinate_start, span_end - span_start)
-            )
-            regions.append(
-                RepetitiveDetailRegion(
-                    orientation=orientation,
-                    rect=rect,
-                    spacing_px=spacing,
-                    line_count=len(sequence),
+            # A label or occlusion can interrupt a repeated field. Recognize
+            # each independently supported run, never bridge missing courses.
+            remaining = list(group)
+            while len(remaining) >= min_count:
+                sequence, spacing = _longest_regular_sequence(
+                    remaining,
+                    min_count=min_count,
+                    min_spacing_px=min_spacing,
+                    max_spacing_px=max_spacing,
                 )
-            )
+                if not sequence:
+                    break
+                sequence_ids = {id(band) for band in sequence}
+                rejected_ids.update(sequence_ids)
+                remaining = [band for band in remaining if id(band) not in sequence_ids]
+                span_start = min(_band_span(band)[0] for band in sequence)
+                span_end = max(_band_span(band)[1] for band in sequence)
+                coordinate_start = min(_band_coordinate(band) for band in sequence) - spacing * 0.5
+                coordinate_end = max(_band_coordinate(band) for band in sequence) + spacing * 0.5
+                rect = (
+                    (span_start, coordinate_start, span_end - span_start, coordinate_end - coordinate_start)
+                    if orientation == "h"
+                    else (coordinate_start, span_start, coordinate_end - coordinate_start, span_end - span_start)
+                )
+                regions.append(
+                    RepetitiveDetailRegion(
+                        orientation=orientation,
+                        rect=rect,
+                        spacing_px=spacing,
+                        line_count=len(sequence),
+                    )
+                )
 
     # A thin line running through the middle of repeated treads is usually a
     # stair centre/stringer or a hatch stroke, not a full-height wall.  Keep
