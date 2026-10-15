@@ -1,6 +1,6 @@
 # PlanStride checkpoint
 
-Updated 15 October 2026 (Asia/Kolkata). Resumed at the user's request.
+Updated 15 October 2026 (Asia/Kolkata). Paused at the user's explicit request.
 Branch consolidation is complete.
 The full PlanStride upgrade is NOT complete.
 
@@ -19,7 +19,7 @@ No secrets, private plans or restricted dataset assets in Git.
 
 Repository: https://github.com/Fahad-uz/architecture-walkthrough-analysis
 Working branch: main. Only main remains locally and on GitHub.
-Prepared from commit 1b61df4 (use git log for the full commit and later documentation commits).
+Prepared from commit d348da4 (use git log for the full commit and this checkpoint commit).
 The commit containing this checkpoint can be found with git log -1.
 PR #12 merged at1c7106d17c96c4ccc3d6800750f1624b1205996b, preserving six commits:
 branding, image preview/crop/reset/history, editor undo/redo and recoverable local
@@ -217,66 +217,85 @@ verification from the API smoke test.
   Private artifacts:outputs/straightening-qa-2026-10-15/browser-verification.json.
   Screenshots are in parentworkspace outputs,not Git. No new downloads.
 
+## Additional completed work on 15 October
+
+- f293a9f:setup_cubicasa.py reports the unavailable inference provider before
+  optional imports/downloads.10targeted tests+lint pass. f93fdd6 records primary
+  model references/terms/runtime/availability in docs/segmentation-model-review.md.
+  No pretrained model or new package was downloaded/adopted.
+- d507bc6:skewed repeated-detail ink evidence and separate regular subsequences
+  reduce false structural walls. d348da4 records the full development comparison
+  in docs/repetitive-detail-progress.md.70analyses completed/0failures;66scored,
+ 4same annotation errors. MeanwallF1 .403484→.404386,roomF1 .216164→.217387.
+ Onlyarchitectural/5016's scoredwallF1 changed;walls40→30,rooms36→13 against2
+ annotatedrooms. Slightwallrecallloss remains recorded;sauna/dimension falsewalls
+ persist. This is unreviewed-label agreement,not certifiedaccuracy.
+- Full latest completed suite:706Pythonpasses/9optional skips,Ruff+mypy83pass.
+  Log:../planstride-repetitive-detail-tests.log. No need to repeat the completed
+  analysis/metric runs. Reports:
+  outputs/benchmark-repetitive-detail-development-2026-10-15/report.json
+  outputs/benchmark-repetitive-detail-metrics-2026-10-15/report.json
+  outputs/benchmark-repetitive-detail-metrics-2026-10-15/paired-comparison.json.
+- No downloads beyond previously recorded inventory. The browser-tested
+  straightening/export/walkthrough evidence is in docs/image-preparation.md.
+
+## Unfinished furniture work saved locally — NOT committed/pushed
+
+Modified:
+- frontend/src/pages/EditorPage.tsx
+- frontend/src/types.ts
+- src/architecture_walkthrough/geometry/models.py
+- src/architecture_walkthrough/pipeline.py
+New:
+- frontend/src/editorFurniture.ts
+- frontend/tests/editorFurniture.test.ts
+- tests/test_furniture_edit_roundtrip.py
+
+Frontend furniture footprints/select/drag/add/delete/position/rotation/dimensions
+and provenance labels are implemented,using existing undo/autosave/save paths.
+Helpers provide SAT wall/door-aperture placement hints. This does NOT establish
+walking-route clearance. New userobjects have stableid/provenance=user; legacy
+origins stayunknown. Backend optionalid/provenance fields and freshanalysis
+source tagging are saved. Userarrangements/identities survive basic save/load
+and walkthrough preparation without automatic furnitureinjection.
+
+Checks completed for this unfinishedunit:frontend typecheck and8focused helper
+tests pass;3backend roundtrip/empty-furnishing tests+focusedlint pass. Fullsuite,
+productionbuild,browserediting and regeneration/export validation NOT run yet.
+Important unresolved point:asset_placements may mirror furniture,so moving an
+item might leave a duplicate asset in collect_scene_furniture. Inspect this
+before claiming that arrangements survive 3D regeneration. Review helper and
+editor diffs before publishing. The current server does not include these
+uncommitted backend fields; restart the venvserver after this unit is complete.
+
 ## Exact next steps
 
-1. Inspect git state and CI,then continue structuralaccuracy work from saved
-   development evidence. No need to repeat completed70-image runs or metrics.
-   CurrentwallF1 .403484,roomF1 .216164 againstunreviewedlabels remain weak.
-2. Root is investigating suitable local segmentationmodel references; a read-only
-   false-wall review is inspecting developmentcases/code. No implementation or
-   model download started yet. Do not access30quarantined examples.
-3. Perspective preparation remains:needs verified rectangular referenceproportions
-   and explicit scale recalibration,not silent guessed proportions. Preserve
-   source/provenance and testcrop/straightening/perspective composition.
-4. Furniture/material/lighting editing,3Dwarningfocus and broader fullwalkthrough
-   verification remain. Independent building/sourcegroups,reviewedannotations
-   and broader permitted sources are needed before final untouchedevaluation.
-   Opening,adjacency,scaleerror and correctioneffort metrics remain outstanding.
+1. Read checkpoint and inspect git status/diffs. Resume the saved furnitureunit;
+   do not start over or rerun completed70-image analyses/metrics.
+2. Inspect scene collect_scene_furniture and resolve any furniture/asset_placements
+   mirror duplication on edit/delete. Preserve userarrangements/assetmetadata.
+3. Review furniturehelpers/EditorPage,run the full relevant Python/frontend
+   checks,build and restartserver using the project venv (don't resolve its
+   Python symlink to the base interpreter). Browser test add/select/drag/
+   inspector edits/undo/redo/save/reload and fresh3Dregeneration,then commit/push
+   this logical feature separately. Original layout must remain unchanged.
+4. Perspective preparation,roommaterials/lighting,3Dwarningfocus,walkroute checks
+   and further structuralaccuracy remain. Independent source/buildinggroups,
+   reviewedannotations and broader permitted sources are required before final
+   untouched evaluation. Opening,adjacency,scaleerror and correctioneffort
+   metrics remain outstanding.30quarantine examples remain untouched.
 
-## Current work status
+## Pause status
 
-Resumed with100% five-hour allowance;69%remained after featurepublication.
-Completed code is pushed. The accompanying preparationguide/checkpoint is being
-published separately. No unfinished code edits remain,only ongoing read-only
-accuracy investigation. Preserve untracked.DS_Store and frontend/.DS_Store.
-Stop new tasks and checkpoint again below7%,as the user instructed.
-The full PlanStride upgrade is incomplete;never claim perfect reconstruction.
-
-## Accuracy investigation update,15October2026
-
-Model availability/licensing/runtime assessment is recorded in
- docs/segmentation-model-review.md with primary-source links. No weights or new
-packages downloaded. Current CubiCasa provider is still a stub; setup guard
- f293a9f reports this before optional imports/downloads.10targeted tests+lint pass.
-A read-only false-wall probe found architectural/5016 wrongly makes36rooms from
-2upstream annotatedrooms:skewed decking bboxthickness exceeds the existing detail
-filter,despite thin actualink. The false-wall agent is implementing optional
-component-ink thickness for detail eligibility only,and repeated regularsubsequence
-extraction. It ownswall_detection.py and focusedtests/ignoredsubsetexperiments.
-No improvement is claimed yet. Candidate must pass adversesubset and then a NEW
-full70development comparison before publication. Do not alter saved baselines or
-accessquarantine. Source static is required during any full benchmark run.
-
-## Repeated-detail fix completed
-
-Code d507bc6 is pushed. Full70 candidate complete/0failures;66scored/4sameerrors.
-MeanwallF1 .403484→.404386,roomF1 .216164→.217387. Only5016's scoredwallF1 changed;
-rooms36→13 with2annotatedrooms. False sauna/dimension walls remain.
-Evidence:docs/repetitive-detail-progress.md. No accuracy/perfection claim.
-Reports:outputs/benchmark-repetitive-detail-development-2026-10-15/report.json and
-outputs/benchmark-repetitive-detail-metrics-2026-10-15/report.json.
-Source SHA256:db763326a9b39aa559000bf2d60a7752d9cb911f7a08b8766461cea6a0e13ad5.
-Source stayed static throughoutthe70run.706Pythonpasses/9skips,Ruff+mypy83pass.
-No new download. Do not repeat thiscompletedrun.
-
-## Furniture editing in progress
-
-Frontend agent owns EditorPage.tsx,types.ts,furniture helpers/tests; selection,
-move/rotate/resize/delete/add and undo/autosave preservation are in progress.
-Root added optional stableid/provenance fields to FurniturePlacement and marks
-fresh locally detected items only;legacy origin staysunknown. Three backend
-roundtrip/empty-furnishing tests pass. Backendfiles models.py,pipeline.py and
-newtests/test_furniture_edit_roundtrip.py are NOTyetcommitted with this docupdate.
-Complete frontend/runtime/browser/fullchecks before publishing the furnitureunit.
-No walls or rooms should be edited by furniture controls. No automaticfurnishing
-injection. Model/asset downloads remain unchanged.
+Paused because the user explicitly said "save everything and pause",not because
+of quota.35% of the five-hour allowance remained at this pause check. All agents
+and their helper stopped; all bounded benchmarks finished. Files are saved.
+Completed fixes and reports are pushed to main;root verifies the accompanying
+checkpoint push before reply. The seven unfinished furniture files remain local.
+A redundant local WIP archive+tracked diff is saved under
+outputs/checkpoints/2026-10-15-furniture-wip/ (ignored,not pushed).
+Keep .DS_Store and frontend/.DS_Store untracked. ServerPID2521 remains running
+with the last restarted image-preparation backend and current builtfrontend;
+it has NOT loaded the latest wall/furniture source edits. Current userbrowser
+is the saved editor jobf7c01bb7af734d088de0b63c792ce565. No additional downloads.
+The full PlanStride upgrade remains incomplete. Resume only on userrequest.
