@@ -241,3 +241,18 @@ published separately. No unfinished code edits remain,only ongoing read-only
 accuracy investigation. Preserve untracked.DS_Store and frontend/.DS_Store.
 Stop new tasks and checkpoint again below7%,as the user instructed.
 The full PlanStride upgrade is incomplete;never claim perfect reconstruction.
+
+## Accuracy investigation update,15October2026
+
+Model availability/licensing/runtime assessment is recorded in
+ docs/segmentation-model-review.md with primary-source links. No weights or new
+packages downloaded. Current CubiCasa provider is still a stub; setup guard
+ f293a9f reports this before optional imports/downloads.10targeted tests+lint pass.
+A read-only false-wall probe found architectural/5016 wrongly makes36rooms from
+2upstream annotatedrooms:skewed decking bboxthickness exceeds the existing detail
+filter,despite thin actualink. The false-wall agent is implementing optional
+component-ink thickness for detail eligibility only,and repeated regularsubsequence
+extraction. It ownswall_detection.py and focusedtests/ignoredsubsetexperiments.
+No improvement is claimed yet. Candidate must pass adversesubset and then a NEW
+full70development comparison before publication. Do not alter saved baselines or
+accessquarantine. Source static is required during any full benchmark run.
