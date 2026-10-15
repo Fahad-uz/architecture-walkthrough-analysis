@@ -119,7 +119,8 @@ def prediction_geometry(model: dict[str, Any], analysis_size: tuple[int, int],
         try:
             if not isinstance(preparation, dict):
                 raise ValueError("Expected an image preparation record")
-            if type(preparation["version"]) is not int or preparation["version"] != 1:
+            version = preparation["version"]
+            if type(version) is not int or version not in (1, 2):
                 raise ValueError("Unsupported image preparation version")
             turns = preparation["rotation_quarter_turns"]
             if type(turns) is not int or turns not in range(4):
@@ -133,8 +134,21 @@ def prediction_geometry(model: dict[str, Any], analysis_size: tuple[int, int],
             if dimensions["source"] != image_size or dimensions["analysis"] != analysis_size:
                 raise ValueError("Preparation dimensions do not match image artifacts")
             expected_prepared = image_size[::-1] if turns % 2 else image_size
+            if version == 2:
+                degrees = preparation["straighten_degrees"]
+                if (type(degrees) not in (int, float) or not math.isfinite(degrees)
+                        or not -15 <= degrees <= 15):
+                    raise ValueError("Invalid fine-angle straightening")
+                if degrees != 0:
+                    cosine = math.cos(math.radians(degrees))
+                    sine = math.sin(math.radians(degrees))
+                    width, height = expected_prepared
+                    expected_prepared = (
+                        math.ceil(abs(width * cosine) + abs(height * sine) - 1e-9),
+                        math.ceil(abs(width * sine) + abs(height * cosine) - 1e-9),
+                    )
             if dimensions["prepared"] != expected_prepared:
-                raise ValueError("Prepared dimensions do not match quarter-turn rotation")
+                raise ValueError("Prepared dimensions do not match image rotation")
             forward = np.asarray(preparation["source_to_analysis"], dtype=float)
             inverse = np.asarray(preparation["analysis_to_source"], dtype=float)
             for matrix in (forward, inverse):

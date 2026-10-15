@@ -998,7 +998,8 @@ def test_terminal_state_persistence_failure_removes_promoted_analysis_artifacts(
     runner.close()
 
 
-def test_spawned_analysis_process_publishes_a_complete_job(tmp_path: Path) -> None:
+@pytest.mark.parametrize("degrees", [0, 7.5])
+def test_spawned_analysis_process_publishes_a_complete_job(tmp_path: Path, degrees: float) -> None:
     config = AppConfig(
         paths=PathSettings(work_root=tmp_path),
         limits=LimitSettings(
@@ -1017,7 +1018,8 @@ def test_spawned_analysis_process_publishes_a_complete_job(tmp_path: Path) -> No
     draw.rectangle((20, 20, 220, 160), outline="black", width=8)
     image.save(image_path)
 
-    runner.start_analysis(record, image_path, config, None, None)
+    original = image_path.read_bytes()
+    runner.start_analysis(record, image_path, config, None, None, 1, degrees)
     terminal = _wait_for_job_status(
         runner,
         record.job_id,
@@ -1028,7 +1030,12 @@ def test_spawned_analysis_process_publishes_a_complete_job(tmp_path: Path) -> No
     assert terminal.glb_source == "preview"
     assert terminal.glb_bake_mode == "none"
     assert (job_dir / "building.glb").read_bytes()[:4] == b"glTF"
-    assert (job_dir / "floorplan.optimized.json").is_file()
+    saved = FloorPlanModel.load_json(job_dir / "floorplan.optimized.json")
+    metadata = saved.metadata["image_preparation"]
+    assert metadata["rotation_quarter_turns"] == 1
+    assert metadata["version"] == (2 if degrees else 1)
+    assert metadata.get("straighten_degrees", 0) == degrees
+    assert image_path.read_bytes() == original
     assert (job_dir / "debug" / "01_original_roi.png").is_file()
     assert not list(job_dir.glob(".analysis.*"))
     runner.close()

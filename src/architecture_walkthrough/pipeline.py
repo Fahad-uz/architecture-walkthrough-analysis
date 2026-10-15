@@ -726,6 +726,7 @@ def analyze_image(
     require_ai_success: bool = False,
     crop_rect: tuple[int, int, int, int] | None = None,
     rotation_quarter_turns: int = 0,
+    straighten_degrees: float = 0,
 ) -> FloorPlanModel:
     source_pixels_per_metre = _manual_pixels_per_metre(manual_scale)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -736,7 +737,7 @@ def analyze_image(
     image = load_image(input_path)
     stages.record("validate_input", started, image_shape=list(image.shape))
     source_height, source_width = image.shape[:2]
-    image = rotate_image(image, rotation_quarter_turns)
+    image = rotate_image(image, rotation_quarter_turns, straighten_degrees)
 
     started = time.perf_counter()
     roi_result = detect_plan_roi(
@@ -760,7 +761,7 @@ def analyze_image(
     resize_ratio = max(resized_height, resized_width) / max(preprocessing.original_shape[:2])
     image_preparation = preparation_metadata(
         source_width, source_height, rotation_quarter_turns, roi_result.roi,
-        resized_width, resized_height,
+        resized_width, resized_height, straighten_degrees,
     )
     stages.record("preprocess_layers", started, layers={key: str(value) for key, value in preprocessing.layers.items()})
 
@@ -1374,6 +1375,7 @@ def convert_image_to_glb(
     require_ai_success: bool = False,
     crop_rect: tuple[int, int, int, int] | None = None,
     rotation_quarter_turns: int = 0,
+    straighten_degrees: float = 0,
 ) -> Path:
     validate_image_file(input_image, config.limits)
     if output_glb.suffix.lower() != ".glb":
@@ -1388,6 +1390,7 @@ def convert_image_to_glb(
         require_ai_success=require_ai_success,
         crop_rect=crop_rect,
         rotation_quarter_turns=rotation_quarter_turns,
+        straighten_degrees=straighten_degrees,
     )
     return build_model(work_dir, output_glb, config, run_blender=run_blender)
 

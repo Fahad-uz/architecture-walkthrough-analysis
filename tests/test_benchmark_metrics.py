@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import math
 import sys
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import pytest
 from shapely.geometry import Polygon, box
 
 from architecture_walkthrough.geometry.models import FloorPlanModel
+from architecture_walkthrough.vision.image_preparation import preparation_metadata
 
 MODULE = Path(__file__).resolve().parents[1] / "tools/benchmark/evaluate_structure.py"
 sys.path.insert(0, str(MODULE.parent))
@@ -95,8 +97,63 @@ def test_prediction_inverse_rotation_crop_actual_resize_and_y_flip() -> None:
     assert result["rooms"][0].symmetric_difference(expected_room).area == pytest.approx(0, abs=1e-10)
 
 
+def straightened_prediction(degrees: float = 7.5) -> dict:
+    model = prepared_prediction()
+    model["metadata"]["image_preparation"] = preparation_metadata(
+        200, 120, 1, FloorPlanModel.model_validate(model).plan_roi, 60, 99, degrees,
+    )
+    return model
+
+
+@pytest.mark.parametrize("degrees", [-15, -7.5, 7.5, 15])
+def test_prediction_inverse_fine_rotation_preserves_complete_wall_footprint(degrees) -> None:
+    model = straightened_prediction(degrees)
+    result = metrics.prediction_geometry(model, (60, 99), (200, 120))
+    metadata = model["metadata"]["image_preparation"]
+    angle = math.radians(degrees)
+    cosine, sine = math.cos(angle), math.sin(angle)
+
+    def source_point(x, y):
+        # Undo model-Y, actual per-axis resize, crop, expanded fine rotation,
+        # then the quarter turn. This is independent of the recorded matrices.
+        px, py = 10 + x * 10 * 91 / 60, 20 + (99 - y * 10) * 151 / 99
+        dx = px - metadata["prepared_width_px"] / 2
+        dy = py - metadata["prepared_height_px"] / 2
+        qx = cosine * dx + sine * dy + 60
+        qy = -sine * dx + cosine * dy + 100
+        return qy, 120 - qx
+
+    bounds = box(0, 0, 200, 120)
+    expected_wall = Polygon([source_point(x, y) for x, y in
+                             [(0.8, 2.15), (3.8, 6.15), (4.2, 5.85), (1.2, 1.85)]]).intersection(bounds)
+    expected_room = Polygon([source_point(x, y) for x, y in
+                             [(1, 1), (4, 1), (4, 6), (1, 6)]]).intersection(bounds)
+    assert result["walls"][0].symmetric_difference(expected_wall).area == pytest.approx(0, abs=1e-10)
+    assert result["rooms"][0].symmetric_difference(expected_room).area == pytest.approx(0, abs=1e-10)
+
+
+@pytest.mark.parametrize("degrees", [True, "5", None, -15.01, 15.01,
+                                         float("nan"), float("inf")])
+def test_prediction_rejects_invalid_fine_angle(degrees) -> None:
+    model = straightened_prediction()
+    model["metadata"]["image_preparation"]["straighten_degrees"] = degrees
+    with pytest.raises(ValueError, match="Invalid image preparation transform"):
+        metrics.prediction_geometry(model, (60, 99), (200, 120))
+
+
+def test_prediction_rejects_missing_fine_angle_and_wrong_expanded_dimensions() -> None:
+    model = straightened_prediction()
+    del model["metadata"]["image_preparation"]["straighten_degrees"]
+    with pytest.raises(ValueError, match="Invalid image preparation transform"):
+        metrics.prediction_geometry(model, (60, 99), (200, 120))
+    model = straightened_prediction()
+    model["metadata"]["image_preparation"]["prepared_width_px"] = 120
+    with pytest.raises(ValueError, match="Invalid image preparation transform"):
+        metrics.prediction_geometry(model, (60, 99), (200, 120))
+
+
 @pytest.mark.parametrize(("field", "value"), [
-    ("version", 2),
+    ("version", 3),
     ("version", True),
     ("rotation_quarter_turns", 4),
     ("rotation_quarter_turns", True),

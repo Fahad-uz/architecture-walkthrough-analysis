@@ -44,6 +44,7 @@ from architecture_walkthrough.vision.plan_roi import validate_crop_rect
 from architecture_walkthrough.vision.image_preparation import (
     prepared_dimensions,
     validate_quarter_turns,
+    validate_straighten_degrees,
 )
 from architecture_walkthrough.security.file_validation import (
     create_job_dir,
@@ -388,6 +389,7 @@ def _analysis_worker_entry(
     manual_scale: float | None,
     crop_rect: tuple[int, int, int, int] | None,
     rotation_quarter_turns: int = 0,
+    straighten_degrees: float = 0,
 ) -> None:
     """Run the CPU-heavy analysis outside the API process.
 
@@ -407,6 +409,7 @@ def _analysis_worker_entry(
             require_ai_success=False,
             crop_rect=crop_rect,
             rotation_quarter_turns=rotation_quarter_turns,
+            straighten_degrees=straighten_degrees,
         )
         export_simple_glb(model, staging_dir / "building.glb")
     except Exception as exc:
@@ -751,6 +754,7 @@ class LocalJobRunner:
         manual_scale: float | None,
         crop_rect: tuple[int, int, int, int] | None,
         rotation_quarter_turns: int = 0,
+        straighten_degrees: float = 0,
     ) -> BaseProcess:
         return self._analysis_context.Process(
             target=_analysis_worker_entry,
@@ -761,6 +765,7 @@ class LocalJobRunner:
                 manual_scale,
                 crop_rect,
                 rotation_quarter_turns,
+                straighten_degrees,
             ),
             daemon=True,
         )
@@ -846,6 +851,7 @@ class LocalJobRunner:
         manual_scale: float | None,
         crop_rect: tuple[int, int, int, int] | None,
         rotation_quarter_turns: int = 0,
+        straighten_degrees: float = 0,
     ) -> None:
         self._reap_unmonitored_analyses()
         if not self._analysis_slots.acquire(blocking=False):
@@ -884,6 +890,7 @@ class LocalJobRunner:
                     manual_scale,
                     crop_rect,
                     rotation_quarter_turns,
+                    straighten_degrees,
                 )
                 operation = _AnalysisOperation(
                     process=process,
@@ -1506,6 +1513,7 @@ def create_app() -> FastAPI:
         crop_width: str | None = Form(None),
         crop_height: str | None = Form(None),
         rotation_quarter_turns: str | None = Form(None),
+        straighten_degrees: str | None = Form(None),
     ) -> JobRecord:
         form = await request.form()
         allowed_fields = {
@@ -1517,6 +1525,7 @@ def create_app() -> FastAPI:
             "crop_width",
             "crop_height",
             "rotation_quarter_turns",
+            "straighten_degrees",
         }
         form_items = list(form.multi_items())
         field_names = [name for name, _value in form_items]
@@ -1535,6 +1544,17 @@ def create_app() -> FastAPI:
             await file.close()
             raise HTTPException(
                 status_code=400, detail="rotation_quarter_turns must be an integer from 0 to 3"
+            ) from exc
+
+        try:
+            if "straighten_degrees" in field_names and straighten_degrees is None:
+                raise ValueError("straighten_degrees must be a finite number from -15 to 15")
+            degrees = float(straighten_degrees) if straighten_degrees is not None else 0.0
+            validate_straighten_degrees(degrees)
+        except ValueError as exc:
+            await file.close()
+            raise HTTPException(
+                status_code=400, detail="straighten_degrees must be a finite number from -15 to 15"
             ) from exc
 
         crop_rect = None
@@ -1562,7 +1582,7 @@ def create_app() -> FastAPI:
             )
             validated = validate_image_file(upload_path, config.limits, file.content_type)
             if crop_rect is not None:
-                width, height = prepared_dimensions(validated.width, validated.height, turns)
+                width, height = prepared_dimensions(validated.width, validated.height, turns, degrees)
                 validate_crop_rect(crop_rect, width, height)
         except ValueError as exc:
             upload_path.unlink(missing_ok=True)
@@ -1578,7 +1598,7 @@ def create_app() -> FastAPI:
         job_config = config.model_copy(deep=True)
         job_config.ai.gemini_enabled = use_gemini
         try:
-            runner.start_analysis(record, safe_path, job_config, manual_scale, crop_rect, turns)
+            runner.start_analysis(record, safe_path, job_config, manual_scale, crop_rect, turns, degrees)
         except HTTPException as exc:
             if exc.status_code in {429, 503}:
                 runner.discard_created_job(record)

@@ -58,7 +58,7 @@ export default function UploadPage() {
     try {
       submitRef.current = true;
       setSubmitting(true);
-      const record = await uploadPlan(file, useGemini, manualScale, preparation.crop, preparation.rotationQuarterTurns);
+      const record = await uploadPlan(file, useGemini, manualScale, preparation.crop, preparation.rotationQuarterTurns, preparation.straightenDegrees);
       if (!mountedRef.current) return;
       setJob(record);
       startPolling(record.job_id);

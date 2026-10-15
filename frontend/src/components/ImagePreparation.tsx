@@ -1,17 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import { cropBetween, type CropRect, type ImagePoint } from "../crop";
-import { originalPreparation, preparedImageFrame, turnPreparation, type ImagePreparationState } from "../imagePreparation";
+import { originalPreparation, preparedImageFrame, straightenPreparation, turnPreparation, type ImagePreparationState } from "../imagePreparation";
 
 type Props = { file: File; preparation: ImagePreparationState; onChange: (state: ImagePreparationState) => void; disabled: boolean };
 
 export default function ImagePreparation({ file, preparation, onChange, disabled }: Props) {
-  const { crop, rotationQuarterTurns } = preparation;
+  const { crop, rotationQuarterTurns, straightenDegrees } = preparation;
+  const [angleInput, setAngleInput] = useState(String(straightenDegrees));
+  const [angleError, setAngleError] = useState("");
   const [source, setSource] = useState<{ url: string; width: number; height: number } | null>(null);
   const [error, setError] = useState("");
   const [pending, setPending] = useState<CropRect | null>(null);
   const [past, setPast] = useState<ImagePreparationState[]>([]);
   const [future, setFuture] = useState<ImagePreparationState[]>([]);
   const start = useRef<ImagePoint | null>(null);
+
+  useEffect(() => { setAngleInput(String(straightenDegrees)); setAngleError(""); }, [straightenDegrees]);
 
   useEffect(() => {
     const url = URL.createObjectURL(file);
@@ -33,6 +37,13 @@ export default function ImagePreparation({ file, preparation, onChange, disabled
     setFuture([]);
     onChange(next);
   };
+  const applyStraightening = () => {
+    try {
+      if (!angleInput.trim()) throw new Error("Enter an angle between −15° and 15°.");
+      commit(straightenPreparation(preparation, Number(angleInput)));
+      setAngleError("");
+    } catch (error) { setAngleError(error instanceof Error ? error.message : String(error)); }
+  };
   const point = (event: React.PointerEvent<SVGSVGElement>): ImagePoint | null => {
     const matrix = event.currentTarget.getScreenCTM();
     if (!matrix) return null;
@@ -41,7 +52,7 @@ export default function ImagePreparation({ file, preparation, onChange, disabled
   };
   if (error) return <p role="alert">{error}</p>;
   if (!source) return <p role="status">Loading image preview…</p>;
-  const frame = preparedImageFrame(source.width, source.height, rotationQuarterTurns);
+  const frame = preparedImageFrame(source.width, source.height, rotationQuarterTurns, straightenDegrees);
   const visible = pending ?? crop;
   return (
     <section aria-label="Image preparation" style={{ display: "grid", gap: 8 }}>
@@ -50,8 +61,18 @@ export default function ImagePreparation({ file, preparation, onChange, disabled
         <button type="button" disabled={disabled} onClick={() => commit(turnPreparation(preparation, -1))}>Rotate left 90°</button>
         <button type="button" disabled={disabled} onClick={() => commit(turnPreparation(preparation, 1))}>Rotate right 90°</button>
       </div>
+      <div className="row">
+        <label>Straighten (degrees, −15 to 15)
+          <input type="number" min={-15} max={15} step="0.1" value={angleInput} disabled={disabled}
+            style={{ width: 130 }} onChange={(e) => setAngleInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); applyStraightening(); } }} />
+        </label>
+        <button type="button" disabled={disabled} onClick={applyStraightening}>Apply straightening</button>
+      </div>
+      <p style={{ margin: 0, fontSize: 12 }}>Clockwise is positive. Apply to update the preview, then select a crop.</p>
+      {angleError && <p role="alert" style={{ margin: 0 }}>{angleError}</p>}
       <svg viewBox={`0 0 ${frame.width} ${frame.height}`} aria-label="Prepared plan crop preview" role="img"
-        style={{ width: "100%", maxHeight: 450, background: "#eee", touchAction: "none", cursor: disabled ? "default" : "crosshair" }}
+        style={{ width: "100%", maxHeight: 450, background: "#fff", touchAction: "none", cursor: disabled ? "default" : "crosshair" }}
         onPointerDown={(e) => {
           if (disabled || e.button !== 0) return;
           start.current = point(e);
@@ -78,7 +99,7 @@ export default function ImagePreparation({ file, preparation, onChange, disabled
       </svg>
       <div className="row">
         <button type="button" disabled={disabled || !crop} onClick={() => commit({ ...preparation, crop: null })}>Clear crop</button>
-        <button type="button" disabled={disabled || (!crop && !rotationQuarterTurns)} onClick={() => commit(originalPreparation())}>Reset to original</button>
+        <button type="button" disabled={disabled || (!crop && !rotationQuarterTurns && !straightenDegrees)} onClick={() => commit(originalPreparation())}>Reset to original</button>
         <button type="button" disabled={disabled || !past.length} onClick={() => {
           onChange(past[past.length - 1]); setPast(past.slice(0, -1)); setFuture([preparation, ...future]);
         }}>Undo preparation</button>
@@ -87,7 +108,7 @@ export default function ImagePreparation({ file, preparation, onChange, disabled
         }}>Redo preparation</button>
       </div>
       <p style={{ margin: 0, fontSize: 12 }} aria-live="polite">
-        {frame.width} × {frame.height} pixels · rotation {rotationQuarterTurns * 90}°{crop ? ` · selected ${crop.width} × ${crop.height}` : " · using the full image"}.
+        {frame.width} × {frame.height} pixels · rotation {rotationQuarterTurns * 90}° · straighten {straightenDegrees}°{crop ? ` · selected ${crop.width} × ${crop.height}` : " · using the full image"}.
         {Math.min(crop?.width ?? frame.width, crop?.height ?? frame.height) < 600
           ? " Small image: fine walls and text may be difficult to read. Use a larger original if possible." : " Check that wall lines and dimension text are readable."}
       </p>
