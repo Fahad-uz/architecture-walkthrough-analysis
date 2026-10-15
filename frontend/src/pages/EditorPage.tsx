@@ -747,7 +747,7 @@ export default function EditorPage() {
     try {
       const generationJobId = jobId;
       setGenerating(true);
-      await generateModel(generationJobId, blocking.length > 0 && force, bakeMode);
+      await generateModel(generationJobId, force, bakeMode);
       if (currentJobIdRef.current !== generationJobId || sessionRef.current !== generationSession) return;
       setStatus(`Blender build started (${bakeMode})…`);
       if (pollRef.current !== null) window.clearTimeout(pollRef.current);
