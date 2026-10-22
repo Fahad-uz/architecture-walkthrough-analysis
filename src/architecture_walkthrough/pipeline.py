@@ -1078,6 +1078,11 @@ def analyze_image(
         final_rooms,
         preserve_unassigned=True,
     )
+    for index, item in enumerate(furniture):
+        if item.id is None:
+            item.id = f"furniture_{index:03d}"
+        if item.provenance == "unknown":
+            item.provenance = "detected"
     stages.record(
         "detect_optional_furniture",
         started,

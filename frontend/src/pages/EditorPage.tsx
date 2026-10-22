@@ -11,11 +11,12 @@ import {
   acknowledgeIssue, acknowledgementState, collectReviewIssues, issueGuidance, reviewTargetPoints,
   type ReviewIssue,
 } from "../editorWarnings";
-import type { FloorPlanModel, Opening, Point2D, QualityReport, RoomPolygon, WallSegment } from "../types";
+import { addPosition, createFurniture, FURNITURE_PRESETS, furnitureFootprint, furnitureLabel, overlapWarnings } from "../editorFurniture";
+import type { FloorPlanModel, FurniturePlacement, Opening, Point2D, QualityReport, RoomPolygon, WallSegment } from "../types";
 
 type Tool = "select" | "wall" | "door" | "window" | "scale";
 type BakeMode = "final" | "draft" | "none";
-type Selection = { kind: "walls" | "doors" | "windows" | "rooms" | "balconies"; index: number } | null;
+type Selection = { kind: "walls" | "doors" | "windows" | "rooms" | "balconies" | "furniture"; index: number } | null;
 type SavedCorrection = QualityReport & { model: FloorPlanModel };
 
 /** Editor works in image-pixel space; the model stores metres with origin at
@@ -222,6 +223,26 @@ function qualityReportFromModel(model: FloorPlanModel): QualityReport | null {
   };
 }
 
+/** Keep partially typed numbers usable while recording valid edits as one
+ * history step for each field focus. */
+function FurnitureNumberInput({ label, value, min, step, onChange, onStart, onEnd }: {
+  label: string; value: number | ""; min?: number; step: number;
+  onChange: (value: string) => void; onStart: () => void; onEnd: () => void;
+}) {
+  const [text, setText] = useState(String(value));
+  const focused = useRef(false);
+  useEffect(() => { if (!focused.current) setText(String(value)); }, [value]);
+  return (
+    <label>
+      {label}
+      <input type="number" min={min} step={step} value={text} placeholder={value === "" ? "Model default" : undefined}
+        onFocus={() => { focused.current = true; onStart(); }}
+        onChange={(e) => { setText(e.target.value); onChange(e.target.value); }}
+        onBlur={() => { focused.current = false; setText(String(value)); onEnd(); }} />
+    </label>
+  );
+}
+
 export default function EditorPage() {
   const { jobId = "" } = useParams();
   const [model, setModel] = useState<FloorPlanModel | null>(null);
@@ -229,6 +250,7 @@ export default function EditorPage() {
   const [tool, setTool] = useState<Tool>("select");
   const [selection, setSelection] = useState<Selection>(null);
   const [hover, setHover] = useState<Selection>(null);
+  const [furnitureCategory, setFurnitureCategory] = useState("sofa");
   const [pending, setPending] = useState<Point2D | null>(null); // first click of 2-point tools (metres)
   const [status, setStatus] = useState("loading…");
   const [report, setReport] = useState<QualityReport | null>(null);
@@ -793,13 +815,55 @@ export default function EditorPage() {
           m.windows = m.windows.filter((item) => item.wall_id !== wall.id);
         }
       }
-      (m as any)[selection.kind].splice(selection.index, 1);
+      (m as any)[selection.kind]?.splice(selection.index, 1);
       return m;
     });
     setSelection(null);
   };
 
-  const selectedItem: any = selection && model ? (model as any)[selection.kind][selection.index] : null;
+  const addFurniture = () => {
+    if (!model || !image) return;
+    const visibleCentre = toM({
+      x: Math.max(0, Math.min(imageWidth, (stageSize.width / 2 - view.x) / view.scale)),
+      y: Math.max(0, Math.min(imageHeight, (stageSize.height / 2 - view.y) / view.scale)),
+    });
+    const room = selection?.kind === "rooms" ? model.rooms[selection.index] : null;
+    const item = createFurniture(furnitureCategory, addPosition(model, room, visibleCentre));
+    const index = model.furniture?.length ?? 0;
+    update((m) => {
+      m.furniture = [...(m.furniture ?? []), item];
+      return m;
+    });
+    setTool("select");
+    setPending(null);
+    setSelection({ kind: "furniture", index });
+    setStatus(`${furnitureLabel(item.category)} added${room ? ` in ${room.name || "the selected room"}` : " at the visible plan centre"}. Drag it to move; use the inspector to rotate or resize.`);
+  };
+
+  const editFurniture = (field: "x" | "y" | "rotation_deg" | "width_m" | "depth_m" | "height_m", raw: string) => {
+    if (selection?.kind !== "furniture") return;
+    if (raw.trim() === "") {
+      if (field === "height_m") update((m) => {
+        const item = m.furniture?.[selection.index];
+        if (item) item.height_m = null;
+        return m;
+      });
+      return;
+    }
+    const value = Number(raw);
+    if (!Number.isFinite(value) || (["width_m", "depth_m"].includes(field) && value < 0.2) || (field === "height_m" && value < 0.01)) return;
+    update((m) => {
+      const item = m.furniture?.[selection.index];
+      if (!item) return m;
+      if (field === "x" || field === "y") item.center[field] = value;
+      else item[field] = value;
+      return m;
+    });
+  };
+
+  const selectedItem: any = selection && model ? (model as any)[selection.kind]?.[selection.index] : null;
+  const selectedFurniture = selection?.kind === "furniture" ? selectedItem as FurniturePlacement | undefined : undefined;
+  const furnitureWarnings = useMemo(() => model && selectedFurniture ? overlapWarnings(model, selectedFurniture) : [], [model, selectedFurniture]);
   const reviewIssues = useMemo(() => model ? collectReviewIssues(model, report?.issues) : [], [model, report]);
   const focusedIssue = reviewIssues.find((issue) => issue.id === focusedIssueId);
   const blockingIssueCount = report?.issues.filter((issue) => ["error", "severe"].includes(issue.severity)).length ?? 0;
@@ -975,6 +1039,72 @@ export default function EditorPage() {
                       fontSize={13}
                       fontStyle={room.name ? "bold" : "italic"}
                       fill={room.name ? "#0a5f2c" : "#8a938c"}
+                      listening={false}
+                    />
+                  </Group>
+                );
+              })}
+              {(model.furniture ?? []).map((item, index) => {
+                const centre = toPx(item.center);
+                const points = furnitureFootprint(item).map(toPx).flatMap((point) => [point.x - centre.x, point.y - centre.y]);
+                const selected = selection?.kind === "furniture" && selection.index === index;
+                const hovered = hover?.kind === "furniture" && hover.index === index;
+                const labelWidth = Math.max(70, Math.min(160, item.width_m * ppm));
+                return (
+                  <Group
+                    key={item.id ?? `furniture-${index}`}
+                    x={centre.x}
+                    y={centre.y}
+                    draggable={tool === "select"}
+                    onMouseDown={(e) => {
+                      if (tool !== "select") return;
+                      e.cancelBubble = true;
+                      setSelection({ kind: "furniture", index });
+                    }}
+                    onMouseEnter={(e) => {
+                      setHover({ kind: "furniture", index });
+                      const stage = e.target.getStage();
+                      if (stage && tool === "select") stage.container().style.cursor = "move";
+                    }}
+                    onMouseLeave={(e) => {
+                      setHover(null);
+                      const stage = e.target.getStage();
+                      if (stage) stage.container().style.cursor = "default";
+                    }}
+                    onDragStart={(e) => {
+                      e.cancelBubble = true;
+                      dragGroupRef.current = false;
+                      setSelection({ kind: "furniture", index });
+                    }}
+                    onDragMove={(e) => {
+                      e.cancelBubble = true;
+                      const centreM = toM({ x: e.target.x(), y: e.target.y() });
+                      update((m) => {
+                        const furniture = m.furniture?.[index];
+                        if (furniture) furniture.center = centreM;
+                        return m;
+                      });
+                    }}
+                    onDragEnd={(e) => {
+                      e.cancelBubble = true;
+                      dragGroupRef.current = null;
+                    }}
+                  >
+                    <Line
+                      points={points}
+                      closed
+                      fill={selected ? "rgba(255,159,28,0.28)" : "rgba(137,87,167,0.20)"}
+                      stroke={selected ? "#e88a00" : hovered ? "#734394" : "#8957a7"}
+                      strokeWidth={(selected ? 3 : 2) / view.scale}
+                    />
+                    <Text
+                      x={-labelWidth / 2}
+                      y={-7}
+                      width={labelWidth}
+                      align="center"
+                      text={furnitureLabel(item.category)}
+                      fontSize={12}
+                      fill={selected ? "#784500" : "#5d3576"}
                       listening={false}
                     />
                   </Group>
@@ -1167,11 +1297,73 @@ export default function EditorPage() {
             inspector instead of drawing them.
           </div>
         </div>
+        <div className="panel">
+          <strong style={{ fontSize: 13 }}>Furniture ({model?.furniture?.length ?? 0})</strong>
+          <label>
+            Furniture to add
+            <select value={furnitureCategory} onChange={(e) => setFurnitureCategory(e.target.value)}>
+              {FURNITURE_PRESETS.map((preset) => <option key={preset.category} value={preset.category}>{preset.label}</option>)}
+            </select>
+          </label>
+          <button type="button" onClick={addFurniture} disabled={!model || !image || saving || generating}>Add furniture</button>
+          <p style={{ fontSize: 12, color: "#667078" }}>
+            {selection?.kind === "rooms" ? "Adds inside the selected room." : "Adds at the centre of the visible plan. Select a room first to place it there."}
+            {" "}Drag a footprint to move it. Save changes before generating updated 3D.
+          </p>
+          {!!model?.furniture?.length && (
+            <label>
+              Furniture to edit
+              <select
+                value={selection?.kind === "furniture" ? String(selection.index) : ""}
+                onChange={(e) => {
+                  setSelection(e.target.value === "" ? null : { kind: "furniture", index: Number(e.target.value) });
+                  setTool("select");
+                  setPending(null);
+                }}
+              >
+                <option value="">Choose an object</option>
+                {model.furniture.map((item, index) => <option key={item.id ?? index} value={index}>{index + 1}. {furnitureLabel(item.category)}</option>)}
+              </select>
+            </label>
+          )}
+        </div>
         {selectedItem && (
           <div className="panel">
             <strong style={{ fontSize: 13 }}>
-              {selection!.kind} {selectedItem.id ?? selection!.index}
+              {selection!.kind === "furniture" ? furnitureLabel(selectedItem.category) : `${selection!.kind} ${selectedItem.id ?? selection!.index}`}
             </strong>
+            {selectedFurniture && (
+              <>
+                <p style={{ fontSize: 12, color: "#667078" }}>Source: {({ unknown: "Unknown", detected: "Detected", suggested: "Suggested", user: "Added by you" } as const)[selectedFurniture.provenance ?? "unknown"] ?? "Unknown"}</p>
+                {([
+                  ["x", "Position X (m)", selectedFurniture.center.x],
+                  ["y", "Position Y (m)", selectedFurniture.center.y],
+                  ["rotation_deg", "Rotation (degrees)", selectedFurniture.rotation_deg ?? 0],
+                  ["width_m", "Width (m)", selectedFurniture.width_m],
+                  ["depth_m", "Depth (m)", selectedFurniture.depth_m],
+                  ["height_m", "Height (m)", selectedFurniture.height_m ?? ""],
+                ] as const).map(([field, label, value]) => (
+                  <FurnitureNumberInput
+                      key={`${selection!.index}-${field}`}
+                      label={label}
+                      step={field === "rotation_deg" ? 5 : 0.01}
+                      min={field === "height_m" ? 0.01 : field === "width_m" || field === "depth_m" ? 0.2 : undefined}
+                      value={value}
+                      onStart={() => { dragGroupRef.current = false; }}
+                      onEnd={() => { dragGroupRef.current = null; }}
+                      onChange={(raw) => editFurniture(field, raw)}
+                    />
+                ))}
+                <p style={{ fontSize: 12, color: "#667078" }}>Rotation is counterclockwise in the plan's metre coordinates.</p>
+                {furnitureWarnings.length > 0 && (
+                  <div role="status" style={{ fontSize: 12, color: "#9a5b00" }}>
+                    <strong>Placement to review</strong>
+                    <ul style={{ paddingLeft: 18, margin: "4px 0" }}>{furnitureWarnings.map((warning, index) => <li key={`${warning.kind}-${index}`}>{warning.message}</li>)}</ul>
+                  </div>
+                )}
+                <p style={{ fontSize: 12, color: "#667078" }}>Placement checks cover wall and doorway overlap only. Walk routes and door swings have not been checked.</p>
+              </>
+            )}
             {selection!.kind === "rooms" && (
               <>
                 <label>
