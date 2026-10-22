@@ -1,6 +1,6 @@
 # PlanStride checkpoint
 
-Updated 15 October 2026 (Asia/Kolkata). Paused at the user's explicit request.
+Updated 22 October 2026 (Asia/Kolkata). Active after the user requested continuation.
 Branch consolidation is complete.
 The full PlanStride upgrade is NOT complete.
 
@@ -239,53 +239,49 @@ verification from the API smoke test.
 - No downloads beyond previously recorded inventory. The browser-tested
   straightening/export/walkthrough evidence is in docs/image-preparation.md.
 
-## Unfinished furniture work saved locally — NOT committed/pushed
+## Furniture milestone completed on 22 October
 
-Modified:
-- frontend/src/pages/EditorPage.tsx
-- frontend/src/types.ts
-- src/architecture_walkthrough/geometry/models.py
-- src/architecture_walkthrough/pipeline.py
-New:
-- frontend/src/editorFurniture.ts
-- frontend/tests/editorFurniture.test.ts
-- tests/test_furniture_edit_roundtrip.py
-
-Frontend furniture footprints/select/drag/add/delete/position/rotation/dimensions
-and provenance labels are implemented,using existing undo/autosave/save paths.
-Helpers provide SAT wall/door-aperture placement hints. This does NOT establish
-walking-route clearance. New userobjects have stableid/provenance=user; legacy
-origins stayunknown. Backend optionalid/provenance fields and freshanalysis
-source tagging are saved. Userarrangements/identities survive basic save/load
-and walkthrough preparation without automatic furnitureinjection.
-
-Checks completed for this unfinishedunit:frontend typecheck and8focused helper
-tests pass;3backend roundtrip/empty-furnishing tests+focusedlint pass. Fullsuite,
-productionbuild,browserediting and regeneration/export validation NOT run yet.
-Important unresolved point:asset_placements may mirror furniture,so moving an
-item might leave a duplicate asset in collect_scene_furniture. Inspect this
-before claiming that arrangements survive 3D regeneration. Review helper and
-editor diffs before publishing. The current server does not include these
-uncommitted backend fields; restart the venvserver after this unit is complete.
+-4d9c2c9 fixes detailed-asset mirror duplication after furniture move/delete.
+  Shared backend resolver drives simpleGLB,Blenderinput and route planning;
+  browsercollision resolution follows persistent optionalfurniture_id links.
+  Unique legacy mirrors link on load; old effective heights/metadata retained,
+  no invented source. Modern explicit furniture edits win; deleted targets stay
+  deleted. Standalone/unlinked assets remain supported. CI passed.
+-101aae5 adds furniture select/add/drag/rotate/resize/delete, optional height
+  reset, provenance labels and wall/door-aperture hints. Undo/redo and existing
+  drafts/save/generation paths retain arrangements. Both commits pushed to main.
+- Full Python718passed/9optional skips, then final additional mirror coverage
+ 38focusedpasses/2integrationdeselected; frontend43passes,typecheck,build,Ruff,
+  mypy84files passed. Full log:../planstride-furniture-tests-2026-10-22.log.
+- Browser freshjob4536f1c93118459ea18a624265bbadcf verified add/numericedit/height
+  clear/drag/deleteundo/dragundo+redo/save/refresh/freshBlenderGLB/preview/
+  walkthrough+guidedmanualcontrols. Savedsofa identity/source/geometry exactly
+  reaches Blenderinput; buildinglayout/scale unchanged by furniture save.
+  Evidence:outputs/furniture-qa-2026-10-22/verification.json. Quality40%,
+  reviewrequired remains; automaticliving/kitchen floors/openings incomplete.
+  This is workflow evidence,not structural accuracy. Guide:docs/furniture-editing.md.
+- Server restarted PID3219 with current furniture backend,AI disabled,port8001.
+  Parentworkspace screenshot:outputs/PlanStride-furniture-preview-2026-10-22.png.
+  No downloads. .DS_Store files remain untracked.
 
 ## Exact next steps
 
-1. Read checkpoint and inspect git status/diffs. Resume the saved furnitureunit;
-   do not start over or rerun completed70-image analyses/metrics.
-2. Inspect scene collect_scene_furniture and resolve any furniture/asset_placements
-   mirror duplication on edit/delete. Preserve userarrangements/assetmetadata.
-3. Review furniturehelpers/EditorPage,run the full relevant Python/frontend
-   checks,build and restartserver using the project venv (don't resolve its
-   Python symlink to the base interpreter). Browser test add/select/drag/
-   inspector edits/undo/redo/save/reload and fresh3Dregeneration,then commit/push
-   this logical feature separately. Original layout must remain unchanged.
-4. Perspective preparation,roommaterials/lighting,3Dwarningfocus,walkroute checks
-   and further structuralaccuracy remain. Independent source/buildinggroups,
-   reviewedannotations and broader permitted sources are required before final
-   untouched evaluation. Opening,adjacency,scaleerror and correctioneffort
-   metrics remain outstanding.30quarantine examples remain untouched.
+1. Finish saved lighting controls now in progress. Backend and frontend agents
+   implement a persistent lighting contract, warm/neutral/cool and brightness,
+   default-look compatibility, history/draft/save support and renderer parity.
+   Do not claim this incomplete unit is published yet.
+2. Full relevant checks, build, restart and browserverify lighting tone/brightness/
+   reset/undo/save/reload/freshGLB and preview/walkthrough. Publish focusedcommit.
+3. Roomfloor/wallmaterials need renderer surface-region assignment, including
+   explicit slabs, fallback floors and shared/partial walls. Read-only audit
+   complete; implementation not started.
+4. Perspective preparation,3Dwarningfocus,walkroutechecks,further structural
+   accuracy remain. Independent source/buildinggroups, reviewedannotations and
+   broader permitted sources required before final untouched evaluation.
+   Opening,adjacency,scaleerror,correctioneffort metrics remain outstanding.
+  30quarantine examples remain untouched.
 
-## Pause status
+## Previous pause status (15 October)
 
 Paused because the user explicitly said "save everything and pause",not because
 of quota.35% of the five-hour allowance remained at this pause check. All agents
@@ -299,3 +295,10 @@ with the last restarted image-preparation backend and current builtfrontend;
 it has NOT loaded the latest wall/furniture source edits. Current userbrowser
 is the saved editor jobf7c01bb7af734d088de0b63c792ce565. No additional downloads.
 The full PlanStride upgrade remains incomplete. Resume only on userrequest.
+
+## Active continuation, 22 October 2026
+
+Furniture is published and verified as above. Last usage check after101aae5:
+62% five-hour allowance remaining. Lighting is the current unfinished unit.
+No new benchmark analyses, private image redistribution or downloads.
+Read git status for exact active lighting files before resuming.
