@@ -264,22 +264,39 @@ verification from the API smoke test.
   Parentworkspace screenshot:outputs/PlanStride-furniture-preview-2026-10-22.png.
   No downloads. .DS_Store files remain untracked.
 
+## Lighting milestone completed on22October
+
+-6d89ca2 persists validatedlighting controls through productionBlender and
+  offline rendering. ShareddependencyfreeKelvin/power math preservesdefaults,
+  exportpower appliedafterclamps inallmodes.61newtests+3APIsavecases.
+-9819644 provideswarm/neutral/cool,25–200%brightness,reset,undo/drafts and
+  sharedsavedlighting inpreview/walkthrough; legacycustomvalues retained.
+  Both commits pushed. Guide:docs/lighting-editing.md.
+- FullPython784passed/9optional skips,Ruff,mypy85passed; frontend49tests,
+  typecheck,productionbuild passed. Browserwarm2x,undo/redo,reset/undo,save,
+  reload,freshBlenderGLB,preview+walkthrough verified.
+- Realplanjob4536f1c93118459ea18a624265bbadcf:layout+furniture unchanged;
+  all16exportedlights exactly2xintensity andwarmer; glTFmeshes/accessors
+  identical. Evidence:outputs/lighting-qa-2026-10-22/verification.json.
+  No fullfinalbake repeated; allmode lightpowerpaths tested. Quality40%review
+  required remains,not structuralaccuracy certification.
+- ServerPID4777 runs latestbackend at127.0.0.1:8001,AI disabled. No downloads.
+
 ## Exact next steps
 
-1. Finish saved lighting controls now in progress. Backend and frontend agents
-   implement a persistent lighting contract, warm/neutral/cool and brightness,
-   default-look compatibility, history/draft/save support and renderer parity.
-   Do not claim this incomplete unit is published yet.
-2. Full relevant checks, build, restart and browserverify lighting tone/brightness/
-   reset/undo/save/reload/freshGLB and preview/walkthrough. Publish focusedcommit.
+1. Complete frontend3D warningfocus nowinprogress. Existing2Dwarningfocus
+   remains. Add savedfindinglink topreview,resolve verifiedobjectgeometry,
+   visiblemarker+camera framing; explicit no-location/stale behavior and no
+   sourcegeometry or GLBmaterial mutation. Dirtyeditor mustsavebefore linking.
+2. Relevant frontendchecks/build andbrowserverify located/unlocated/stale
+   findings, clear/resetview and preservation ofnormalpreview. Publishfeature.
 3. Roomfloor/wallmaterials need renderer surface-region assignment, including
-   explicit slabs, fallback floors and shared/partial walls. Read-only audit
-   complete; implementation not started.
-4. Perspective preparation,3Dwarningfocus,walkroutechecks,further structural
-   accuracy remain. Independent source/buildinggroups, reviewedannotations and
-   broader permitted sources required before final untouched evaluation.
-   Opening,adjacency,scaleerror,correctioneffort metrics remain outstanding.
-  30quarantine examples remain untouched.
+   explicit slabs,fallbackfloors,shared/partialwalls. Read-onlyaudit complete;
+   implementation notstarted.
+4. Perspectivepreparation,walkroutechecks,further structuralaccuracy remain.
+   Independent source/buildinggroups,reviewedannotations andbroaderpermitted
+   sources required beforefinaluntouchedevaluation. Opening,adjacency,scaleerror,
+   correctioneffort metrics outstanding.30quarantine examples remainuntouched.
 
 ## Previous pause status (15 October)
 
@@ -298,7 +315,7 @@ The full PlanStride upgrade remains incomplete. Resume only on userrequest.
 
 ## Active continuation, 22 October 2026
 
-Furniture is published and verified as above. Last usage check after101aae5:
-62% five-hour allowance remaining. Lighting is the current unfinished unit.
-No new benchmark analyses, private image redistribution or downloads.
-Read git status for exact active lighting files before resuming.
+Furniture andlighting published/verified asabove. Lastusagecheck after9819644:
+36%five-hourallowance remaining.3Dwarningfocus iscurrentunfinishedunit,frontend
+only. Readgitstatus forexactactivefiles. Nonewbenchmarkanalyses,privateimage
+redistribution ordownloads.
