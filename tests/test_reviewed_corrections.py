@@ -16,6 +16,7 @@ from architecture_walkthrough.geometry.models import (
     DoorOpening,
     FloorPlanModel,
     FurniturePlacement,
+    LightingSettings,
     Point2D,
     RoomPolygon,
     ValidationIssue,
@@ -82,7 +83,7 @@ def _save_reviewed_job(
     return job_id, job_dir
 
 
-@pytest.mark.parametrize("edit", ["label", "furniture"])
+@pytest.mark.parametrize("edit", ["label", "furniture", "lighting"])
 def test_non_geometric_save_preserves_reviewed_open_living_floor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, edit: str
 ) -> None:
@@ -93,12 +94,14 @@ def test_non_geometric_save_preserves_reviewed_open_living_floor(
     edited = original.model_copy(deep=True)
     if edit == "label":
         edited.rooms[1].name = "Family room"
-    else:
+    elif edit == "furniture":
         edited.furniture.append(
             FurniturePlacement(
                 category="sofa", center=Point2D(x=6, y=2), width_m=1.8, depth_m=0.8
             )
         )
+    else:
+        edited.lighting = LightingSettings(color_temperature=3000, brightness=1.5)
     # Array ordering and presentation metadata do not constitute a geometry change.
     edited.walls.reverse()
     edited.metadata = {}
@@ -114,6 +117,7 @@ def test_non_geometric_save_preserves_reviewed_open_living_floor(
         ]
         assert corrected.rooms[1].name == edited.rooms[1].name
         assert corrected.furniture == edited.furniture
+        assert corrected.lighting == edited.lighting
         assert corrected.metadata["geometry_origin"] == "reviewed_source_trace"
         assert not corrected.metadata.get("reviewed_source_trace_invalidated")
         assert "reviewed_trace_invalidated" not in {
@@ -174,7 +178,7 @@ def _inferred_open_living_plan() -> FloorPlanModel:
 
 
 @pytest.mark.parametrize("first_save", [False, True])
-@pytest.mark.parametrize("edit", ["label", "furniture"])
+@pytest.mark.parametrize("edit", ["label", "furniture", "lighting"])
 def test_non_geometric_save_preserves_inferred_floor_and_warning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first_save: bool, edit: str
 ) -> None:
@@ -185,12 +189,14 @@ def test_non_geometric_save_preserves_inferred_floor_and_warning(
     edited = original.model_copy(deep=True)
     if edit == "label":
         edited.rooms[1].name = "Family room"
-    else:
+    elif edit == "furniture":
         edited.furniture.append(
             FurniturePlacement(
                 category="sofa", center=Point2D(x=6, y=2), width_m=1.8, depth_m=0.8
             )
         )
+    else:
+        edited.lighting = LightingSettings(color_temperature=6500, brightness=0.5)
     edited.metadata = {"geometry_origin": "reviewed_source_trace"}
     edited.rooms[1].evidence_source = "reviewed_source_trace"
     edited.rooms[1].confidence = 1.0
@@ -204,6 +210,7 @@ def test_non_geometric_save_preserves_inferred_floor_and_warning(
     assert [room.points for room in corrected.rooms] == [room.points for room in original.rooms]
     assert corrected.rooms[1].name == edited.rooms[1].name
     assert corrected.furniture == edited.furniture
+    assert corrected.lighting == edited.lighting
     assert corrected.rooms[1].evidence_source == "inferred_open_floor_boundary"
     assert corrected.rooms[1].confidence == 0.65
     assert corrected.metadata["floor_boundary_inferences"] == original.metadata["floor_boundary_inferences"]

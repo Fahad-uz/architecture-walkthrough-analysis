@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import runpy
 import sys
 from pathlib import Path
 
@@ -41,6 +42,12 @@ def parse_args() -> argparse.Namespace:
 
 ARGS = parse_args()
 PLAN = json.loads(Path(ARGS.floorplan).read_text(encoding="utf-8"))
+# Load the server's exact, dependency-free lighting math. Blender has its own
+# Python environment, so importing the server package would require Pydantic.
+effective_lighting = runpy.run_path(
+    str(Path(__file__).resolve().parent.parent / "lighting_values.py")
+)["effective_lighting"]
+LIGHTING = effective_lighting(PLAN.get("lighting") or {})
 MATERIAL_PLAN = (
     (PLAN.get("metadata") or {}).get("blender_material_plan") or {}
 )
@@ -1764,6 +1771,8 @@ def room_light_positions(points: list[dict]) -> list[tuple[float, float]]:
 
 
 def build_lighting() -> None:
+    power = LIGHTING["power_factor"]
+    bpy.context.scene.view_settings.exposure = LIGHTING["exposure"]
     world = bpy.data.worlds.new("World")
     bpy.context.scene.world = world
     world.use_nodes = True
@@ -1780,13 +1789,20 @@ def build_lighting() -> None:
         sky.sun_elevation = math.radians(40)
         sky.sun_rotation = math.radians(135)
     background = nodes.new("ShaderNodeBackground")
-    background.inputs["Strength"].default_value = 0.04
+    background.inputs["Strength"].default_value = 0.04 * power
+    tint = nodes.new("ShaderNodeMixRGB")
+    tint.blend_type = "MULTIPLY"
+    tint.inputs[0].default_value = 1.0
+    tint.inputs[2].default_value = (*LIGHTING["color_scale"], 1.0)
     output = nodes.new("ShaderNodeOutputWorld")
-    links.new(sky.outputs["Color"], background.inputs["Color"])
+    links.new(sky.outputs["Color"], tint.inputs[1])
+    links.new(tint.outputs["Color"], background.inputs["Color"])
     links.new(background.outputs["Background"], output.inputs["Surface"])
 
     sun_data = bpy.data.lights.new("Sun", "SUN")
-    sun_data.energy = 0.1
+    sun_data["base_energy"] = 0.1
+    sun_data.energy = 0.1 * power
+    sun_data.color = LIGHTING["color_scale"]
     sun_data.angle = math.radians(2.0)
     sun = bpy.data.objects.new("Sun", sun_data)
     sun.rotation_euler = (math.radians(50), 0.0, math.radians(135))
@@ -1806,8 +1822,10 @@ def build_lighting() -> None:
         for fixture_index, (cx, cy) in enumerate(positions):
             name = f"RoomLight_{index:03d}_{fixture_index:02d}"
             light_data = bpy.data.lights.new(name, "POINT")
-            light_data.energy = max(12.0, min(80.0, area * 6.0 / len(positions)))
-            light_data.color = (1.0, 0.90, 0.78)
+            base_energy = max(12.0, min(80.0, area * 6.0 / len(positions)))
+            light_data["base_energy"] = base_energy
+            light_data.energy = base_energy * power
+            light_data.color = LIGHTING["light_color"]
             light_data.shadow_soft_size = 0.22
             light = bpy.data.objects.new(name, light_data)
             light.location = (cx, cy, max(0.3, height - 0.3))
@@ -1822,6 +1840,7 @@ def tune_realtime_lights_for_export() -> None:
     retain procedural furniture and door leaves as ordinary PBR materials, so
     omitting lights from the GLB leaves those semantic assets almost black.
     """
+    power = LIGHTING["power_factor"]
     for obj in bpy.context.scene.objects:
         if obj.type != "LIGHT":
             continue
@@ -1831,15 +1850,18 @@ def tune_realtime_lights_for_export() -> None:
             # The glTF exporter converts Blender watts to photometric units
             # using 683 lm/W. Calibrate the exported lux/candela, not watts:
             # exporting 0.1 W/m² used to create a 68-lux browser key light.
-            light.energy = 1.2 / 683.0
+            light.energy = (1.2 / 683.0) * power
             continue
         if light.type != "POINT":
             continue
+        base_energy = float(light.get("base_energy", light.energy / power if power else 0.0))
         if MODE == "none":
-            intensity_cd = max(6.0, min(18.0, float(light.energy) * 0.30))
+            intensity_cd = max(6.0, min(18.0, base_energy * 0.30))
         else:
-            intensity_cd = max(4.0, min(12.0, float(light.energy) * 0.20))
-        light.energy = intensity_cd * (4.0 * math.pi) / 683.0
+            intensity_cd = max(4.0, min(12.0, base_energy * 0.20))
+        # Apply user power after calibration clamps; otherwise dim/bright
+        # settings can collapse to the same exported punctual-light intensity.
+        light.energy = intensity_cd * power * (4.0 * math.pi) / 683.0
 
 
 # ---------------------------------------------------------------------------

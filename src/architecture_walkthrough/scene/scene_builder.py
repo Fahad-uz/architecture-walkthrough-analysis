@@ -31,10 +31,12 @@ def build_blender_script(
     production template in no-bake mode, then adds only the animated camera and
     render settings.
     """
-    lighting = lighting or LightingSettings()
+    lighting = lighting if lighting is not None else floorplan.lighting
     runtime_config = config or AppConfig()
     registry = load_material_registry(runtime_config.textures.registry_path)
-    render_model = model_with_material_plan(floorplan, registry)
+    render_model = model_with_material_plan(
+        floorplan.model_copy(update={"lighting": lighting}), registry
+    )
     plan_data = json.dumps(render_model.model_dump(mode="json"))
     render_block = ""
     if render_frames_dir is not None:

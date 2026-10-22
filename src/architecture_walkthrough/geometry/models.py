@@ -211,6 +211,23 @@ class SceneStyleSettings(BaseModel):
     furniture_family: str = "procedural"
 
 
+class LightingSettings(BaseModel):
+    """Saved illumination controls, with the original renderer as the default.
+
+    ``intensity`` and ``exposure`` remain accepted for existing offline callers.
+    Brightness multiplies lamp and world power; exposure is a separate display
+    adjustment and must not be applied to lamp power a second time.
+    """
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    preset: str = Field(default="neutral_studio", min_length=1, max_length=64)
+    color_temperature: int = Field(default=4500, ge=1000, le=12000)
+    brightness: float = Field(default=1.0, ge=0.25, le=2.0)
+    intensity: float = Field(default=450.0, ge=0.0, le=4500.0)
+    exposure: float = Field(default=0.0, ge=-5.0, le=5.0)
+
+
 class FurniturePlacement(BaseModel):
     id: str | None = Field(default=None, min_length=1, max_length=128)
     provenance: Literal["unknown", "detected", "suggested", "user"] = "unknown"
@@ -247,6 +264,7 @@ class FloorPlanModel(BaseModel):
     material_assignments: list[MaterialAssignment] = Field(default_factory=list)
     ceiling: CeilingSettings = Field(default_factory=CeilingSettings)
     style: SceneStyleSettings = Field(default_factory=SceneStyleSettings)
+    lighting: LightingSettings = Field(default_factory=LightingSettings)
     entrance: Point2D | None = None
     camera_waypoints: list[CameraWaypoint] = Field(default_factory=list)
     scale_constraints: list[ScaleConstraintRecord] = Field(default_factory=list)
