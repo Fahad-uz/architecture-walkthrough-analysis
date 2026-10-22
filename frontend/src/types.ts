@@ -49,6 +49,14 @@ export interface CameraWaypoint {
   pause_seconds?: number;
 }
 
+export interface LightingSettings {
+  preset: string;
+  color_temperature: number;
+  brightness: number;
+  intensity: number;
+  exposure: number;
+}
+
 export interface FurniturePlacement {
   id?: string | null;
   provenance?: "unknown" | "detected" | "suggested" | "user";
@@ -101,6 +109,7 @@ export interface FloorPlanModel {
   asset_placements?: AssetPlacement[];
   entrance?: Point2D | null;
   camera_waypoints?: CameraWaypoint[];
+  lighting?: LightingSettings;
   metadata: Record<string, unknown> & { sanity_warnings?: SanityWarning[] };
   reconstruction?: { quality_state?: string; quality_score?: number };
   validation_issues?: { code: string; severity: string; message: string }[];

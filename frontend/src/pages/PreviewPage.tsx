@@ -6,11 +6,12 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Box3, NoToneMapping, Object3D, PerspectiveCamera, SRGBColorSpace, Vector3 } from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
-import { getJob, versionedGlbUrl } from "../api";
-import NeutralEnvironment from "../components/NeutralEnvironment";
+import { getEditData, getJob, versionedGlbUrl } from "../api";
+import SavedLighting, { tintedLightColor } from "../components/SavedLighting";
 import SceneErrorBoundary from "../components/SceneErrorBoundary";
 import ModelShadows from "../components/ModelShadows";
-import type { JobRecord } from "../types";
+import { effectiveLighting } from "../lighting";
+import type { FloorPlanModel, JobRecord, LightingSettings } from "../types";
 import useCoarsePointer from "../useCoarsePointer";
 
 /** Loads the GLB and frames it: orbit target = bounding-box center, camera
@@ -23,12 +24,14 @@ function FramedBuilding({
   showCeiling,
   previewLighting,
   coarsePointer,
+  lighting,
 }: {
   url: string;
   resetNonce: number;
   showCeiling: boolean;
   previewLighting: boolean;
   coarsePointer: boolean;
+  lighting?: LightingSettings;
 }) {
   const { scene } = useGLTF(url, "/draco/");
   // useGLTF caches its scene. Clone the node hierarchy so a roof visibility
@@ -45,6 +48,7 @@ function FramedBuilding({
     return target;
   }, [center]);
   const controls = useThree((s) => s.controls) as OrbitControlsImpl | null;
+  const { powerFactor, colorScale } = effectiveLighting(lighting);
 
   useEffect(() => {
     model.traverse((node) => {
@@ -82,8 +86,8 @@ function FramedBuilding({
       <directionalLight
         position={[center.x + maxDim * 0.6, center.y + maxDim, center.z + maxDim * 0.8]}
         target={sunTarget}
-        intensity={1.1}
-        color="#fff3e0"
+        intensity={1.1 * powerFactor}
+        color={tintedLightColor("#fff3e0", colorScale)}
         castShadow
         shadow-mapSize-width={coarsePointer ? 512 : 1024}
         shadow-mapSize-height={coarsePointer ? 512 : 1024}
@@ -113,6 +117,7 @@ function ModelLoadingOverlay() {
 export default function PreviewPage() {
   const { jobId = "" } = useParams();
   const [job, setJob] = useState<JobRecord | null>(null);
+  const [plan, setPlan] = useState<FloorPlanModel | null>(null);
   const [resetNonce, setResetNonce] = useState(0);
   const [showCeiling, setShowCeiling] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
@@ -123,11 +128,27 @@ export default function PreviewPage() {
   useEffect(() => {
     let cancelled = false;
     let timer: number | null = null;
+    let knownVersion: number | undefined;
+    let planLoaded = false;
     setJob(null);
+    setPlan(null);
     setRefreshError(null);
     const refresh = async () => {
       try {
         const latest = await getJob(jobId);
+        if (cancelled) return;
+        if (latest.glb_url && (!planLoaded || latest.glb_version !== knownVersion)) {
+          try {
+            const data = await getEditData(jobId);
+            if (cancelled) return;
+            setPlan(data.model);
+            knownVersion = latest.glb_version;
+            planLoaded = true;
+          } catch (error) {
+            if (!cancelled) setRefreshError(`Could not refresh the saved lighting: ${String(error)}`);
+            return;
+          }
+        }
         if (!cancelled) {
           setJob(latest);
           setRefreshError(null);
@@ -219,9 +240,7 @@ export default function PreviewPage() {
               gl={{ toneMapping: NoToneMapping, outputColorSpace: SRGBColorSpace }}
             >
               <color attach="background" args={["#c9ced3"]} />
-              <NeutralEnvironment />
-              <ambientLight intensity={0.32} />
-              <hemisphereLight intensity={0.34} color="#ffffff" groundColor="#8f9498" />
+              <SavedLighting settings={plan?.lighting} />
               <Suspense fallback={null}>
                 <FramedBuilding
                   key={sceneResetKey}
@@ -230,6 +249,7 @@ export default function PreviewPage() {
                   showCeiling={showCeiling}
                   previewLighting={job?.glb_source === "preview"}
                   coarsePointer={coarsePointer}
+                  lighting={plan?.lighting}
                 />
               </Suspense>
               <OrbitControls

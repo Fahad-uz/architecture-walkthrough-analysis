@@ -1,4 +1,5 @@
 import type { FloorPlanModel } from "./types";
+import { isLightingSettings } from "./lighting.ts";
 
 export const HISTORY_LIMIT = 50;
 export const DRAFT_VERSION_LIMIT = 5;
@@ -80,6 +81,7 @@ export function isDraftModel(value: unknown): value is FloorPlanModel {
   if (!object(value) || typeof value.schema_version !== "string" || typeof value.coordinate_system !== "string") return false;
   if (value.pixels_per_metre !== null && (!finite(value.pixels_per_metre) || value.pixels_per_metre <= 0)) return false;
   if (!object(value.metadata)) return false;
+  if (value.lighting !== undefined && !isLightingSettings(value.lighting)) return false;
   const wall = (item: unknown) => object(item) && point(item.start) && point(item.end) &&
     finite(item.thickness_m) && finite(item.height_m) && typeof item.external === "boolean";
   const opening = (item: unknown) => object(item) && point(item.center) && finite(item.width_m) && finite(item.height_m);

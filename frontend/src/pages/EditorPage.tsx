@@ -12,6 +12,7 @@ import {
   type ReviewIssue,
 } from "../editorWarnings";
 import { addPosition, createFurniture, FURNITURE_PRESETS, furnitureFootprint, furnitureLabel, overlapWarnings } from "../editorFurniture";
+import { changeLighting, DEFAULT_LIGHTING, LIGHTING_TONES, lightingSettings } from "../lighting";
 import type { FloorPlanModel, FurniturePlacement, Opening, Point2D, QualityReport, RoomPolygon, WallSegment } from "../types";
 
 type Tool = "select" | "wall" | "door" | "window" | "scale";
@@ -863,6 +864,8 @@ export default function EditorPage() {
 
   const selectedItem: any = selection && model ? (model as any)[selection.kind]?.[selection.index] : null;
   const selectedFurniture = selection?.kind === "furniture" ? selectedItem as FurniturePlacement | undefined : undefined;
+  const lighting = lightingSettings(model?.lighting);
+  const lightingTone = LIGHTING_TONES.find((tone) => tone.temperature === lighting.color_temperature)?.value ?? "custom";
   const furnitureWarnings = useMemo(() => model && selectedFurniture ? overlapWarnings(model, selectedFurniture) : [], [model, selectedFurniture]);
   const reviewIssues = useMemo(() => model ? collectReviewIssues(model, report?.issues) : [], [model, report]);
   const focusedIssue = reviewIssues.find((issue) => issue.id === focusedIssueId);
@@ -1326,6 +1329,45 @@ export default function EditorPage() {
               </select>
             </label>
           )}
+        </div>
+        <div className="panel">
+          <strong style={{ fontSize: 13 }}>Lighting</strong>
+          <label>
+            Light tone
+            <select value={lightingTone} disabled={!model || saving || generating} onChange={(event) => {
+              const tone = LIGHTING_TONES.find((choice) => choice.value === event.target.value);
+              if (tone) update((m) => ({ ...m, lighting: changeLighting(m.lighting, { color_temperature: tone.temperature }) }));
+            }}>
+              {lightingTone === "custom" && <option value="custom">Custom ({lighting.color_temperature} K)</option>}
+              {LIGHTING_TONES.map((tone) => <option key={tone.value} value={tone.value}>{tone.label}</option>)}
+            </select>
+          </label>
+          <label>
+            Brightness ({Math.round(lighting.brightness * 100)}%)
+            <input type="range" min={0.25} max={2} step={0.05} value={lighting.brightness}
+              disabled={!model || saving || generating}
+              aria-label="Lighting brightness"
+              onFocus={() => { dragGroupRef.current = false; }}
+              onBlur={() => { dragGroupRef.current = null; }}
+              onPointerDown={() => { dragGroupRef.current = false; }}
+              onPointerUp={() => { dragGroupRef.current = null; }}
+              onPointerCancel={() => { dragGroupRef.current = null; }}
+              onKeyDown={(event) => {
+                if (!event.repeat && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) dragGroupRef.current = false;
+              }}
+              onKeyUp={() => { dragGroupRef.current = null; }}
+              onChange={(event) => {
+                const brightness = Number(event.target.value);
+                if (Number.isFinite(brightness) && brightness >= 0.25 && brightness <= 2) {
+                  update((m) => ({ ...m, lighting: changeLighting(m.lighting, { brightness }) }));
+                }
+              }} />
+          </label>
+          <button type="button" disabled={!model || saving || generating} onClick={() => {
+            dragGroupRef.current = null;
+            update((m) => ({ ...m, lighting: { ...DEFAULT_LIGHTING } }));
+          }}>Reset lighting</button>
+          <p style={{ fontSize: 12, color: "#667078" }}>Save changes to update the preview and walkthrough. Generate 3D again to rebuild baked lighting.</p>
         </div>
         {selectedItem && (
           <div className="panel">

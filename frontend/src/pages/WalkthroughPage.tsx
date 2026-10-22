@@ -22,7 +22,7 @@ import {
 } from "three";
 import { MeshBVH, StaticGeometryGenerator } from "three-mesh-bvh";
 import { getEditData, getJob, versionedGlbUrl } from "../api";
-import NeutralEnvironment from "../components/NeutralEnvironment";
+import SavedLighting, { tintedLightColor } from "../components/SavedLighting";
 import SceneErrorBoundary from "../components/SceneErrorBoundary";
 import ModelShadows from "../components/ModelShadows";
 import type {
@@ -32,6 +32,7 @@ import type {
 } from "../types";
 import useCoarsePointer from "../useCoarsePointer";
 import { CAPSULE_RADIUS, furnitureProxyHeight, insideFurniture, interestingViewTarget, isSafePlanPoint, isStructuralColliderName, isWalkableFurniture, openViewTarget, roomArea, safeRoomPoint, resolveFurniture } from "../navigation";
+import { effectiveLighting } from "../lighting";
 
 const EYE_HEIGHT = 1.6;
 const WALK_SPEED = 1.4; // m/s
@@ -471,6 +472,7 @@ export default function WalkthroughPage() {
   const [resetNonce, setResetNonce] = useState(0);
   const joystick = useRef({ x: 0, y: 0 });
   const coarsePointer = useCoarsePointer();
+  const lighting = effectiveLighting(plan?.lighting);
   // Versioned URL: never render a stale cached GLB after a Blender rebuild.
   const url = job?.glb_url ? versionedGlbUrl(jobId, job.glb_version) : null;
   // Associate readiness with the loaded version. Clearing it in a parent
@@ -694,11 +696,9 @@ export default function WalkthroughPage() {
             gl={{ toneMapping: NoToneMapping, outputColorSpace: SRGBColorSpace }}
           >
             <color attach="background" args={["#c9ced3"]} />
-            <NeutralEnvironment />
-            <ambientLight intensity={0.32} />
-            <hemisphereLight intensity={0.34} color="#ffffff" groundColor="#8f9498" />
+            <SavedLighting settings={plan?.lighting} />
             {job?.glb_source === "preview" && (
-              <directionalLight position={[6, 9, 4]} intensity={0.9} />
+              <directionalLight position={[6, 9, 4]} intensity={0.9 * lighting.powerFactor} color={tintedLightColor("#ffffff", lighting.colorScale)} />
             )}
             <Suspense fallback={null}>
               <Scene
