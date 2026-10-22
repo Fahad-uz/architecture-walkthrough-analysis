@@ -126,6 +126,7 @@ class MaterialAssignment(BaseModel):
 
 
 class AssetPlacement(BaseModel):
+    furniture_id: str | None = Field(default=None, min_length=1, max_length=128)
     category: str
     center: Point2D
     width_m: PositiveFloat
@@ -211,6 +212,8 @@ class SceneStyleSettings(BaseModel):
 
 
 class FurniturePlacement(BaseModel):
+    id: str | None = Field(default=None, min_length=1, max_length=128)
+    provenance: Literal["unknown", "detected", "suggested", "user"] = "unknown"
     category: str
     center: Point2D
     width_m: PositiveFloat
@@ -288,6 +291,15 @@ class FloorPlanModel(BaseModel):
             if window.wall_id in legacy and window.wall_id not in explicit else window
             for window in self.windows
         ]
+        return self
+
+    @model_validator(mode="after")
+    def normalize_legacy_furniture_assets(self) -> "FloorPlanModel":
+        from architecture_walkthrough.geometry.furniture import link_legacy_furniture_assets
+
+        self.furniture, self.asset_placements = link_legacy_furniture_assets(
+            self.furniture, self.asset_placements,
+        )
         return self
 
     def save_json(self, path: Path) -> None:

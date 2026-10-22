@@ -50,15 +50,19 @@ export interface CameraWaypoint {
 }
 
 export interface FurniturePlacement {
+  id?: string | null;
+  provenance?: "unknown" | "detected" | "suggested" | "user";
   category: string;
   center: Point2D;
   width_m: number;
   depth_m: number;
   rotation_deg?: number;
   height_m?: number | null;
+  [key: string]: unknown;
 }
 
 export interface AssetPlacement extends FurniturePlacement {
+  furniture_id?: string | null;
   height_m?: number | null;
   asset_preset?: string | null;
 }

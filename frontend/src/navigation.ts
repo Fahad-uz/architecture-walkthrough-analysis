@@ -1,9 +1,9 @@
-import type { FurniturePlacement, Point2D, RoomPolygon, WallSegment } from "./types";
+import type { AssetPlacement, FurniturePlacement, Point2D, RoomPolygon, WallSegment } from "./types";
 
 export const CAPSULE_RADIUS = 0.3;
 
 /** The asset list may be the detailed representation of an existing item. */
-export function resolveFurniture(furniture: FurniturePlacement[], assets: FurniturePlacement[]): FurniturePlacement[] {
+export function resolveFurniture(furniture: FurniturePlacement[], assets: AssetPlacement[]): FurniturePlacement[] {
   const familyNames = new Set(["bed", "sofa", "couch", "table", "chair", "plant", "rug", "carpet", "wardrobe", "cabinet", "sink", "stove"]);
   const key = (item: FurniturePlacement) => {
     let family = item.category.toLowerCase().split(/[^a-z0-9]+/).find((token) => familyNames.has(token)) ?? item.category.toLowerCase();
@@ -12,8 +12,18 @@ export function resolveFurniture(furniture: FurniturePlacement[], assets: Furnit
     return [family, ...[item.center.x, item.center.y, item.width_m, item.depth_m, (((item.rotation_deg ?? 0) % 360) + 360) % 360].map((value) => value.toFixed(5))].join(":");
   };
   const result = [...furniture];
+  const byId = new Map(result.flatMap((item, index) => item.id ? [[item.id, index] as const] : []));
   const occupied = new Map(result.map((item, index) => [key(item), index]));
   for (const item of assets) {
+    if (item.furniture_id != null) {
+      const index = byId.get(item.furniture_id);
+      // A linked asset follows its editable object, including deletion. Its
+      // original footprint must never reappear as a second collision obstacle.
+      if (index != null && result[index].height_m == null && item.height_m != null) {
+        result[index] = { ...result[index], height_m: item.height_m };
+      }
+      continue;
+    }
     const identity = key(item);
     const index = occupied.get(identity);
     if (index == null) {

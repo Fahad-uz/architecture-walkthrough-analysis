@@ -65,9 +65,10 @@ def test_explicit_asset_placements_render_once_without_mutating_saved_model() ->
     assert model.model_dump()["furniture"] == before["furniture"]
     empty = FloorPlanModel()
     assert render_furniture(empty) == []
-    assert len(render_furniture(FloorPlanModel(asset_placements=model.asset_placements))) == 3
+    standalone_assets = [asset.model_copy(update={"furniture_id": None}) for asset in model.asset_placements]
+    assert len(render_furniture(FloorPlanModel(asset_placements=standalone_assets))) == 3
     rug = FurniturePlacement(category="rug", center=resolved[0].center, width_m=resolved[0].width_m, depth_m=resolved[0].depth_m)
-    assert len(render_furniture(FloorPlanModel(furniture=[rug], asset_placements=[model.asset_placements[0]]))) == 2
+    assert len(render_furniture(FloorPlanModel(furniture=[rug], asset_placements=[standalone_assets[0]]))) == 2
 
 
 def test_relative_texture_files_reach_renderer_and_missing_maps_fall_back(tmp_path: Path) -> None:

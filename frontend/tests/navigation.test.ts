@@ -84,3 +84,14 @@ test("both baked and preview walls collide, but decorative wall caps do not", ()
     assert.equal(isStructuralColliderName(name), false, name);
   }
 });
+
+test("linked assets follow edited furniture and cannot resurrect deleted collision obstacles", () => {
+  const sofa = { id: "sofa-1", category: "sofa", center: { x: 4, y: 4 }, width_m: 2.1, depth_m: 0.9, rotation_deg: 45, height_m: 0.8 };
+  const asset = { furniture_id: "sofa-1", category: "sofa_3_seat", center: { x: 1, y: 1 }, width_m: 1.8, depth_m: 0.7, height_m: 1.1 };
+  assert.deepEqual(resolveFurniture([sofa], [asset]), [sofa]);
+  assert.deepEqual(resolveFurniture([], [asset]), []);
+  assert.deepEqual(resolveFurniture([{ ...sofa, height_m: null }], [asset]), [{ ...sofa, height_m: 1.1 }]);
+  assert.deepEqual(resolveFurniture([], [{ ...asset, furniture_id: null }]), [{ ...asset, furniture_id: null }]);
+  assert.equal(insideFurniture(asset.center, resolveFurniture([sofa], [asset])[0]), false);
+  assert.equal(insideFurniture(sofa.center, resolveFurniture([sofa], [asset])[0]), true);
+});

@@ -11,6 +11,7 @@ from shapely.geometry.base import BaseGeometry
 from shapely.ops import polylabel, unary_union
 from shapely.prepared import prep
 
+from architecture_walkthrough.geometry.furniture import resolve_furniture
 from architecture_walkthrough.geometry.models import (
     AssetPlacement,
     CameraWaypoint,
@@ -256,11 +257,8 @@ def _build_free_space(
         obstacles.append(wall_footprint.buffer(clearance_m))
 
     obstacles.extend(_door_leaf_obstacles(model, clearance_m))
-    for placement in model.furniture:
+    for placement in resolve_furniture(model):
         if (obstacle := _placement_obstacle(placement, clearance_m)) is not None:
-            obstacles.append(obstacle)
-    for asset_placement in model.asset_placements:
-        if (obstacle := _placement_obstacle(asset_placement, clearance_m)) is not None:
             obstacles.append(obstacle)
 
     free_space = domain
