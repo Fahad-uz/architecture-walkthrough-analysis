@@ -1,7 +1,7 @@
 import Konva from "konva";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Circle, Group, Image as KonvaImage, Layer, Line, Stage, Text } from "react-konva";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { generateModel, getEditData, getJob, saveCorrections } from "../api";
 import {
   appendDraft, createHistory, draftStorageKey, parseDraft, recordEdit, redoEdit, undoEdit, writeDraft,
@@ -13,6 +13,7 @@ import {
 } from "../editorWarnings";
 import { addPosition, createFurniture, FURNITURE_PRESETS, furnitureFootprint, furnitureLabel, overlapWarnings } from "../editorFurniture";
 import { changeLighting, DEFAULT_LIGHTING, LIGHTING_TONES, lightingSettings } from "../lighting";
+import { findingPath, review3DLinkState, reviewIssue3DFocus } from "../review3D";
 import type { FloorPlanModel, FurniturePlacement, Opening, Point2D, QualityReport, RoomPolygon, WallSegment } from "../types";
 
 type Tool = "select" | "wall" | "door" | "window" | "scale";
@@ -246,6 +247,8 @@ function FurnitureNumberInput({ label, value, min, step, onChange, onStart, onEn
 
 export default function EditorPage() {
   const { jobId = "" } = useParams();
+  const [searchParams] = useSearchParams();
+  const requestedFinding = searchParams.get("finding");
   const [model, setModel] = useState<FloorPlanModel | null>(null);
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [tool, setTool] = useState<Tool>("select");
@@ -256,6 +259,8 @@ export default function EditorPage() {
   const [status, setStatus] = useState("loading…");
   const [report, setReport] = useState<QualityReport | null>(null);
   const [focusedIssueId, setFocusedIssueId] = useState<string | null>(null);
+  const [savedPreviewAvailable, setSavedPreviewAvailable] = useState(false);
+  const findingRequestRef = useRef<string | null>(null);
   // Iterate quickly while geometry is still under review. A final bake is an
   // explicit last step because it can take tens of minutes.
   const [bakeMode, setBakeMode] = useState<BakeMode>("draft");
@@ -339,12 +344,17 @@ export default function EditorPage() {
     setPending(null);
     setReport(null);
     setFocusedIssueId(null);
+    setSavedPreviewAvailable(false);
+    findingRequestRef.current = null;
     setDirty(false);
     setSaving(false);
     setGenerating(false);
     revisionRef.current = 0;
     savePromiseRef.current = null;
     setStatus("loading…");
+    void getJob(jobId).then((job) => {
+      if (!cancelled) setSavedPreviewAvailable(!!job.glb_url);
+    }).catch(() => { /* A save can refresh availability after a transient failure. */ });
     void (async () => {
       try {
         const data = await getEditData(jobId);
@@ -692,6 +702,9 @@ export default function EditorPage() {
       try {
         const result = await saveCorrections(savedJobId, correction);
         if (currentJobIdRef.current !== savedJobId || sessionRef.current !== savedSession) return null;
+        void getJob(savedJobId).then((job) => {
+          if (currentJobIdRef.current === savedJobId && sessionRef.current === savedSession) setSavedPreviewAvailable(!!job.glb_url);
+        }).catch(() => { /* Keep the last verified model availability. */ });
         savedModelRef.current = JSON.stringify(result.model);
         if (revisionRef.current !== savedRevision) {
           dirtyRef.current = JSON.stringify(historyRef.current?.present) !== savedModelRef.current;
@@ -781,6 +794,7 @@ export default function EditorPage() {
           if (job.status === "model_generated") {
             pollRef.current = null;
             setGenerating(false);
+            setSavedPreviewAvailable(!!job.glb_url);
             setStatus("3D model ready — open the preview page");
             return;
           } else if (["blocked", "generation_failed"].includes(job.status)) {
@@ -869,6 +883,8 @@ export default function EditorPage() {
   const furnitureWarnings = useMemo(() => model && selectedFurniture ? overlapWarnings(model, selectedFurniture) : [], [model, selectedFurniture]);
   const reviewIssues = useMemo(() => model ? collectReviewIssues(model, report?.issues) : [], [model, report]);
   const focusedIssue = reviewIssues.find((issue) => issue.id === focusedIssueId);
+  const focused3D = useMemo(() => model && focusedIssue ? reviewIssue3DFocus(model, focusedIssue) : null, [model, focusedIssue]);
+  const focused3DLink = review3DLinkState(focused3D, { dirty, saving, modelAvailable: savedPreviewAvailable });
   const blockingIssueCount = report?.issues.filter((issue) => ["error", "severe"].includes(issue.severity)).length ?? 0;
 
   const focusIssue = (issue: ReviewIssue) => {
@@ -893,6 +909,18 @@ export default function EditorPage() {
     setView({ scale, x: stageSize.width / 2 - (minX + maxX) / 2 * scale, y: stageSize.height / 2 - (minY + maxY) / 2 * scale });
     setStatus(issueGuidance(issue));
   };
+
+  useEffect(() => {
+    if (!requestedFinding) { findingRequestRef.current = null; return; }
+    if (!historyRef.current || !model || !image || findingRequestRef.current === requestedFinding) return;
+    findingRequestRef.current = requestedFinding;
+    const issue = reviewIssues.find((candidate) => candidate.id === requestedFinding);
+    if (issue) focusIssue(issue);
+    else {
+      setFocusedIssueId(null);
+      setStatus("This finding is no longer present in the saved plan. Review the current findings below.");
+    }
+  }, [requestedFinding, model, image, reviewIssues]);
 
   return (
     <div className="editor-layout">
@@ -1599,7 +1627,12 @@ export default function EditorPage() {
                     <div style={{ fontSize: 12, marginTop: 4 }}>
                       {located ? "Select the finding to focus its source location." : "Whole-plan finding or unavailable object; no exact source location is provided."}
                     </div>
-                    {focusedIssueId === issue.id && <p style={{ fontSize: 12 }}>{issueGuidance(issue)}</p>}
+                    {focusedIssueId === issue.id && <>
+                      <p style={{ fontSize: 12 }}>{issueGuidance(issue)}</p>
+                      {focused3DLink.enabled
+                        ? <Link className="button-link" to={findingPath(jobId, "preview", issue.id)}>View in 3D</Link>
+                        : <p style={{ fontSize: 12 }}>{focused3DLink.reason}</p>}
+                    </>}
                     <label className="row" style={{ display: "flex", fontSize: 12 }}>
                       <input type="checkbox" checked={state === "confirmed"}
                         onChange={(event) => update((current) => acknowledgeIssue(current, issue, event.target.checked))} />

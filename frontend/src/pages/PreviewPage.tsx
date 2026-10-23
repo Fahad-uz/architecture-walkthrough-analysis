@@ -3,15 +3,18 @@ import { Canvas, useThree } from "@react-three/fiber";
 import { EffectComposer, N8AO, SMAA, ToneMapping } from "@react-three/postprocessing";
 import { ToneMappingMode } from "postprocessing";
 import { Suspense, useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { Box3, NoToneMapping, Object3D, PerspectiveCamera, SRGBColorSpace, Vector3 } from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { getEditData, getJob, versionedGlbUrl } from "../api";
 import SavedLighting, { tintedLightColor } from "../components/SavedLighting";
 import SceneErrorBoundary from "../components/SceneErrorBoundary";
 import ModelShadows from "../components/ModelShadows";
+import ReviewFocusOverlay from "../components/ReviewFocusOverlay";
 import { effectiveLighting } from "../lighting";
-import type { FloorPlanModel, JobRecord, LightingSettings } from "../types";
+import { findingPath, resolveReview3DFocus, type Review3DFocus } from "../review3D";
+import { readSavedPreview, type SavedPreview } from "../savedPreview";
+import type { JobRecord, LightingSettings } from "../types";
 import useCoarsePointer from "../useCoarsePointer";
 
 /** Loads the GLB and frames it: orbit target = bounding-box center, camera
@@ -25,6 +28,7 @@ function FramedBuilding({
   previewLighting,
   coarsePointer,
   lighting,
+  reviewFocus,
 }: {
   url: string;
   resetNonce: number;
@@ -32,6 +36,7 @@ function FramedBuilding({
   previewLighting: boolean;
   coarsePointer: boolean;
   lighting?: LightingSettings;
+  reviewFocus?: Review3DFocus | null;
 }) {
   const { scene } = useGLTF(url, "/draco/");
   // useGLTF caches its scene. Clone the node hierarchy so a roof visibility
@@ -49,6 +54,8 @@ function FramedBuilding({
   }, [center]);
   const controls = useThree((s) => s.controls) as OrbitControlsImpl | null;
   const { powerFactor, colorScale } = effectiveLighting(lighting);
+  const focusBounds = useMemo(() => reviewFocus?.bounds
+    ? new Box3(new Vector3(...reviewFocus.bounds.min), new Vector3(...reviewFocus.bounds.max)) : null, [reviewFocus]);
 
   useEffect(() => {
     model.traverse((node) => {
@@ -59,28 +66,33 @@ function FramedBuilding({
   useEffect(() => {
     if (!controls) return;
     if (bounds.isEmpty()) return;
-    const radius = bounds.getSize(new Vector3()).length() / 2;
-    let distance = maxDim * 1.5;
+    const framedBounds = focusBounds ?? bounds;
+    const framedCenter = framedBounds.getCenter(new Vector3());
+    const framedSize = Math.max(...framedBounds.getSize(new Vector3()).toArray(), 1);
+    const boundsRadius = framedBounds.getSize(new Vector3()).length() / 2;
+    const radius = focusBounds ? Math.max(boundsRadius, 0.75) : boundsRadius;
+    let distance = framedSize * 1.5;
     if (camera instanceof PerspectiveCamera) {
       const verticalFov = camera.fov * Math.PI / 180;
       const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * viewportSize.width / Math.max(viewportSize.height, 1));
       distance = radius / Math.sin(Math.min(verticalFov, horizontalFov) / 2) * 1.12;
     }
-    camera.position.copy(center).add(new Vector3(0.65, 1.2, 0.75).normalize().multiplyScalar(distance));
+    camera.position.copy(framedCenter).add(new Vector3(0.65, 1.2, 0.75).normalize().multiplyScalar(distance));
     if (camera instanceof PerspectiveCamera) {
       camera.near = Math.max(0.01, distance / 1000);
-      camera.far = distance * 40;
+      camera.far = Math.max(distance * 40, maxDim * 40);
       camera.updateProjectionMatrix();
     }
-    controls.target.copy(center);
-    controls.minDistance = maxDim * 0.15;
+    controls.target.copy(framedCenter);
+    controls.minDistance = framedSize * 0.15;
     controls.maxDistance = Math.max(maxDim * 6, distance * 2);
     controls.update();
-  }, [bounds, center, maxDim, controls, camera, resetNonce, viewportSize.width, viewportSize.height]);
+  }, [bounds, focusBounds, center, maxDim, controls, camera, resetNonce, viewportSize.width, viewportSize.height]);
 
   return <>
     <primitive object={model} />
     <ModelShadows model={model} coarsePointer={coarsePointer} revision={Number(showCeiling)} />
+    {reviewFocus?.bounds && <ReviewFocusOverlay focus={reviewFocus} />}
     {previewLighting && <>
       <primitive object={sunTarget} />
       <directionalLight
@@ -116,45 +128,41 @@ function ModelLoadingOverlay() {
 
 export default function PreviewPage() {
   const { jobId = "" } = useParams();
-  const [job, setJob] = useState<JobRecord | null>(null);
-  const [plan, setPlan] = useState<FloorPlanModel | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const findingRequested = searchParams.has("finding");
+  const findingId = searchParams.get("finding") ?? "";
+  const [savedPreview, setSavedPreview] = useState<SavedPreview | null>(null);
+  const [latestJob, setLatestJob] = useState<JobRecord | null>(null);
+  const job = savedPreview?.job ?? null;
+  const plan = savedPreview?.plan ?? null;
   const [resetNonce, setResetNonce] = useState(0);
   const [showCeiling, setShowCeiling] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [sceneError, setSceneError] = useState<string | null>(null);
   const [sceneRetry, setSceneRetry] = useState(0);
   const coarsePointer = useCoarsePointer();
+  const reviewFocus = useMemo(() => findingRequested && plan ? resolveReview3DFocus(plan, findingId) : null, [findingRequested, findingId, plan]);
 
   useEffect(() => {
     let cancelled = false;
     let timer: number | null = null;
-    let knownVersion: number | undefined;
-    let planLoaded = false;
-    setJob(null);
-    setPlan(null);
+    let coherentPreview: SavedPreview | null = null;
+    setSavedPreview(null);
+    setLatestJob(null);
     setRefreshError(null);
     const refresh = async () => {
       try {
-        const latest = await getJob(jobId);
+        const result = await readSavedPreview(coherentPreview, {
+          getJob: () => getJob(jobId),
+          getPlan: () => getEditData(jobId),
+        });
         if (cancelled) return;
-        if (latest.glb_url && (!planLoaded || latest.glb_version !== knownVersion)) {
-          try {
-            const data = await getEditData(jobId);
-            if (cancelled) return;
-            setPlan(data.model);
-            knownVersion = latest.glb_version;
-            planLoaded = true;
-          } catch (error) {
-            if (!cancelled) setRefreshError(`Could not refresh the saved lighting: ${String(error)}`);
-            return;
-          }
-        }
-        if (!cancelled) {
-          setJob(latest);
-          setRefreshError(null);
-        }
+        coherentPreview = result.snapshot;
+        setSavedPreview(result.snapshot);
+        setLatestJob(result.latestJob);
+        setRefreshError(null);
       } catch (error) {
-        if (!cancelled) setRefreshError(`Could not refresh model status: ${String(error)}`);
+        if (!cancelled) setRefreshError(`Could not refresh the saved preview: ${String(error)}`);
       } finally {
         if (!cancelled) timer = window.setTimeout(() => void refresh(), 2500);
       }
@@ -184,8 +192,8 @@ export default function PreviewPage() {
       <div className="preview-toolbar" aria-label="Model preview controls">
         <Link to={`/jobs/${jobId}/edit`}>← Editor</Link>
         <span className="preview-status" role="status" aria-live="polite">
-          {job
-            ? `${job.status}${job.glb_source ? ` · model: ${job.glb_source}` : ""} — ${job.message}`
+          {latestJob
+            ? `${latestJob.status}${job?.glb_source ? ` · model: ${job.glb_source}` : ""} — ${latestJob.message}`
             : refreshError ?? "Loading model status…"}
         </span>
         <span style={{ flex: 1 }} />
@@ -210,6 +218,23 @@ export default function PreviewPage() {
             </Link>
           </>
         )}
+        {findingRequested && <div role="status" aria-label="3D finding review" style={{ flexBasis: "100%", padding: "8px 10px", background: "#fff4df", borderLeft: "4px solid #ff8a00" }}>
+          <strong>Saved plan finding</strong>
+          {reviewFocus?.issue && <div>{reviewFocus.issue.message}</div>}
+          <p style={{ fontSize: 12, margin: "5px 0" }}>{reviewFocus?.bounds
+            ? "Orange review lines mark the referenced object or floor outline and remain visible through walls. They identify the object, not the exact defect location. Marker heights use the saved plan or a reference height."
+            : refreshError ?? reviewFocus?.reason ?? (latestJob && !latestJob.glb_url
+              ? "A saved 3D model is unavailable. Save changes or generate a model before reviewing this finding in 3D."
+              : "Loading the saved finding…")}</p>
+          <div className="row">
+            <Link to={findingPath(jobId, "edit", findingId)}>Review source in editor</Link>
+            <button type="button" onClick={() => {
+              const next = new URLSearchParams(searchParams);
+              next.delete("finding");
+              setSearchParams(next, { replace: true });
+            }}>Clear finding</button>
+          </div>
+        </div>}
       </div>
       <div className="canvas-fill">
         {url ? (
@@ -250,6 +275,7 @@ export default function PreviewPage() {
                   previewLighting={job?.glb_source === "preview"}
                   coarsePointer={coarsePointer}
                   lighting={plan?.lighting}
+                  reviewFocus={reviewFocus}
                 />
               </Suspense>
               <OrbitControls
