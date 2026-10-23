@@ -8,6 +8,7 @@ export interface ReviewIssue {
   severity: string;
   message: string;
   targets: ReviewTarget[];
+  referencedIds?: string[]; // retains missing references for views requiring complete geometry
   location?: Point2D; // normalized source-image coordinates, only when explicitly supplied
 }
 interface IssueInput { code: string; severity: string; message: string; element_id?: string | null }
@@ -70,7 +71,7 @@ export function collectReviewIssues(model: FloorPlanModel, issues: IssueInput[] 
     const id = `review-v1:${encodeURIComponent(stable([issue.code, ids, issue.message, location ?? null]))}`;
     if (seen.has(id)) return;
     seen.add(id);
-    result.push({ id, code: issue.code, severity: issue.severity, message: issue.message,
+    result.push({ id, code: issue.code, severity: issue.severity, message: issue.message, referencedIds: ids,
       targets: findTargets(model, ids), ...(location ? { location } : {}) });
   };
   for (const issue of issues) {
@@ -169,6 +170,27 @@ export function reviewTargetPoints(model: FloorPlanModel, target: ReviewTarget):
   if (!item) return [];
   const point = (value: unknown): value is Point2D => isObject(value) &&
     typeof value.x === "number" && Number.isFinite(value.x) && typeof value.y === "number" && Number.isFinite(value.y);
+  if (target.kind === "doors" || target.kind === "windows") {
+    const opening = model[target.kind].find((entry) => entry.id === target.id)!;
+    const anchored = opening.start_offset_m != null || opening.end_offset_m != null || opening.offset_m != null;
+    if (anchored) {
+      const hosts = model.walls.filter((wall) => !!opening.wall_id && wall.id === opening.wall_id);
+      if (hosts.length !== 1 || !point(hosts[0].start) || !point(hosts[0].end)) return [];
+      const wall = hosts[0];
+      const length = Math.hypot(wall.end.x - wall.start.x, wall.end.y - wall.start.y);
+      const start = opening.start_offset_m ?? ((opening.offset_m ?? NaN) - opening.width_m / 2);
+      const end = opening.end_offset_m ?? ((opening.offset_m ?? NaN) + opening.width_m / 2);
+      if ((opening.start_offset_m == null) !== (opening.end_offset_m == null) ||
+          !Number.isFinite(length) || length <= 0 || !Number.isFinite(start) || !Number.isFinite(end) ||
+          start < 0 || end > length || end <= start) return [];
+      // Cached opening centres can predate wall edits. Use the same interval
+      // that positions the aperture in the editor and generated building.
+      return [start, end].map((offset) => ({
+        x: wall.start.x + (wall.end.x - wall.start.x) * offset / length,
+        y: wall.start.y + (wall.end.y - wall.start.y) * offset / length,
+      }));
+    }
+  }
   if (point(item.start) && point(item.end)) return [item.start, item.end];
   if (Array.isArray(item.points)) return item.points.filter(point);
   if (Array.isArray(item.polygon) && item.polygon.length) return item.polygon.filter(point);
