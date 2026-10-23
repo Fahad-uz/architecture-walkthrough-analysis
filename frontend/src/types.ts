@@ -38,6 +38,8 @@ export interface RoomPolygon {
   id?: string | null;
   face_id?: string | null;
   name?: string | null;
+  floor_material_preset?: string | null;
+  wall_material_preset?: string | null;
   points: Point2D[];
   confidence?: number;
   [key: string]: unknown;

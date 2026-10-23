@@ -14,6 +14,8 @@ import {
 import { addPosition, createFurniture, FURNITURE_PRESETS, furnitureFootprint, furnitureLabel, overlapWarnings } from "../editorFurniture";
 import { changeLighting, DEFAULT_LIGHTING, LIGHTING_TONES, lightingSettings } from "../lighting";
 import { findingPath, review3DLinkState, reviewIssue3DFocus } from "../review3D";
+import { changeRoomFinish } from "../roomFinishes";
+import RoomFinishControls from "../components/RoomFinishControls";
 import type { FloorPlanModel, FurniturePlacement, Opening, Point2D, QualityReport, RoomPolygon, WallSegment } from "../types";
 
 type Tool = "select" | "wall" | "door" | "window" | "scale";
@@ -1329,6 +1331,26 @@ export default function EditorPage() {
           </div>
         </div>
         <div className="panel">
+          <strong style={{ fontSize: 13 }}>Rooms ({model?.rooms.length ?? 0})</strong>
+          <label>
+            Room to edit
+            <select value={selection?.kind === "rooms" ? String(selection.index) : ""}
+              disabled={!model || !model.rooms.length || saving || generating}
+              onChange={(event) => {
+                setSelection(event.target.value === "" ? null : { kind: "rooms", index: Number(event.target.value) });
+                setTool("select");
+                setPending(null);
+                fitToPlan();
+              }}>
+              <option value="">Choose a room</option>
+              {model?.rooms.map((room, index) => <option key={room.id ?? index} value={index}>
+                {index + 1}. {room.name || "Unnamed room"}
+              </option>)}
+            </select>
+          </label>
+          <p style={{ fontSize: 12, color: "#667078" }}>Select a room to change its name, floor or inside wall finish.</p>
+        </div>
+        <div className="panel">
           <strong style={{ fontSize: 13 }}>Furniture ({model?.furniture?.length ?? 0})</strong>
           <label>
             Furniture to add
@@ -1449,6 +1471,8 @@ export default function EditorPage() {
                     }
                   />
                 </label>
+                <RoomFinishControls room={model!.rooms[selection!.index]} disabled={saving || generating}
+                  onChange={(field, value) => update((current) => changeRoomFinish(current, selection!.index, field, value))} />
                 <div style={{ fontSize: 12, color: "#667078", display: "grid", gap: 2 }}>
                   <span>{roomStats(selectedItem)}</span>
                   {selectedItem.dimension_m && (

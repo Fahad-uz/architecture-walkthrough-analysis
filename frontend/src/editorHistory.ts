@@ -1,5 +1,6 @@
 import type { FloorPlanModel } from "./types";
 import { isLightingSettings } from "./lighting.ts";
+import { validRoomFinishes } from "./roomFinishes.ts";
 
 export const HISTORY_LIMIT = 50;
 export const DRAFT_VERSION_LIMIT = 5;
@@ -66,7 +67,7 @@ const object = (value: unknown): value is ObjectValue =>
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const point = (value: unknown): boolean => object(value) && finite(value.x) && finite(value.y);
 const polygon = (value: unknown): boolean =>
-  object(value) && Array.isArray(value.points) && value.points.length >= 3 && value.points.every(point);
+  object(value) && Array.isArray(value.points) && value.points.length >= 3 && value.points.every(point) && validRoomFinishes(value);
 const optionalArray = (value: unknown, check: (item: unknown) => boolean): boolean =>
   value === undefined || (Array.isArray(value) && value.every(check));
 const placement = (value: unknown): boolean =>
