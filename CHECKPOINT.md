@@ -1,6 +1,6 @@
 # PlanStride checkpoint
 
-Updated 24 October 2026 (Asia/Kolkata). Active after the user requested continuation.
+Updated 24 October 2026 (Asia/Kolkata). PAUSED at the user's explicit request.
 Branch consolidation is complete.
 The full PlanStride upgrade is NOT complete.
 
@@ -283,14 +283,9 @@ verification from the API smoke test.
 
 ## Exact next steps
 
-1. Complete the in-progress simple floor-union interior-hole fix. Run focused
-   geometry/export tests, verify courtyard voids remain empty and no-hole paths
-   unchanged, publish it separately and update this checkpoint.
-2. Perspective preparation, walking-route checks and further structural accuracy
-   remain. Independent building/source groups, reviewed annotations and broader
-   permitted sources are required before final evaluation. Opening, adjacency,
-   scale-error and correction-effort metrics remain outstanding. The 30
-   quarantined examples remain untouched.
+The work is paused. On the next user-requested continuation, follow the saved
+resume order in "Paused work, 24 October 2026" below. Do not restart benchmarks
+or repeat already verified features.
 
 ## Previous pause status (15 October)
 
@@ -321,9 +316,8 @@ refresh retains the previous plan/GLB pair during writes or version changes and
 rechecks status after loading a plan. This bounds concurrent-read races; artifact
 URLs remain mutable rather than immutable snapshots.
 
-Published frontend coverage: 73 tests (including 13 3D, 8 asynchronous preview
-and 3 new source-warning cases), typecheck and build pass. Four additional
-unpublished room-finish tests pass locally (77 total). Browser verified located
+Published frontend coverage: 77 tests (including 13 3D, 8 asynchronous preview,
+3 new source-warning and 4 room-finish cases), typecheck and build pass. Browser verified located
 wall focus/marker/framing, reset, clear, source backlink, dirty blocking with
 undo, whole-plan finding and obsolete URL. No console warnings/errors.
 Guide: docs/warning-3d-review.md. Local workflow evidence:
@@ -358,13 +352,77 @@ Server PID 3930 runs the new material backend at http://127.0.0.1:8001 with AI
 disabled. Separate QA job: 4536f1c93118459ea18a624265bbadcf; latest generated GLB
 version 1792782368034, Blender no-bake. Browser test preview remains available.
 
-Current unfinished unit: fix simple room-floor union discarding interior holes
-(courtyard/void geometry). A bounded hole-only path is being added in
-floor_builder.py/simple_glb.py with targeted tests. Ordinary no-hole floors,
-explicit slabs and fallback policy must remain unchanged. Do not confuse this
-new geometry fix with the already published material support.
+## Paused work, 24 October 2026
 
-Last usage check: 34% of five-hour allowance remains. Branch main, latest code
-commit c091c93. No repeated benchmark runs, private plan redistribution or new
-downloads. Preserve both untracked .DS_Store files. Resume the unfinished floor-hole fix
-from actual git state if interrupted.
+The user explicitly requested "save everything and pause". Both active agents
+were interrupted, and no new development or feature testing was started after
+that request. All edited files are saved. Pause allowance: 16% of the five-hour
+window remains; this is a user-requested pause, not a quota pause.
+
+Branch: main. Latest published code c091c9382a9198c750b54770ce0a8bf657698fab;
+latest published documentation before this checkpoint:
+7affa765aed0a2c3505823c12758ddc80423ad6c. GitHub CI passed on 7affa76 (including
+all published features). c091c93's earlier run was superseded/cancelled, not a
+failure. This checkpoint is committed separately; use git log -1 for its hash.
+All completed commits are pushed. The unfinished floor-hole work remains local
+and has not been committed/pushed as a completed feature.
+
+### Exact unfinished files
+
+- src/architecture_walkthrough/scene/floor_builder.py
+- src/architecture_walkthrough/scene/simple_glb.py
+- tests/test_floor_holes.py (new, untracked)
+
+They preserve interior rings in the room-floor union and use a hole-only
+triangulation/partition path; ordinary no-hole floors, explicit slabs and the
+existing fallback policy remain unchanged. Before the last guard edit, full
+suite: 821 passed, 9 optional skips, 2 existing deprecations. Ruff and mypy pass.
+Log: ../planstride-courtyard-tests-2026-10-24.log.
+
+Independent review then found Shapely-valid point-touching rings can produce
+non-manifold extruded solids. The final guard and two regression cases are now
+saved: reject hole/exterior and hole/hole boundary contact explicitly, without
+shifting boundaries or filling voids. THESE FINAL EDITS ARE UNTESTED. Do not
+publish this unit until the focused checks pass and review confirms the guard.
+
+Actual pre-guard rotated courtyard GLB verification: top area about 76 m²
+instead of the old exterior-only 80 m², retaining the 4 m² courtyard within
+export float precision. Local evidence:
+outputs/courtyard-qa-2026-10-24/verification.json and courtyard.glb. This is a
+synthetic renderer contract check, not automatic recognition evidence.
+
+A second task was assigned but interrupted before any files were created:
+warn when edited furniture intersects the EXISTING SAVED guided-tour path.
+Proposed pure helper: savedRouteWarnings.ts plus tests and a small EditorPage
+integration. Use CAPSULE_RADIUS, exact segment-to-rotated-rectangle distance,
+ignore walkable floor coverings, break adjacency at malformed waypoints, and
+compare against the saved model (not an invented/new route). Show one explicit
+review hint. This must not claim all-room connectivity or door-swing checking.
+No route-warning implementation is saved yet; begin this only after publishing
+the floor-hole fix, if still desired within the broader brief.
+
+### Saved state and resume order
+
+1. Check usage, git status and this checkpoint; preserve both .DS_Store files.
+2. Run tests/test_floor_holes.py and relevant floor/material/export tests,
+   Ruff and mypy for the final contact guard. Broaden checks only if changes
+   or failures warrant it. The previous full 821-test result predates the guard.
+3. Review the hole-only path, then commit/push the completed courtyard fix as
+   its own logical change. Restart the app afterward; PID 3930 currently runs
+   the PUBLISHED materials backend and has not loaded the courtyard edits.
+4. Implement and verify the saved-route placement hint described above.
+5. Perspective preparation, full route/door-approach checks, structural accuracy
+   and broader independently reviewed evaluation remain unfinished. Do not
+   repeat completed 70-plan analyses or touch the 30 quarantine plans.
+
+Runtime remains healthy at http://127.0.0.1:8001, AI disabled. Server PID/log:
+../walkthrough-server.pid and ../walkthrough-server.log. User's active job
+f7c01bb7af734d088de0b63c792ce565 remains untouched. Isolated QA job
+4536f1c93118459ea18a624265bbadcf retains saved room finishes, furniture and
+neutral/100% lighting, generated Blender GLB version 1792782368034. Original
+inputs, QA outputs and drafts remain saved locally. No additional downloads.
+
+A redundant WIP archive, tracked diff and SHA256 inventory are saved in
+outputs/checkpoints/2026-10-24-pause/ (ignored, not pushed). Use only for recovery
+if current files are missing; do not overwrite newer edits. No secrets included.
+The full upgrade remains incomplete. Resume only when the user says continue.
