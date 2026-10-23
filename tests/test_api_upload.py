@@ -318,6 +318,62 @@ def test_saving_corrections_replaces_stale_blender_model_with_current_preview(
     assert (job_dir / "building.glb").read_bytes()[:4] == b"glTF"
 
 
+@pytest.mark.parametrize("reviewed", [False, True])
+def test_room_finish_only_correction_survives_normal_and_reviewed_room_paths(
+    tmp_path: Path, monkeypatch, reviewed: bool,
+) -> None:
+    monkeypatch.setattr(api_app, "load_config",
+                        lambda: AppConfig(paths=PathSettings(work_root=tmp_path)))
+    job_id = "room-finish-job"
+    job_dir = tmp_path / job_id
+    (job_dir / "debug").mkdir(parents=True)
+    Image.new("RGB", (320, 240), "white").save(job_dir / "debug" / "01_original_roi.png")
+    (job_dir / "job.json").write_text(
+        JobRecord(job_id=job_id, status="needs_review").model_dump_json(), encoding="utf-8",
+    )
+    original = FloorPlanModel.load_json(Path("tests/fixtures/sample_floorplan.json"))
+    original.rooms[0].id = "stable-room"
+    original.rooms[0].face_id = "stable-face"
+    original.pixels_per_metre = 100
+    original.metadata.update({"source_image": "source-plan.png", "analysis_resize_ratio": 0.5,
+                              "manual_source_metres_per_pixel": 0.01})
+    if reviewed:
+        original.metadata["geometry_origin"] = "reviewed_source_trace"
+    for index, wall in enumerate(original.walls):
+        wall.id = f"wall-{index}"
+    original.doors[0].wall_id = "wall-0"
+    original.doors[0].start_offset_m, original.doors[0].end_offset_m = 1.55, 2.45
+    original.save_json(job_dir / "floorplan.corrected.json")
+    edited = original.model_copy(deep=True)
+    edited.rooms[0].floor_material_preset = "wood"
+    edited.rooms[0].wall_material_preset = "ceramic_tile"
+    # Browser omissions must not erase source provenance on a finish save.
+    edited.metadata = {}
+    assert api_app._room_topology_signature(edited) == api_app._room_topology_signature(original)
+    with TestClient(create_app()) as client:
+        response = client.post(f"/jobs/{job_id}/corrections", json=edited.model_dump(mode="json"))
+    assert response.status_code == 200, response.text
+    corrected = FloorPlanModel.load_json(job_dir / "floorplan.corrected.json")
+    assert corrected == FloorPlanModel.model_validate(response.json()["model"])
+    assert corrected.rooms[0].floor_material_preset == "wood"
+    assert corrected.rooms[0].wall_material_preset == "ceramic_tile"
+    assert corrected.rooms[0].id == "stable-room"
+    assert corrected.rooms[0].face_id == "stable-face"
+    assert corrected.walls == original.walls
+    assert corrected.doors == original.doors
+    assert corrected.windows == original.windows
+    assert corrected.pixels_per_metre == original.pixels_per_metre
+    assert corrected.scale_constraints == original.scale_constraints
+    for key in ("source_image", "analysis_resize_ratio", "manual_source_metres_per_pixel"):
+        assert corrected.metadata[key] == original.metadata[key]
+    if reviewed:
+        assert corrected.rooms[0].points == original.rooms[0].points
+        assert corrected.metadata["geometry_origin"] == "reviewed_source_trace"
+    else:
+        assert corrected.rooms[0].evidence_source == "wall_graph_face"
+    assert (job_dir / "building.glb").read_bytes()[:4] == b"glTF"
+
+
 def test_saving_corrections_preserves_exclusive_balcony_ownership(
     tmp_path: Path,
     monkeypatch,

@@ -19,5 +19,5 @@ def export_floorplan_glb(
     Python trimesh exporter remains the instant preview/testing fallback."""
     output_glb.parent.mkdir(parents=True, exist_ok=True)
     if not run_blender:
-        return export_simple_glb(model, output_glb)
+        return export_simple_glb(model, output_glb, registry_path=config.textures.registry_path)
     return generate_glb_with_blender(model, output_glb, config, mode=bake_mode)

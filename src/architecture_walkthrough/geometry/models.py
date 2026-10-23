@@ -102,6 +102,15 @@ class RoomPolygon(BaseModel):
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     evidence_source: str = "unknown"
     dimension_m: tuple[float, float] | None = None
+    floor_material_preset: str | None = Field(default=None, min_length=1, max_length=128)
+    wall_material_preset: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @field_validator("floor_material_preset", "wall_material_preset")
+    @classmethod
+    def require_finish_name(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("room material preset cannot be blank")
+        return value
 
     @field_validator("points")
     @classmethod

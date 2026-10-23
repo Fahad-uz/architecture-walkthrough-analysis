@@ -48,6 +48,9 @@ effective_lighting = runpy.run_path(
     str(Path(__file__).resolve().parent.parent / "lighting_values.py")
 )["effective_lighting"]
 LIGHTING = effective_lighting(PLAN.get("lighting") or {})
+partition_finish_mesh = runpy.run_path(
+    str(Path(__file__).resolve().parent.parent / "finish_regions.py")
+)["partition_finish_mesh"]
 MATERIAL_PLAN = (
     (PLAN.get("metadata") or {}).get("blender_material_plan") or {}
 )
@@ -370,6 +373,36 @@ def wall_vec(wall: dict) -> tuple[Vector, Vector, float, float]:
     return start, end, length, angle
 
 
+def apply_finish_regions(obj, regions, wall=None):
+    """Replace triangles in place, preserving original materials and solid shape."""
+    if not regions:
+        return obj
+    bpy.context.view_layer.update()
+    original = obj.data
+    original.calc_loop_triangles()
+    vertices = [tuple(obj.matrix_world @ vertex.co) for vertex in original.vertices]
+    triangles = list(original.loop_triangles)
+    faces = [list(triangle.vertices) for triangle in triangles]
+    original_indices = [original.polygons[triangle.polygon_index].material_index for triangle in triangles]
+    vertices, faces, labels, sources = partition_finish_mesh(vertices, faces, regions, wall=wall)
+    inverse = obj.matrix_world.inverted()
+    mesh = bpy.data.meshes.new(original.name + "_Finishes")
+    mesh.from_pydata([tuple(inverse @ Vector(point)) for point in vertices], [], faces)
+    for material in original.materials:
+        mesh.materials.append(material)
+    material_indices = {}
+    for preset in sorted({label for label in labels if label is not None}):
+        material_indices[preset] = len(mesh.materials)
+        mesh.materials.append(material_for_preset(preset, "wall" if wall else "floor"))
+    for face, label, source in zip(mesh.polygons, labels, sources):
+        face.material_index = material_indices[label] if label is not None else original_indices[source]
+    mesh.update()
+    obj.data = mesh
+    if original.users == 0:
+        bpy.data.meshes.remove(original)
+    return obj
+
+
 def assign_material_uvs() -> None:
     """Box-project in metres; vertical walls must not collapse onto XY UVs."""
     for obj in bpy.context.scene.objects:
@@ -557,6 +590,8 @@ def build_wall(wall: dict, index: int) -> bpy.types.Object:
             bpy.ops.object.modifier_apply(modifier=modifier.name)
         for cutter in cutters:
             bpy.data.objects.remove(cutter, do_unlink=True)
+    apply_finish_regions(obj, [region for region in MATERIAL_PLAN.get("wall_regions", [])
+                              if region["wall_index"] == index], wall=wall)
     return obj
 
 
@@ -597,7 +632,10 @@ def build_polygon_slab(name: str, points: list[dict], z: float, thickness: float
     mesh.update()
     obj = bpy.data.objects.new(name, mesh)
     obj.data.materials.append(material)
-    return link(obj)
+    link(obj)
+    if name.startswith("Floor_") and MATERIAL_PLAN.get("floor_regions_enabled"):
+        apply_finish_regions(obj, MATERIAL_PLAN.get("floor_regions", []))
+    return obj
 
 
 def triangulate_indices(coords: list[Vector]) -> list[tuple[int, int, int]]:
@@ -660,7 +698,7 @@ def build_floors(rooms: list[dict], walls: list[dict]) -> None:
                 0.0,
                 FLOOR_THICKNESS,
                 planned_indexed(
-                    "room_floor_presets",
+                    "room_floor_base_presets" if MATERIAL_PLAN.get("floor_regions_enabled") else "room_floor_presets",
                     index,
                     "floor",
                     "floor",

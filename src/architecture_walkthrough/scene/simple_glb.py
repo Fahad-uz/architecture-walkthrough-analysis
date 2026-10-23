@@ -24,6 +24,11 @@ from architecture_walkthrough.scene.floor_builder import (
     polygon_floor_mesh,
     room_floor_meshes,
 )
+from architecture_walkthrough.scene.finish_materials import apply_finish_regions, finish_primitives
+from architecture_walkthrough.scene.pbr_materials import (
+    build_material_plan,
+    load_material_registry,
+)
 from architecture_walkthrough.scene.opening_builder import nearest_wall_index, openings_for_wall
 from architecture_walkthrough.scene.stair_builder import stair_parts, stair_placement
 from architecture_walkthrough.scene.trim_builder import skirting_meshes
@@ -1154,16 +1159,37 @@ def _special_element_meshes(element: ArchitecturalElement) -> list[trimesh.Trime
     return []
 
 
-def export_simple_glb(model: FloorPlanModel, output_glb: Path) -> Path:
+def export_simple_glb(
+    model: FloorPlanModel, output_glb: Path, *, registry_path: Path | None = None,
+) -> Path:
     if not model.walls:
         raise ValueError("cannot export GLB: floorplan contains no wall geometry")
     output_glb.parent.mkdir(parents=True, exist_ok=True)
     scene = trimesh.Scene()
+    # Renderer metadata is a cache, never authority for current room edits.
+    # In particular, clearing a finish must remove old material regions.
+    material_plan = {}
+    if any(
+        room.floor_material_preset is not None or room.wall_material_preset is not None
+        for room in model.rooms
+    ):
+        material_plan = build_material_plan(
+            model, load_material_registry(registry_path or (
+                Path(__file__).resolve().parents[3] / "assets/textures/material_registry.yaml"
+            )),
+        )
 
     for index, mesh in enumerate(_floor_meshes_for_model(model)):
-        scene.add_geometry(
-            apply_planar_uv(mesh), node_name=f"Floor_{index:03d}", geom_name=f"Floor_{index:03d}"
-        )
+        if material_plan.get("floor_regions_enabled"):
+            mesh = apply_finish_regions(
+                mesh, material_plan.get("floor_regions", []), material_plan,
+            )
+        for part_index, part in enumerate(finish_primitives(mesh)):
+            name = f"Floor_{index:03d}" + (f"_Finish_{part_index:02d}" if part_index else "")
+            scene.add_geometry(
+                part if material_plan.get("floor_regions_enabled") else apply_planar_uv(part),
+                node_name=name, geom_name=name,
+            )
 
     for index, balcony in enumerate(model.balconies):
         mesh = polygon_floor_mesh(balcony.points, 0.08, COLORS["floor_balcony"])
@@ -1178,11 +1204,18 @@ def export_simple_glb(model: FloorPlanModel, output_glb: Path) -> Path:
         except ValueError:
             wall_meshes = [_wall_mesh(wall)]
         for section_index, mesh in enumerate(wall_meshes):
-            scene.add_geometry(
-                apply_planar_uv(mesh),
-                node_name=f"Wall_{wall_index:03d}_{section_index:02d}",
-                geom_name=f"Wall_{wall_index:03d}_{section_index:02d}",
-            )
+            wall_regions = [region for region in material_plan.get("wall_regions", [])
+                            if region["wall_index"] == wall_index]
+            if wall_regions:
+                mesh = apply_finish_regions(mesh, wall_regions, material_plan,
+                                            wall=wall.model_dump(mode="json"))
+            for part_index, part in enumerate(finish_primitives(mesh)):
+                name = f"Wall_{wall_index:03d}_{section_index:02d}"
+                if part_index:
+                    name += f"_Finish_{part_index:02d}"
+                scene.add_geometry(
+                    part if wall_regions else apply_planar_uv(part), node_name=name, geom_name=name,
+                )
         wall_cap_meshes.append(_wall_cap_mesh(wall))
 
     for index, mesh in enumerate(wall_cap_meshes):

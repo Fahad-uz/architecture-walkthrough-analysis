@@ -411,7 +411,7 @@ def _analysis_worker_entry(
             rotation_quarter_turns=rotation_quarter_turns,
             straighten_degrees=straighten_degrees,
         )
-        export_simple_glb(model, staging_dir / "building.glb")
+        export_simple_glb(model, staging_dir / "building.glb", registry_path=config.textures.registry_path)
     except Exception as exc:
         error_path = staging_dir / ANALYSIS_ERROR_FILE
         try:
@@ -1448,7 +1448,7 @@ def _apply_correction_revision(
     ]
     try:
         model.save_json(temporary_json)
-        export_simple_glb(model, temporary_glb)
+        export_simple_glb(model, temporary_glb, registry_path=runner.config.textures.registry_path)
         temporary_report.write_text(json.dumps(report, indent=2), encoding="utf-8")
         write_analysis_overlay(source_image, model, temporary_svg, temporary_png)
         _commit_artifact_set(replacements, revision)

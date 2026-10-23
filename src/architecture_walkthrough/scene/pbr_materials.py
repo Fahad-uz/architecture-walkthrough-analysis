@@ -7,6 +7,8 @@ import re
 from typing import Any, Literal
 
 import yaml  # type: ignore[import-untyped]
+from shapely.geometry import LineString, Polygon  # type: ignore[import-untyped]
+from shapely.ops import unary_union  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field, PositiveFloat, field_validator
 from architecture_walkthrough.scene.furniture import render_furniture
 
@@ -318,9 +320,14 @@ def build_material_plan(
         for index, wall in enumerate(model.walls)
     ]
     room_floor_presets: list[str] = []
+    room_floor_base_presets: list[str] = []
     for index, room in enumerate(model.rooms):
         explicit = explicit_room_material(room, model.material_assignments)
-        requested = explicit or semantic_room_material(room.name)
+        automatic = explicit or semantic_room_material(room.name)
+        room_floor_base_presets.append(resolver.resolve(
+            automatic, floor_default, context=f"room[{index}] automatic floor",
+        ))
+        requested = room.floor_material_preset or automatic
         room_floor_presets.append(
             resolver.resolve(
                 requested,
@@ -350,6 +357,40 @@ def build_material_plan(
             )
         )
 
+    floor_regions = [
+        {
+            "room_index": index,
+            "room_id": room.id,
+            "face_id": room.face_id,
+            "points": [[point.x, point.y] for point in room.points],
+            "preset": room_floor_presets[index],
+            "apply": room.floor_material_preset is not None,
+            "source": (
+                "room" if room.floor_material_preset else
+                "assignment" if explicit_room_material(room, model.material_assignments) else
+                "semantic" if semantic_room_material(room.name) else "scene"
+            ),
+        }
+        for index, room in enumerate(model.rooms)
+    ]
+    floor_regions_enabled = any(room.floor_material_preset is not None for room in model.rooms)
+    if floor_regions_enabled:
+        for index, region in enumerate(floor_regions):
+            polygon = Polygon(region["points"])
+            if not polygon.is_valid:
+                resolver.warnings.append(f"room[{index}] floor region is invalid; ignored")
+                continue
+            for previous in floor_regions[:index]:
+                other = Polygon(previous["points"])
+                if (other.is_valid and region["preset"] != previous["preset"]
+                        and polygon.intersection(other).area > 1e-8):
+                    resolver.warnings.append(
+                        f"room[{previous['room_index']}] and room[{index}] floor finishes overlap; "
+                        "original surface material retained in the overlap"
+                    )
+    floor_regions = [region for region in floor_regions if Polygon(region["points"]).is_valid]
+    wall_regions = _wall_finish_regions(model, resolver, wall_default)
+
     materials = registry.render_payload()
     materials.setdefault(
         SAFE_FALLBACK_PRESET,
@@ -369,6 +410,10 @@ def build_material_plan(
         },
         "wall_presets": wall_presets,
         "room_floor_presets": room_floor_presets,
+        "room_floor_base_presets": room_floor_base_presets,
+        "floor_regions": floor_regions,
+        "floor_regions_enabled": floor_regions_enabled,
+        "wall_regions": wall_regions,
         "door_presets": [door_default for _door in model.doors],
         "window_frame_presets": [
             window_default
@@ -379,6 +424,82 @@ def build_material_plan(
         "ceiling_preset": ceiling_preset,
         "warnings": resolver.warnings,
     }
+
+
+def _wall_finish_regions(
+    model: FloorPlanModel, resolver: _PresetResolver, wall_default: str,
+) -> list[dict[str, Any]]:
+    """Resolve only interior sides touching an explicitly finished room.
+
+    Intersect the actual wall-side line with the room's boundary band. This
+    supports concave rooms and multiple rooms along one long wall, while
+    excluding walls embedded in the middle of a room polygon.
+    """
+    import math
+
+    candidates: list[dict[str, Any]] = []
+    for room_index, room in enumerate(model.rooms):
+        if room.wall_material_preset is None:
+            continue
+        polygon = Polygon([(point.x, point.y) for point in room.points])
+        if not polygon.is_valid:
+            resolver.warnings.append(f"room[{room_index}] wall region is invalid; ignored")
+            continue
+        preset = resolver.resolve(
+            room.wall_material_preset, wall_default, context=f"room[{room_index}] wall",
+        )
+        for wall_index, wall in enumerate(model.walls):
+            dx, dy = wall.end.x - wall.start.x, wall.end.y - wall.start.y
+            length = math.hypot(dx, dy)
+            if length <= 1e-9:
+                continue
+            ux, uy = dx / length, dy / length
+            offset = wall.thickness_m / 2 + 1e-7
+            parallel_edges = []
+            coordinates = list(polygon.exterior.coords)
+            for a, b in zip(coordinates, coordinates[1:]):
+                ex, ey = b[0] - a[0], b[1] - a[1]
+                edge_length = math.hypot(ex, ey)
+                if edge_length > 1e-9 and abs((ex * ux + ey * uy) / edge_length) > 0.999:
+                    parallel_edges.append(LineString([a, b]).buffer(offset + 1e-6, cap_style=2))
+            if not parallel_edges:
+                continue
+            boundary_band = polygon.intersection(unary_union(parallel_edges))
+            for side in (-1, 1):
+                sx, sy = wall.start.x - uy * offset * side, wall.start.y + ux * offset * side
+                line = LineString([(sx, sy), (sx + ux * length, sy + uy * length)])
+                intersection = line.intersection(boundary_band)
+                parts = list(intersection.geoms) if hasattr(intersection, "geoms") else [intersection]
+                for part in parts:
+                    if part.geom_type != "LineString" or part.length <= 1e-7:
+                        continue
+                    positions = [(x - sx) * ux + (y - sy) * uy for x, y in part.coords]
+                    candidates.append({
+                        "wall_index": wall_index, "side": side,
+                        "start_m": max(0.0, min(positions)), "end_m": min(length, max(positions)),
+                        "preset": preset, "room_index": room_index,
+                    })
+    regions = []
+    for wall_index in range(len(model.walls)):
+        for side in (-1, 1):
+            selected = [region for region in candidates
+                        if region["wall_index"] == wall_index and region["side"] == side]
+            boundaries = sorted({value for region in selected
+                                 for value in (region["start_m"], region["end_m"])})
+            for start, end in zip(boundaries, boundaries[1:]):
+                midpoint = (start + end) / 2
+                matches = [region for region in selected
+                           if region["start_m"] < midpoint < region["end_m"]]
+                if not matches:
+                    continue
+                if len({region["preset"] for region in matches}) > 1:
+                    resolver.warnings.append(
+                        f"wall[{wall_index}] side {side} room finishes overlap at {start:g}-{end:g}m; "
+                        "original surface material retained in the overlap"
+                    )
+                    continue
+                regions.append({**matches[0], "start_m": start, "end_m": end})
+    return regions
 
 
 def model_with_material_plan(
