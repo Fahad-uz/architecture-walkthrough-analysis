@@ -283,14 +283,10 @@ verification from the API smoke test.
 
 ## Exact next steps
 
-1. Complete room finish support currently in progress: backend schema/region
-   contract and surface partitioning in both exporters, frontend controls and
-   save/draft/history behavior. Confirm opposite/shared/partial wall sides and
-   existing slab/fallback coverage. Do not expose controls without renderer support.
-2. Run focused geometry/API tests, full Python checks, frontend checks/build,
-   real Blender comparison and browser save/undo/refresh/export QA. Publish
-   completed logical changes separately. Preserve untested work if interrupted.
-3. Perspective preparation, walking-route checks and further structural accuracy
+1. Complete the in-progress simple floor-union interior-hole fix. Run focused
+   geometry/export tests, verify courtyard voids remain empty and no-hole paths
+   unchanged, publish it separately and update this checkpoint.
+2. Perspective preparation, walking-route checks and further structural accuracy
    remain. Independent building/source groups, reviewed annotations and broader
    permitted sources are required before final evaluation. Opening, adjacency,
    scale-error and correction-effort metrics remain outstanding. The 30
@@ -334,18 +330,41 @@ Guide: docs/warning-3d-review.md. Local workflow evidence:
 outputs/warning-3d-qa-2026-10-24/verification.json.
 Screenshot: ../../outputs/PlanStride-warning-3D-2026-10-24.png.
 
-Room finishes are unfinished and local: types/helpers/controls/history validation
-are saved; EditorPage wiring is next. Backend schema and region contract plus
-surface partitioning are being implemented and tested. No new dependency or
-asset downloads. Never claim an unfinished control works before real rendering.
+Room finishes are published at f4571c0 (backend) and c091c93 (editor). Nullable
+room floor/wall preset fields survive actual corrections and face matching.
+Both exporters partition existing surface triangles: explicit slab/fallback
+coverage, shared/opposite/partial walls, openings and original unpainted faces
+are preserved. Conflicting regions retain original finish with a warning.
+Preview uses scalar colors; Blender retains existing textures and metre UVs.
+No new downloads. Guide: docs/room-finishes.md.
 
-Server restarted as PID 2532 with AI disabled at http://127.0.0.1:8001. It has
-published warning UI but needs restart after backend finishes are completed.
-QA job: 4536f1c93118459ea18a624265bbadcf, separate from the user's current job.
-The automatic plan remains review_required at about 40%, with missing openings
-and incomplete floors. Workflow verification does not certify reconstruction.
+Full backend suite: 809 passed, 9 optional skips, 2 existing deprecations.
+Ruff and mypy across 87 source files pass. Frontend: 77 tests, typecheck and
+production build pass. Full log: ../planstride-room-finishes-tests-2026-10-24.log.
+Independent 70 randomized partitions retained area/volume/winding/manifoldness.
+Real Blender synthetic two-room comparison retained bounds/area/volume within
+float precision while changing materials; no full final bake repeated.
 
-Last usage check: 67% of five-hour allowance remains. Branch main, latest code
-commit fc7dc8c. No repeated benchmark runs, private plan redistribution or new
-downloads. Preserve both untracked .DS_Store files. Resume unfinished materials
+Browser real-plan QA verified two room choices, undo/redo, automatic reset/undo,
+save, reload and fresh none-mode Blender export, preview/walkthrough rendering,
+guided tour start and reset. Geometry, furniture, openings and scale unchanged;
+export input retained exact room choices. Evidence:
+outputs/room-finishes-qa-2026-10-24/{browser-verification,blender-verification}.json.
+Screenshot: ../../outputs/PlanStride-room-finishes-2026-10-24.png.
+Automatic structural quality remains review_required about 40%; material edits
+are not accuracy evidence. User's original active project is untouched.
+
+Server PID 3930 runs the new material backend at http://127.0.0.1:8001 with AI
+disabled. Separate QA job: 4536f1c93118459ea18a624265bbadcf; latest generated GLB
+version 1792782368034, Blender no-bake. Browser test preview remains available.
+
+Current unfinished unit: fix simple room-floor union discarding interior holes
+(courtyard/void geometry). A bounded hole-only path is being added in
+floor_builder.py/simple_glb.py with targeted tests. Ordinary no-hole floors,
+explicit slabs and fallback policy must remain unchanged. Do not confuse this
+new geometry fix with the already published material support.
+
+Last usage check: 34% of five-hour allowance remains. Branch main, latest code
+commit c091c93. No repeated benchmark runs, private plan redistribution or new
+downloads. Preserve both untracked .DS_Store files. Resume the unfinished floor-hole fix
 from actual git state if interrupted.
