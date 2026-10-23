@@ -48,11 +48,11 @@ in preview and walkthrough; guided/manual controls worked. Quality remained
 review_required at about 40%, with unresolved floor/opening/layout findings.
 
 Local evidence (ignored, private): outputs/furniture-qa-2026-10-22/verification.json
-and job4536f1c93118459ea18a624265bbadcf. Screenshot in the parent workspace:
+and job 4536f1c93118459ea18a624265bbadcf. Screenshot in the parent workspace:
 ../../outputs/PlanStride-furniture-preview-2026-10-22.png.
 
-Validation: full Python suite718 passed/9optional skips, followed by final focused
-coverage after two additional mirror cases (38 passed/2optional integration
-cases deselected). Frontend43 tests, typecheck, production build, Ruff and
-mypy84 source files passed. GitHub CI passed the asset-link fix4d9c2c9.
+Validation: full Python suite: 718 passed and 9 optional skips, followed by final focused
+coverage after two additional mirror cases (38 passed and 2 optional integration
+cases deselected). Frontend: 43 tests, typecheck, production build, Ruff and
+mypy across 84 source files passed. GitHub CI passed the asset-link fix 4d9c2c9.
 No new package, model or asset downloads.

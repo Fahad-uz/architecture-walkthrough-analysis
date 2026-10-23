@@ -1,6 +1,6 @@
 # PlanStride checkpoint
 
-Updated 22 October 2026 (Asia/Kolkata). Active after the user requested continuation.
+Updated 24 October 2026 (Asia/Kolkata). Active after the user requested continuation.
 Branch consolidation is complete.
 The full PlanStride upgrade is NOT complete.
 
@@ -241,62 +241,60 @@ verification from the API smoke test.
 
 ## Furniture milestone completed on 22 October
 
--4d9c2c9 fixes detailed-asset mirror duplication after furniture move/delete.
-  Shared backend resolver drives simpleGLB,Blenderinput and route planning;
-  browsercollision resolution follows persistent optionalfurniture_id links.
-  Unique legacy mirrors link on load; old effective heights/metadata retained,
-  no invented source. Modern explicit furniture edits win; deleted targets stay
-  deleted. Standalone/unlinked assets remain supported. CI passed.
--101aae5 adds furniture select/add/drag/rotate/resize/delete, optional height
-  reset, provenance labels and wall/door-aperture hints. Undo/redo and existing
-  drafts/save/generation paths retain arrangements. Both commits pushed to main.
-- Full Python718passed/9optional skips, then final additional mirror coverage
- 38focusedpasses/2integrationdeselected; frontend43passes,typecheck,build,Ruff,
-  mypy84files passed. Full log:../planstride-furniture-tests-2026-10-22.log.
-- Browser freshjob4536f1c93118459ea18a624265bbadcf verified add/numericedit/height
-  clear/drag/deleteundo/dragundo+redo/save/refresh/freshBlenderGLB/preview/
-  walkthrough+guidedmanualcontrols. Savedsofa identity/source/geometry exactly
-  reaches Blenderinput; buildinglayout/scale unchanged by furniture save.
-  Evidence:outputs/furniture-qa-2026-10-22/verification.json. Quality40%,
-  reviewrequired remains; automaticliving/kitchen floors/openings incomplete.
-  This is workflow evidence,not structural accuracy. Guide:docs/furniture-editing.md.
-- Server restarted PID3219 with current furniture backend,AI disabled,port8001.
-  Parentworkspace screenshot:outputs/PlanStride-furniture-preview-2026-10-22.png.
-  No downloads. .DS_Store files remain untracked.
+- 4d9c2c9 fixes detailed-asset duplication after furniture moves or deletion.
+  Rendering and route planning share one resolver. Browser collisions honor the
+  same persistent links. Unique legacy mirrors link on load while retaining
+  effective height, asset metadata and unknown provenance. CI passed.
+- 101aae5 adds furniture selection, add, drag, rotation, resizing, deletion,
+  height reset, source labels and wall/door overlap hints. Undo/redo, drafts,
+  saving and regeneration retain arrangements. Both commits are pushed to main.
+- Full Python suite: 718 passed, 9 optional skips, followed by final additional
+  mirror coverage: 38 focused passes and 2 optional integration cases deselected.
+  Frontend: 43 tests, typecheck and build pass. Ruff and mypy across 84 files pass.
+  Log: ../planstride-furniture-tests-2026-10-22.log.
+- Browser job 4536f1c93118459ea18a624265bbadcf verified editing, height reset,
+  drag, deletion/undo, drag undo/redo, save, refresh, fresh Blender export,
+  preview and walkthrough controls. Saved furniture reaches Blender unchanged;
+  layout and scale remain unchanged. Evidence:
+  outputs/furniture-qa-2026-10-22/verification.json.
+  Guide: docs/furniture-editing.md.
+- Automatic quality remains about 40%, review_required. Living/kitchen floors
+  and openings are incomplete. This verifies workflow, not structural accuracy.
+  No new downloads. .DS_Store files remain untracked.
 
-## Lighting milestone completed on22October
+## Lighting milestone completed on 22 October
 
--6d89ca2 persists validatedlighting controls through productionBlender and
-  offline rendering. ShareddependencyfreeKelvin/power math preservesdefaults,
-  exportpower appliedafterclamps inallmodes.61newtests+3APIsavecases.
--9819644 provideswarm/neutral/cool,25–200%brightness,reset,undo/drafts and
-  sharedsavedlighting inpreview/walkthrough; legacycustomvalues retained.
-  Both commits pushed. Guide:docs/lighting-editing.md.
-- FullPython784passed/9optional skips,Ruff,mypy85passed; frontend49tests,
-  typecheck,productionbuild passed. Browserwarm2x,undo/redo,reset/undo,save,
-  reload,freshBlenderGLB,preview+walkthrough verified.
-- Realplanjob4536f1c93118459ea18a624265bbadcf:layout+furniture unchanged;
-  all16exportedlights exactly2xintensity andwarmer; glTFmeshes/accessors
-  identical. Evidence:outputs/lighting-qa-2026-10-22/verification.json.
-  No fullfinalbake repeated; allmode lightpowerpaths tested. Quality40%review
-  required remains,not structuralaccuracy certification.
-- ServerPID4777 runs latestbackend at127.0.0.1:8001,AI disabled. No downloads.
+- 6d89ca2 persists validated lighting settings through production Blender and
+  offline rendering. Shared Kelvin/power math preserves defaults. Power is
+  applied after export calibration clamps in all modes.
+- 9819644 adds warm/neutral/cool tones, 25–200% brightness, reset, undo/drafts
+  and shared lighting in preview/walkthrough. Legacy custom values are retained.
+  Both commits are pushed. Guide: docs/lighting-editing.md (b3cb4df).
+- Full Python suite: 784 passed, 9 optional skips. Ruff and mypy across 85 files
+  pass. Frontend: 49 tests, typecheck and production build pass. Browser tone,
+  brightness, undo/redo, reset/undo, save, reload, fresh export and both 3D views
+  were verified. Full log: ../planstride-lighting-tests-2026-10-22.log.
+- Same real-plan job: layout and furniture unchanged; all 16 exported light
+  intensities doubled and became warmer. glTF meshes/accessors were identical.
+  Evidence: outputs/lighting-qa-2026-10-22/verification.json.
+  A full final bake was not repeated; all mode-specific power paths are tested.
+- Server PID 4777 runs the latest backend at 127.0.0.1:8001 with AI disabled.
+  No downloads. Review-required structural limitations remain.
 
 ## Exact next steps
 
-1. Complete frontend3D warningfocus nowinprogress. Existing2Dwarningfocus
-   remains. Add savedfindinglink topreview,resolve verifiedobjectgeometry,
-   visiblemarker+camera framing; explicit no-location/stale behavior and no
-   sourcegeometry or GLBmaterial mutation. Dirtyeditor mustsavebefore linking.
-2. Relevant frontendchecks/build andbrowserverify located/unlocated/stale
-   findings, clear/resetview and preservation ofnormalpreview. Publishfeature.
-3. Roomfloor/wallmaterials need renderer surface-region assignment, including
-   explicit slabs,fallbackfloors,shared/partialwalls. Read-onlyaudit complete;
-   implementation notstarted.
-4. Perspectivepreparation,walkroutechecks,further structuralaccuracy remain.
-   Independent source/buildinggroups,reviewedannotations andbroaderpermitted
-   sources required beforefinaluntouchedevaluation. Opening,adjacency,scaleerror,
-   correctioneffort metrics outstanding.30quarantine examples remainuntouched.
+1. Complete room finish support currently in progress: backend schema/region
+   contract and surface partitioning in both exporters, frontend controls and
+   save/draft/history behavior. Confirm opposite/shared/partial wall sides and
+   existing slab/fallback coverage. Do not expose controls without renderer support.
+2. Run focused geometry/API tests, full Python checks, frontend checks/build,
+   real Blender comparison and browser save/undo/refresh/export QA. Publish
+   completed logical changes separately. Preserve untested work if interrupted.
+3. Perspective preparation, walking-route checks and further structural accuracy
+   remain. Independent building/source groups, reviewed annotations and broader
+   permitted sources are required before final evaluation. Opening, adjacency,
+   scale-error and correction-effort metrics remain outstanding. The 30
+   quarantined examples remain untouched.
 
 ## Previous pause status (15 October)
 
@@ -313,9 +311,41 @@ it has NOT loaded the latest wall/furniture source edits. Current userbrowser
 is the saved editor jobf7c01bb7af734d088de0b63c792ce565. No additional downloads.
 The full PlanStride upgrade remains incomplete. Resume only on userrequest.
 
-## Active continuation, 22 October 2026
+## Active continuation, 24 October 2026
 
-Furniture andlighting published/verified asabove. Lastusagecheck after9819644:
-36%five-hourallowance remaining.3Dwarningfocus iscurrentunfinishedunit,frontend
-only. Readgitstatus forexactactivefiles. Nonewbenchmarkanalyses,privateimage
-redistribution ordownloads.
+Furniture and lighting remain published and verified. Source-warning position
+fix 4a62728 is pushed; CI passed. Interval-anchored openings focus canonical host
+endpoints rather than potentially stale cached centres, including diagonal hosts.
+Missing referenced IDs are retained for complete 3D resolution.
+
+3D warning feature fc7dc8c is pushed: verified object/floor markers, camera
+focus, reset/clear, source backlink and dirty/save/model gating. Missing, stale,
+ambiguous, unsupported and source-image-only locations are explicit. Preview
+refresh retains the previous plan/GLB pair during writes or version changes and
+rechecks status after loading a plan. This bounds concurrent-read races; artifact
+URLs remain mutable rather than immutable snapshots.
+
+Published frontend coverage: 73 tests (including 13 3D, 8 asynchronous preview
+and 3 new source-warning cases), typecheck and build pass. Four additional
+unpublished room-finish tests pass locally (77 total). Browser verified located
+wall focus/marker/framing, reset, clear, source backlink, dirty blocking with
+undo, whole-plan finding and obsolete URL. No console warnings/errors.
+Guide: docs/warning-3d-review.md. Local workflow evidence:
+outputs/warning-3d-qa-2026-10-24/verification.json.
+Screenshot: ../../outputs/PlanStride-warning-3D-2026-10-24.png.
+
+Room finishes are unfinished and local: types/helpers/controls/history validation
+are saved; EditorPage wiring is next. Backend schema and region contract plus
+surface partitioning are being implemented and tested. No new dependency or
+asset downloads. Never claim an unfinished control works before real rendering.
+
+Server restarted as PID 2532 with AI disabled at http://127.0.0.1:8001. It has
+published warning UI but needs restart after backend finishes are completed.
+QA job: 4536f1c93118459ea18a624265bbadcf, separate from the user's current job.
+The automatic plan remains review_required at about 40%, with missing openings
+and incomplete floors. Workflow verification does not certify reconstruction.
+
+Last usage check: 67% of five-hour allowance remains. Branch main, latest code
+commit fc7dc8c. No repeated benchmark runs, private plan redistribution or new
+downloads. Preserve both untracked .DS_Store files. Resume unfinished materials
+from actual git state if interrupted.
