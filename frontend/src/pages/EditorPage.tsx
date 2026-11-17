@@ -15,6 +15,7 @@ import { addPosition, createFurniture, FURNITURE_PRESETS, furnitureFootprint, fu
 import { changeLighting, DEFAULT_LIGHTING, LIGHTING_TONES, lightingSettings } from "../lighting";
 import { findingPath, review3DLinkState, reviewIssue3DFocus } from "../review3D";
 import { changeRoomFinish } from "../roomFinishes";
+import { savedRouteWarnings } from "../savedRouteWarnings";
 import RoomFinishControls from "../components/RoomFinishControls";
 import type { FloorPlanModel, FurniturePlacement, Opening, Point2D, QualityReport, RoomPolygon, WallSegment } from "../types";
 
@@ -882,7 +883,11 @@ export default function EditorPage() {
   const selectedFurniture = selection?.kind === "furniture" ? selectedItem as FurniturePlacement | undefined : undefined;
   const lighting = lightingSettings(model?.lighting);
   const lightingTone = LIGHTING_TONES.find((tone) => tone.temperature === lighting.color_temperature)?.value ?? "custom";
-  const furnitureWarnings = useMemo(() => model && selectedFurniture ? overlapWarnings(model, selectedFurniture) : [], [model, selectedFurniture]);
+  const savedSnapshot = savedModelRef.current;
+  const savedRouteSource = useMemo(() => savedSnapshot ? JSON.parse(savedSnapshot) as FloorPlanModel : null, [savedSnapshot]);
+  const furnitureWarnings = useMemo(() => model && selectedFurniture
+    ? [...overlapWarnings(model, selectedFurniture), ...savedRouteWarnings(model, selectedFurniture, savedRouteSource)]
+    : [], [model, selectedFurniture, savedRouteSource]);
   const reviewIssues = useMemo(() => model ? collectReviewIssues(model, report?.issues) : [], [model, report]);
   const focusedIssue = reviewIssues.find((issue) => issue.id === focusedIssueId);
   const focused3D = useMemo(() => model && focusedIssue ? reviewIssue3DFocus(model, focusedIssue) : null, [model, focusedIssue]);
@@ -1453,7 +1458,7 @@ export default function EditorPage() {
                     <ul style={{ paddingLeft: 18, margin: "4px 0" }}>{furnitureWarnings.map((warning, index) => <li key={`${warning.kind}-${index}`}>{warning.message}</li>)}</ul>
                   </div>
                 )}
-                <p style={{ fontSize: 12, color: "#667078" }}>Placement checks cover wall and doorway overlap only. Walk routes and door swings have not been checked.</p>
+                <p style={{ fontSize: 12, color: "#667078" }}>Placement checks cover wall and doorway overlap and overlap with an existing saved tour path. Room connectivity, route validity and door swings have not been checked.</p>
               </>
             )}
             {selection!.kind === "rooms" && (
