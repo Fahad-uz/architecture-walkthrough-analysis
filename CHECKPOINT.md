@@ -454,3 +454,37 @@ Last five-hour usage check: 71% remaining after the courtyard commit. Local
 app restarted as PID 3025 with .venv Python and AI disabled; health returned ok.
 The app now loads the published courtyard fix. Saved-tour hint remains the
 current frontend unit; finish checks and browser QA before publishing it.
+
+
+### Published saved-route and scale changes, 17 November
+
+3eb58aa is pushed: selected furniture now has a saved guided-tour path overlap
+hint with exact oriented footprint/segment distance and camera radius. Missing,
+malformed or stationary paths never create links. Layout/scale/frame changes
+require saving before comparison. No global route validity or door-swing claim.
+90 frontend tests (13 new), typecheck and production build passed. Browser QA
+confirmed overlap, stale-layout guidance, undo clearing/restoring and saved-state
+recovery. Persisted model unchanged; no browser errors. Guide updated in
+ docs/furniture-editing.md. Screenshot and local evidence as listed there.
+
+7278332 is pushed: selecting another upload clears the previous manual metres-
+per-pixel scale. Browser verification switched between two existing private
+images and confirmed reset, while same-image quarter-turn retained the scale.
+Typecheck/build passed. No analysis or AI service call was submitted during
+that check. Screenshot: ../../outputs/PlanStride-image-scale-reset-2026-11-17.jpg.
+
+The read-only perspective audit is complete. Four corners alone cannot determine
+a true rectangle's aspect ratio. Accurate input must require a known ratio (or
+two known dimensions) plus fresh prepared-frame calibration. Existing source
+manual_scale cannot silently survive a projective warp. Transform order should
+be EXIF → quarter turn → straightening → rectification → crop → analysis resize.
+The current evaluator accepts only affine provenance v1/v2; do not expose a
+perspective control before homogeneous polygon mapping/provenance/scale/API
+and frontend handling are complete.
+
+A standalone validated rectification foundation is in progress, with no API,
+pipeline or frontend exposure: new vision/perspective_rectification.py and
+new tests/test_perspective.py. Preserve the original perspective.py legacy
+helpers unchanged. Inspect actual git status on resume. No new downloads.
+Last allowance check: 41% remaining after 7278332. Server PID 3025 is healthy
+with AI disabled. User's original job remains untouched.
