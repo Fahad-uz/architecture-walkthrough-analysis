@@ -16,6 +16,7 @@ from typing import cast
 import cv2
 import numpy as np
 
+from architecture_walkthrough.geometry.models import PlanROI
 from architecture_walkthrough.vision.image_preparation import preparation_frame
 
 Point = tuple[float, float]
@@ -270,6 +271,54 @@ def warp_perspective(image: np.ndarray, frame: PerspectiveFrame) -> np.ndarray:
         image, index_matrix, (frame.width, frame.height), flags=cv2.INTER_LINEAR,
         borderMode=cv2.BORDER_CONSTANT, borderValue=(255, 255, 255, 255),
     )
+
+
+def rectified_preparation_metadata(
+    frame: PerspectiveFrame, roi: PlanROI, analysis_width: int, analysis_height: int,
+) -> dict[str, object]:
+    """Record v3 source-edge mapping through the actual padded ROI and resize.
+
+    This is an opt-in foundation contract; the upload pipeline does not emit
+    it yet. The evaluator clips footprints to analysis-image bounds before
+    applying its inverse homography, where that inverse is finite and safe.
+    """
+    _dimensions(analysis_width, analysis_height)
+    rect = roi.rect
+    x, y, width, height = (
+        _number(getattr(rect, key), "rectified ROI") for key in ("x", "y", "width", "height")
+    )
+    if (x < 0 or y < 0 or width <= 0 or height <= 0
+            or x + width > frame.width or y + height > frame.height):
+        raise ValueError("rectified ROI must be nonempty and within the prepared image")
+    if ((roi.full_image_width_px is not None and roi.full_image_width_px != frame.width)
+            or (roi.full_image_height_px is not None and roi.full_image_height_px != frame.height)):
+        raise ValueError("rectified ROI image dimensions do not match the prepared frame")
+    scale_x, scale_y = analysis_width / width, analysis_height / height
+    crop_resize = np.asarray([
+        [scale_x, 0, -x * scale_x], [0, scale_y, -y * scale_y], [0, 0, 1],
+    ], dtype=np.float64)
+    forward = crop_resize @ frame.source_to_prepared
+    try:
+        inverse = np.linalg.inv(forward)
+    except np.linalg.LinAlgError as exc:
+        raise ValueError("rectified ROI produces a singular preparation transform") from exc
+    if not np.isfinite(forward).all() or not np.isfinite(inverse).all():
+        raise ValueError("rectified preparation matrices must be finite")
+    return {
+        "version": 3,
+        "rotation_quarter_turns": frame.rotation_quarter_turns,
+        "straighten_degrees": frame.straighten_degrees,
+        "source_width_px": frame.source_width_px,
+        "source_height_px": frame.source_height_px,
+        "prepared_width_px": frame.width,
+        "prepared_height_px": frame.height,
+        "analysis_width_px": analysis_width,
+        "analysis_height_px": analysis_height,
+        "rectification": frame.rectification_metadata(),
+        "prepared_roi": {"x": x, "y": y, "width": width, "height": height},
+        "source_to_analysis": forward.tolist(),
+        "analysis_to_source": inverse.tolist(),
+    }
 
 
 def validate_prepared_scale_reference(

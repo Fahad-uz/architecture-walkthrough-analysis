@@ -5,11 +5,16 @@ import math
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 from shapely.geometry import Polygon, box
 
-from architecture_walkthrough.geometry.models import FloorPlanModel
+from architecture_walkthrough.geometry.models import BoundingBox, FloorPlanModel, PlanROI
 from architecture_walkthrough.vision.image_preparation import preparation_metadata
+from architecture_walkthrough.vision.perspective_rectification import (
+    perspective_frame,
+    rectified_preparation_metadata,
+)
 
 MODULE = Path(__file__).resolve().parents[1] / "tools/benchmark/evaluate_structure.py"
 sys.path.insert(0, str(MODULE.parent))
@@ -182,6 +187,146 @@ def test_prediction_rejects_incomplete_preparation() -> None:
     del model["metadata"]["image_preparation"]["analysis_to_source"]
     with pytest.raises(ValueError, match="Invalid image preparation transform"):
         metrics.prediction_geometry(model, (60, 99), (200, 120))
+
+
+def projective_prediction(degrees=7.5):
+    cosine, sine = math.cos(math.radians(degrees)), math.sin(math.radians(degrees))
+    ow = math.ceil(120 * cosine + 200 * abs(sine) - 1e-9)
+    oh = math.ceil(120 * abs(sine) + 200 * cosine - 1e-9)
+    corners = []
+    for u, v in [(0, 0), (1, 0), (1, 1), (0, 1)]:
+        denominator = .1 * u + .2 * v + 1
+        corners.append([ow * (.60 * u + .06 * v + .12) / denominator,
+                        oh * (.04 * u + .60 * v + .12) / denominator])
+    frame = perspective_frame(200, 120, {"corners": corners, "aspect_ratio": 1.5,
+                                          "output_width_px": 120},
+                              rotation_quarter_turns=1, straighten_degrees=degrees)
+    roi = PlanROI(rect=BoundingBox(x=8, y=6, width=95, height=65), confidence=1,
+                  padding_px=2, full_image_width_px=120, full_image_height_px=80)
+    model = {"pixels_per_metre": 10, "plan_roi": roi.model_dump(mode="json"),
+             "walls": [{"start": {"x": .7, "y": .6}, "end": {"x": 3.1, "y": 2.4},
+                        "thickness_m": .4}],
+             "rooms": [{"points": [{"x": x, "y": y} for x, y in
+                                     [(.5, .3), (4, .3), (4, 3.4), (.5, 3.4)]]}],
+             "metadata": {"image_preparation": rectified_preparation_metadata(frame, roi, 60, 41)}}
+    return model
+
+
+def independent_projective_source(x, y, degrees=7.5):
+    # Model -> analysis -> actual padded ROI -> rectified unit rectangle.
+    u, v = (8 + x * 10 * 95 / 60) / 120, (6 + (41 - y * 10) * 65 / 41) / 80
+    cosine, sine = math.cos(math.radians(degrees)), math.sin(math.radians(degrees))
+    ow = math.ceil(120 * cosine + 200 * abs(sine) - 1e-9)
+    oh = math.ceil(120 * abs(sine) + 200 * cosine - 1e-9)
+    denominator = .1 * u + .2 * v + 1
+    ox = ow * (.60 * u + .06 * v + .12) / denominator
+    oy = oh * (.04 * u + .60 * v + .12) / denominator
+    # Undo expanded straightening and clockwise quarter turn.
+    qx = cosine * (ox - ow / 2) + sine * (oy - oh / 2) + 60
+    qy = -sine * (ox - ow / 2) + cosine * (oy - oh / 2) + 100
+    return qy, 120 - qx
+
+
+@pytest.mark.parametrize("degrees", [-7.5, 0, 7.5])
+def test_v3_maps_complete_projective_wall_footprint_and_room_after_crop_resize(degrees):
+    model = projective_prediction(degrees)
+    result = metrics.prediction_geometry(model, (60, 41), (200, 120))
+    def source(x, y):
+        return independent_projective_source(x, y, degrees)
+    bounds = box(0, 0, 200, 120)
+    # The normal to this 2.4 x 1.8 diagonal is (-.6,.8); half-thickness is .2.
+    expected_wall = Polygon([source(x, y) for x, y in
+                             [(.58, .76), (2.98, 2.56), (3.22, 2.24), (.82, .44)]]).intersection(bounds)
+    expected_room = Polygon([source(x, y) for x, y in
+                             [(.5, .3), (4, .3), (4, 3.4), (.5, 3.4)]]).intersection(bounds)
+    assert result["walls"][0].symmetric_difference(expected_wall).area < 1e-9
+    assert result["rooms"][0].symmetric_difference(expected_room).area < 1e-9
+
+
+def test_v3_maps_room_holes_and_multipart_repaired_polygons():
+    model = projective_prediction()
+    outer = [(.5, .3), (4, .3), (4, 3.4), (.5, 3.4), (.5, .3)]
+    hole = [(1, 1), (1, 2), (2, 2), (2, 1), (1, 1)]
+    # A zero-width bridge encodes a hole in the existing point-only room model;
+    # make_valid retains the interior ring and an area-free bridge line.
+    bridged = outer + hole + [outer[0]]
+    bowtie = [(.5, .5), (4, 3), (4, .5), (.5, 3)]
+    model["rooms"] = [{"points": [{"x": x, "y": y} for x, y in ring]}
+                      for ring in [bridged, bowtie]]
+    result = metrics.prediction_geometry(model, (60, 41), (200, 120))
+    expected = Polygon([independent_projective_source(x, y) for x, y in outer],
+                       [[independent_projective_source(x, y) for x, y in hole]])
+    assert result["rooms"][0].symmetric_difference(expected).area < 1e-9
+    assert result["rooms"][1].geom_type == "MultiPolygon"
+    assert len(result["rooms"][1].geoms) == 2
+
+
+def test_v3_clips_to_analysis_bounds_before_inverse_and_discards_unobserved_area():
+    model = projective_prediction()
+    model["rooms"] = [{"points": [{"x": x, "y": y} for x, y in
+                                 [(-1e6, -1e6), (1e6, -1e6), (1e6, 1e6), (-1e6, 1e6)]]}]
+    model["walls"] = [{"start": {"x": -100, "y": -100}, "end": {"x": -99, "y": -99},
+                       "thickness_m": 1}]
+    result = metrics.prediction_geometry(model, (60, 41), (200, 120))
+    expected = Polygon([independent_projective_source(x, y) for x, y in
+                        [(0, 0), (6, 0), (6, 4.1), (0, 4.1)]])
+    assert result["rooms"][0].symmetric_difference(expected).area < 1e-9
+    assert result["walls"][0].is_empty
+
+
+@pytest.mark.parametrize("path,value", [
+    (("source_width_px",), 201), (("analysis_width_px",), 61),
+    (("prepared_width_px",), 121), (("rotation_quarter_turns",), True),
+    (("straighten_degrees",), float("nan")), (("straighten_degrees",), "7.5"),
+    (("rectification", "aspect_ratio"), 1.6),
+    (("rectification", "aspect_ratio_source"), "inferred_from_photo"),
+    (("rectification", "oriented_width_px"), 1),
+    (("rectification", "oriented_width_px"), True),
+    (("rectification", "corner_coordinate_frame"), "source_edges"),
+    (("rectification", "corners"), [[0, 0]] * 4),
+    (("rectification", "oriented_to_prepared"), [[1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+    (("prepared_roi", "x"), -1), (("prepared_roi", "width"), 0),
+    (("prepared_roi", "height"), float("inf")),
+    (("source_to_analysis",), [[1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+    (("source_to_analysis",), [[True, 0, 0], [0, 1, 0], [0, 0, 1]]),
+    (("source_to_analysis",), [["1", 0, 0], [0, 1, 0], [0, 0, 1]]),
+    (("analysis_to_source",), [[1, 0, 0], [0, 1, 0], [1, 0, -30]]),
+    (("analysis_to_source",), [[1, 0, 0], [0, 1, 0], [0, 0, float("nan")]]),
+])
+def test_v3_rejects_inconsistent_malformed_and_pole_records(path, value):
+    model = projective_prediction()
+    target = model["metadata"]["image_preparation"]
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    with pytest.raises(ValueError, match="Invalid image preparation transform"):
+        metrics.prediction_geometry(model, (60, 41), (200, 120))
+
+
+@pytest.mark.parametrize("field", ["rectification", "prepared_roi", "straighten_degrees",
+                                    "source_to_analysis", "analysis_to_source"])
+def test_v3_rejects_missing_required_facts(field):
+    model = projective_prediction()
+    del model["metadata"]["image_preparation"][field]
+    with pytest.raises(ValueError, match="Invalid image preparation transform"):
+        metrics.prediction_geometry(model, (60, 41), (200, 120))
+
+
+def test_v3_rejects_roi_model_mismatch_and_extra_rectification_facts():
+    model = projective_prediction()
+    model["plan_roi"]["rect"]["x"] += 1
+    with pytest.raises(ValueError, match="Model ROI"):
+        metrics.prediction_geometry(model, (60, 41), (200, 120))
+    model = projective_prediction()
+    model["metadata"]["image_preparation"]["rectification"]["unexpected"] = 1
+    with pytest.raises(ValueError, match="unexpected"):
+        metrics.prediction_geometry(model, (60, 41), (200, 120))
+
+
+def test_projective_geometry_rejects_poles_before_division():
+    matrix = np.asarray([[1, 0, 0], [0, 1, 0], [1, 0, -.5]])
+    with pytest.raises(ValueError, match="pole"):
+        metrics._projective_geometry(box(0, 0, 1, 1), matrix)
 
 
 def test_metric_does_not_hide_shift_or_missed_wall() -> None:

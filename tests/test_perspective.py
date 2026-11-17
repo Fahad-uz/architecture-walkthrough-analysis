@@ -9,13 +9,17 @@ import numpy as np
 import pytest
 
 import architecture_walkthrough.vision.perspective_rectification as perspective_module
+from architecture_walkthrough.geometry.models import BoundingBox, PlanROI
 from architecture_walkthrough.vision.perspective_rectification import (
     PerspectiveLimits,
     parse_perspective_spec,
     perspective_frame,
+    rectified_preparation_metadata,
     validate_prepared_scale_reference,
     warp_perspective,
 )
+from architecture_walkthrough.vision.plan_roi import detect_plan_roi
+from architecture_walkthrough.vision.preprocessing import resize_preserving_aspect
 
 
 def rectangle_spec(width=120, height=90, output_width=None):
@@ -357,3 +361,54 @@ def test_scale_reference_handles_exactly_one_pixel_and_frame_edges():
     assert reference.pixels_per_metre == 100
     with pytest.raises(ValueError, match="dimensions"):
         validate_prepared_scale_reference({"points": [[0, 0], [1, 0]], "distance_m": 1}, 0, 90)
+
+
+@pytest.mark.parametrize("turns", range(4))
+@pytest.mark.parametrize("degrees", [-7.5, 7.5])
+def test_rectified_metadata_composes_actual_padded_roi_and_rounded_resize(turns, degrees):
+    ow, oh, orientation = independent_orientation(203, 159, turns, degrees)
+    frame = perspective_frame(203, 159, known_spec(ow, oh), rotation_quarter_turns=turns,
+                              straighten_degrees=degrees)
+    roi = detect_plan_roi(np.zeros((80, 120, 3), dtype=np.uint8),
+                          crop_rect=(10, 15, 91, 51), padding_ratio=.02)
+    resized = resize_preserving_aspect(roi.image, max_side=70)
+    ah, aw = resized.shape[:2]
+    record = rectified_preparation_metadata(frame, roi.roi, aw, ah)
+    assert record["version"] == 3
+    assert record["prepared_roi"] == {"x": 8, "y": 13, "width": 95, "height": 55}
+    assert (aw, ah) == (70, 40)
+    assert record["rectification"] == frame.rectification_metadata()
+    assert record["straighten_degrees"] == degrees
+    expected_inverse = (np.linalg.inv(orientation) @ known_oriented_inverse(ow, oh)
+                        @ np.diag([1 / 120, 1 / 80, 1])
+                        @ np.asarray([[95 / aw, 0, 8], [0, 55 / ah, 13], [0, 0, 1]]))
+    landmarks = [[0, 0], [aw, ah], [.5, .5], [37.25, 21.75]]
+    expected = project(expected_inverse, landmarks)
+    np.testing.assert_allclose(project(np.asarray(record["analysis_to_source"]), landmarks),
+                               expected, atol=1e-10)
+    np.testing.assert_allclose(project(np.asarray(record["source_to_analysis"]), expected),
+                               landmarks, atol=1e-10)
+    json.dumps(record, allow_nan=False)
+
+
+@pytest.mark.parametrize("rect", [
+    (-1, 0, 20, 20), (0, -1, 20, 20), (0, 0, 0, 20), (0, 0, 20, -1),
+    (110, 0, 11, 20), (0, 70, 20, 11), (float("nan"), 0, 20, 20),
+    (0, 0, float("inf"), 20),
+])
+def test_rectified_metadata_rejects_invalid_roi(rect):
+    frame = perspective_frame(200, 160, known_spec(200, 160))
+    roi = PlanROI(rect=BoundingBox(**dict(zip(("x", "y", "width", "height"), rect))), confidence=1)
+    with pytest.raises(ValueError, match="ROI"):
+        rectified_preparation_metadata(frame, roi, 60, 40)
+
+
+def test_rectified_metadata_checks_analysis_and_roi_frame_dimensions():
+    frame = perspective_frame(200, 160, known_spec(200, 160))
+    roi = PlanROI(rect=BoundingBox(x=0, y=0, width=120, height=80), confidence=1)
+    for aw, ah in [(0, 40), (60, -1), (True, 40), (60.0, 40)]:
+        with pytest.raises(ValueError, match="dimensions"):
+            rectified_preparation_metadata(frame, roi, aw, ah)
+    roi.full_image_width_px = 121
+    with pytest.raises(ValueError, match="dimensions"):
+        rectified_preparation_metadata(frame, roi, 60, 40)

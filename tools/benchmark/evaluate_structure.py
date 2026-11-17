@@ -20,7 +20,13 @@ from shapely import make_valid
 from shapely.affinity import affine_transform
 from shapely.errors import GEOSException
 from shapely.geometry import LineString, Polygon, box
-from shapely.ops import unary_union
+from shapely.ops import transform, unary_union
+
+from architecture_walkthrough.geometry.models import BoundingBox, PlanROI
+from architecture_walkthrough.vision.perspective_rectification import (
+    perspective_frame,
+    rectified_preparation_metadata,
+)
 
 from run_baseline import checksum, load_samples, write_json
 
@@ -105,6 +111,119 @@ def load_svg(path: Path, width: int, height: int) -> dict[str, Any]:
     return output
 
 
+def _v3_matrix(value: Any, expected: Any) -> np.ndarray:
+    if (type(value) is not list or len(value) != 3
+            or any(type(row) is not list or len(row) != 3 for row in value)
+            or any(type(item) not in (int, float) for row in value for item in row)):
+        raise ValueError("Invalid projective preparation matrix")
+    matrix = np.asarray(value, dtype=float)
+    if (not np.isfinite(matrix).all()
+            or not np.allclose(matrix, expected, rtol=1e-9, atol=1e-9)):
+        raise ValueError("Projective preparation matrix disagrees with the recorded operations")
+    return matrix
+
+
+def _v3_inverse(preparation: dict[str, Any], model: dict[str, Any],
+                analysis_size: tuple[int, int], image_size: tuple[int, int]) -> np.ndarray:
+    try:
+        dimensions = {}
+        for name in ("source", "prepared", "analysis"):
+            size = tuple(preparation[f"{name}_{axis}_px"] for axis in ("width", "height"))
+            if any(type(item) is not int or item <= 0 for item in size):
+                raise ValueError("Invalid projective preparation dimensions")
+            dimensions[name] = size
+        if dimensions["source"] != image_size or dimensions["analysis"] != analysis_size:
+            raise ValueError("Projective preparation dimensions do not match image artifacts")
+        turns, degrees = preparation["rotation_quarter_turns"], preparation["straighten_degrees"]
+        if type(turns) is not int or type(degrees) not in (int, float):
+            raise ValueError("Invalid projective preparation orientation")
+        rectification = preparation["rectification"]
+        if type(rectification) is not dict:
+            raise ValueError("Expected a rectangle rectification record")
+        spec = {key: rectification[key] for key in ("corners", "aspect_ratio", "output_width_px")}
+        frame = perspective_frame(*image_size, spec, rotation_quarter_turns=turns,
+                                  straighten_degrees=degrees)
+        expected_rectification = frame.rectification_metadata()
+        if set(rectification) != set(expected_rectification):
+            raise ValueError("Incomplete or unexpected rectangle rectification facts")
+        for key, expected in expected_rectification.items():
+            if key == "oriented_to_prepared":
+                _v3_matrix(rectification[key], expected)
+            elif key.endswith("_px"):
+                if type(rectification[key]) is not int or rectification[key] != expected:
+                    raise ValueError("Inconsistent rectangle rectification dimensions")
+            elif rectification[key] != expected:
+                raise ValueError("Inconsistent rectangle rectification facts")
+        if dimensions["prepared"] != (frame.width, frame.height):
+            raise ValueError("Prepared dimensions do not match rectangle rectification")
+        roi_rect = preparation["prepared_roi"]
+        if (type(roi_rect) is not dict or set(roi_rect) != {"x", "y", "width", "height"}
+                or any(type(item) not in (int, float) or not math.isfinite(item)
+                       for item in roi_rect.values())):
+            raise ValueError("Invalid recorded rectified ROI")
+        if model["plan_roi"]["rect"] != roi_rect:
+            raise ValueError("Model ROI disagrees with the recorded rectified ROI")
+        roi = PlanROI(rect=BoundingBox(**roi_rect), confidence=1,
+                      full_image_width_px=frame.width, full_image_height_px=frame.height)
+        expected_record = rectified_preparation_metadata(frame, roi, *analysis_size)
+        forward = _v3_matrix(preparation["source_to_analysis"], expected_record["source_to_analysis"])
+        inverse = _v3_matrix(preparation["analysis_to_source"], expected_record["analysis_to_source"])
+        if (not np.allclose(forward @ inverse, np.eye(3), rtol=0, atol=1e-9)
+                or not np.allclose(inverse @ forward, np.eye(3), rtol=0, atol=1e-9)):
+            raise ValueError("Inconsistent projective preparation inverse")
+        return inverse
+    except (KeyError, TypeError, ValueError, OverflowError, np.linalg.LinAlgError) as exc:
+        raise ValueError(f"Invalid image preparation transform: {exc}") from exc
+
+
+def _projective_geometry(geometry, matrix: np.ndarray):
+    """Map every vertex, including polygon holes and multipart components."""
+    if geometry.is_empty:
+        return geometry
+
+    def project(x, y, z=None):
+        points = np.c_[x, y, np.ones(len(x))]
+        homogeneous = points @ matrix.T
+        denominator = homogeneous[:, 2]
+        magnitude = np.abs(points * matrix[2]).sum(axis=1)
+        if (not np.isfinite(homogeneous).all()
+                or np.any(np.abs(denominator) <= 1e-10 * magnitude)
+                or not (np.all(denominator > 0) or np.all(denominator < 0))):
+            raise ValueError("Projective geometry crosses a pole or has a nonfinite coordinate")
+        mapped = homogeneous[:, :2] / denominator[:, None]
+        if not np.isfinite(mapped).all():
+            raise ValueError("Projective geometry has a nonfinite mapped coordinate")
+        return mapped[:, 0], mapped[:, 1]
+
+    return transform(project, geometry)
+
+
+def _v3_prediction_geometry(model: dict[str, Any], preparation: dict[str, Any],
+                            analysis_size: tuple[int, int], image_size: tuple[int, int],
+                            ppm: float) -> dict[str, Any]:
+    inverse = _v3_inverse(preparation, model, analysis_size, image_size)
+    aw, ah = analysis_size
+    metre_factors = [ppm, 0, 0, -ppm, 0, ah]
+    analysis_bounds, source_bounds = box(0, 0, aw, ah), box(0, 0, *image_size)
+
+    def source_geometry(geometry):
+        # v3 policy: predictions outside the observed analysis raster cannot
+        # contribute area or reach an inverse-homography pole outside its frame.
+        observed = affine_transform(geometry, metre_factors).intersection(analysis_bounds)
+        return _projective_geometry(observed, inverse).intersection(source_bounds)
+
+    walls = []
+    for wall in model["walls"]:
+        endpoints = [(wall[key]["x"], wall[key]["y"]) for key in ("start", "end")]
+        footprint = LineString(endpoints).buffer(wall["thickness_m"] / 2, cap_style=2)
+        walls.append(source_geometry(footprint))
+    rooms = []
+    for room in model["rooms"]:
+        polygon = make_valid(Polygon([(p["x"], p["y"]) for p in room["points"]]))
+        rooms.append(source_geometry(polygon))
+    return {"walls": walls, "rooms": rooms}
+
+
 def prediction_geometry(model: dict[str, Any], analysis_size: tuple[int, int],
                         image_size: tuple[int, int]) -> dict[str, Any]:
     ppm = float(model["pixels_per_metre"])
@@ -115,6 +234,9 @@ def prediction_geometry(model: dict[str, Any], analysis_size: tuple[int, int],
     if not isinstance(metadata, dict):
         raise ValueError("Invalid prediction metadata")
     preparation = metadata.get("image_preparation")
+    if (isinstance(preparation, dict) and type(preparation.get("version")) is int
+            and preparation["version"] == 3):
+        return _v3_prediction_geometry(model, preparation, analysis_size, image_size, ppm)
     if preparation is not None:
         try:
             if not isinstance(preparation, dict):
