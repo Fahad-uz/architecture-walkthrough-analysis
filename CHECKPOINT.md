@@ -1,6 +1,6 @@
 # PlanStride checkpoint
 
-Updated 24 October 2026 (Asia/Kolkata). PAUSED at the user's explicit request.
+Updated 17 November 2026 (Asia/Kolkata). Active after the user requested continuation.
 Branch consolidation is complete.
 The full PlanStride upgrade is NOT complete.
 
@@ -426,3 +426,31 @@ A redundant WIP archive, tracked diff and SHA256 inventory are saved in
 outputs/checkpoints/2026-10-24-pause/ (ignored, not pushed). Use only for recovery
 if current files are missing; do not overwrite newer edits. No secrets included.
 The full upgrade remains incomplete. Resume only when the user says continue.
+
+
+## Active continuation, 17 November 2026
+
+Resumed from the exact saved courtyard work; no backup extraction or completed
+benchmark repetition. Local base and GitHub main match e70fe36. Commit identity
+is Fahad-uz / fahadmanaff@gmail.com. The historical pause section above remains
+as a record; this active continuation takes precedence.
+
+The final courtyard contact guard and two regression cases now pass. Relevant
+floor/material/architectural/export suite: 66 passed; full Ruff and mypy across
+87 source files passed. Independent concave, rotated, multiple-hole, winding,
+redundant-vertex and contact probes found no remaining issue. Ordinary floor,
+slab and fallback policies are unchanged. Published at 8d5e77a as a separate bug-fix commit, pushed to main.
+Guide: docs/courtyard-floors.md. No new benchmark runs or downloads.
+No new download. The previous actual GLB courtyard evidence remains applicable.
+
+The saved-tour furniture hint is now being implemented in a separate frontend
+unit. It compares current furniture with the last saved path, suppresses claims
+when layout/scale/frame changes, and gives explicit save-first guidance. No
+all-room connectivity or door-swing claim is intended. Inspect git status for
+its current files. Perspective correction is being audited read-only before
+starting that separate milestone. The 30 quarantined plans remain untouched.
+
+Last five-hour usage check: 71% remaining after the courtyard commit. Local
+app restarted as PID 3025 with .venv Python and AI disabled; health returned ok.
+The app now loads the published courtyard fix. Saved-tour hint remains the
+current frontend unit; finish checks and browser QA before publishing it.
