@@ -281,11 +281,20 @@ verification from the API smoke test.
 - Server PID 4777 runs the latest backend at 127.0.0.1:8001 with AI disabled.
   No downloads. Review-required structural limitations remain.
 
-## Exact next steps
+## Exact next steps (current: 17 November 2026)
 
-The work is paused. On the next user-requested continuation, follow the saved
-resume order in "Paused work, 24 October 2026" below. Do not restart benchmarks
-or repeat already verified features.
+1. Check quota and actual git/remote state. All completed work below is pushed;
+   do not restore the old October WIP archive over current main.
+2. Integrate the completed perspective core/provenance into a strict upload and
+   worker flow, with a known rectangle ratio and freshly validated prepared-
+   frame measurement. Reject inherited source manual_scale for perspective.
+3. Add the complete four-corner preview/calibration UX and preparation history
+   invalidation, then verify upload → correction → export → walkthrough. Current
+   product upload has NO perspective control yet; core/evaluator readiness does
+   not equal photo reconstruction accuracy.
+4. Full route/door-approach checks, structural accuracy and broader independently
+   reviewed evaluation remain. The 30 quarantine plans remain untouched. Do not
+   repeat completed 70-plan analyses or count corrected models as automatic wins.
 
 ## Previous pause status (15 October)
 
@@ -516,3 +525,59 @@ related tests; inspect actual git status before continuing. Do not expose API/
 UI controls before provenance, scale and worker flow are complete. Last usage
 check29% remaining after core commit; no new download. Server PID3025 and user's
 original job remain unchanged.
+
+
+## Verified handoff checkpoint, 17 November 2026
+
+All current implementation units are complete, checked and pushed. No unfinished
+source edits remain at this checkpoint; preserve only the unrelated untracked
+.DS_Store and frontend/.DS_Store files. Historical pause records above are not
+the current status. Read this section and the current exact next steps first.
+
+Published this continuation, each as a separate logical commit:
+- 8d5e77a: courtyard-hole geometry fix including final boundary-contact guard.
+- 059a0cd: courtyard checks and resumed checkpoint.
+- 3eb58aa: saved-tour furniture placement hint and stale-route guidance.
+- 7278332: clear inherited upload scale when choosing a new image.
+- 991a3bb: saved-route checks and rectification requirements.
+- c09ddfa: validated perspective-rectification core, legacy helpers preserved.
+- 7694e8b: core verification and integration contract.
+- 179ba1e: version3 provenance and complete projective benchmark mapping.
+This checkpoint/documentation is a separate commit; use git log -1 for its hash.
+Branch main; identity Fahad-uz / fahadmanaff@gmail.com. Root verifies remote
+matches local main after the checkpoint push. No squash, force push or branch
+changes. Earlier CI passed through 991a3bb; inspect the latest CI on resume.
+
+Final local checks: Python992 passed,9 optional skips,2 existing deprecations;
+Ruff across src/tests/scripts/tools/benchmark passed; mypy88 source files passed.
+Log: ../planstride-projective-tests-2026-11-17.log. Frontend90 tests, typecheck
+and production build passed for the saved-route feature. The later scale reset
+also passed typecheck/build and direct browser verification.
+
+Independent reviews passed courtyard edge cases, rectification numeric/image
+math, v3 canonical validation, full wall footprints and polygon holes/multipart.
+No final70-plan benchmark or held-out evaluation was run; no new dataset/model/
+package/texture downloads or paid API calls occurred. AI remains disabled.
+
+Browser QA in the isolated job verified saved-route overlap, stale-layout
+save-first guidance, undo and restoration of Project saved. The persisted model
+was exactly unchanged. Upload QA selected two existing private image files and
+confirmed old manual scale clears; same-image rotation keeps scale. No analysis
+was submitted during upload QA. No browser errors. Evidence paths and JPEGs:
+outputs/saved-route-qa-2026-11-17/verification.json,
+../../outputs/PlanStride-saved-tour-warning-2026-11-17.jpg,
+../../outputs/PlanStride-image-scale-reset-2026-11-17.jpg.
+
+The app runs at http://127.0.0.1:8001, server PID3025, log/pid in ../walkthrough-
+server.log and ../walkthrough-server.pid. Runtime has the courtyard backend and
+latest built frontend. New rectification/evaluation utilities have no production
+import path, so no runtime restart is needed for those utilities. User's original
+job f7c01bb7af734d088de0b63c792ce565 is untouched. QA job4536f1c93118459ea18a624265bbadcf
+retains saved finishes/furniture and neutral lighting. Automatic source structure
+still requires review at about40%; no claim of perfect generalized reconstruction.
+
+Last quota check before saving:9% of the five-hour allowance remains. No new
+major task started after finishing the projective provenance unit. Next is the
+API/worker plus complete perspective preview/calibration integration, as listed
+above. All edited files are saved; verify status before resuming. Do not restart
+completed units or rely on chat memory. The broad PlanStride upgrade is incomplete.

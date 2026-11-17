@@ -60,11 +60,37 @@ No new package, model, asset or dataset was downloaded.
 
 ## Remaining integration
 
-- Versioned source/rectified/crop/analysis provenance and homogeneous mapping of
-  complete wall footprints and room polygons in the evaluator.
 - Strict upload validation, worker argument propagation, original-byte retention
   and rejection of inherited source-space manual scale.
 - Four-corner preview, known-ratio input and fresh rectified-frame calibration.
 - Whole-state preparation undo/redo and invalidation of old crops/references.
 - End-to-end save, regeneration and walkthrough verification using permitted
   photographed plans, with structural accuracy measured separately.
+
+
+## Projective provenance and evaluator
+
+Commit 179ba1e adds `rectified_preparation_metadata(frame, roi, aw, ah)` and a
+separate evaluator path for version3. The record includes source/rectified/
+analysis dimensions, orientation, the validated rectangle facts, actual padded
+ROI, exact per-axis resize composition and forward/inverse matrices. The ROI
+must be nonempty and inside the rectified frame.
+
+The evaluator reconstructs the canonical frame and rejects inconsistent facts,
+ROIs, dimensions or matrices. It clips complete buffered wall footprints and
+room polygons to the observed analysis raster before inverse projection, then
+maps every vertex with homogeneous division and clips to source bounds. Holes
+and multipart geometry are preserved. This avoids stretching wall thickness by
+one misleading global projective scale. Legacy/v1/v2 evaluation is unchanged.
+
+310 focused preparation/metric tests passed. The full Python suite passed:
+992 tests, 9 optional skips, 2 existing dependency deprecations. Ruff and mypy
+across 88 source files passed. Independent geometry and malformed-record probes
+passed. Log: ../planstride-projective-tests-2026-11-17.log.
+
+The application still does not emit v3 through upload or the pipeline. That
+integration must require a known rectangle ratio and a fresh measurement,
+propagate strict arguments through workers, preserve original bytes and reset
+stale preparation references. For analysis scale, map the fresh measurement's
+two endpoints through the actual per-axis crop/resize transform and recompute
+pixels per metre. A nominal scalar resize multiplier can miss integer rounding.
