@@ -6,6 +6,7 @@ from shapely.geometry.polygon import orient  # type: ignore[import-untyped]
 import trimesh
 
 from architecture_walkthrough.geometry.models import FloorPlanModel, Point2D, RoomPolygon
+from architecture_walkthrough.scene.finish_regions import partition_finish_mesh
 
 
 def _paint(mesh: trimesh.Trimesh, color: tuple[int, int, int, int]) -> trimesh.Trimesh:
@@ -20,10 +21,24 @@ def polygon_floor_mesh(
     polygon_points: list[Point2D],
     thickness_m: float,
     color: tuple[int, int, int, int],
+    *,
+    holes: list[list[Point2D]] | None = None,
 ) -> trimesh.Trimesh:
-    polygon = Polygon([(point.x, point.y) for point in polygon_points])
+    polygon = Polygon(
+        [(point.x, point.y) for point in polygon_points],
+        [[(point.x, point.y) for point in ring] for ring in holes] if holes else None,
+    )
     if not polygon.is_valid or polygon.area <= 0:
         raise ValueError("floor polygon is invalid")
+    # GEOS permits rings to touch at a single point in an otherwise valid
+    # polygon. Extruding that point creates a pinched, nonmanifold vertical
+    # edge, so reject the contact instead of filling or moving the void.
+    interior_rings = list(polygon.interiors)
+    for index, ring in enumerate(interior_rings):
+        if polygon.exterior.intersects(ring) or any(
+            previous.intersects(ring) for previous in interior_rings[:index]
+        ):
+            raise ValueError("floor hole boundaries must be disjoint from exterior and other holes")
     if not np.isfinite(thickness_m) or thickness_m <= 0:
         raise ValueError("floor thickness must be positive")
     # Triangulate one shared top surface, then extrude only its outer boundary.
@@ -62,6 +77,25 @@ def polygon_floor_mesh(
             raise ValueError("floor polygon could not be triangulated")
     if len(remaining) == 3:
         triangles.append(remaining)
+    if polygon.interiors:
+        # Cut the exterior tessellation at *every* hole edge before classifying
+        # cells. Filtering the original triangle centroids can fill whole
+        # courtyards or cut away neighboring floors when a triangle crosses a
+        # hole. The common partition also welds edges across adjacent cells.
+        vertices, partitioned, labels, _sources = partition_finish_mesh(
+            [[float(x), float(y), 0.0] for x, y in coords],
+            triangles,
+            [{"points": [list(point) for point in ring.coords[:-1]], "preset": "void"}
+             for ring in polygon.interiors],
+        )
+        top_faces = np.asarray([face for face, label in zip(partitioned, labels)
+                                if label is None], dtype=int)
+        # Remove unused vertices from the discarded courtyard cells and keep
+        # one shared index for each surviving boundary point. Extruding this
+        # one triangulation creates both exterior and courtyard side walls.
+        used, inverse = np.unique(top_faces, return_inverse=True)
+        coords = np.asarray(vertices, dtype=float)[used, :2]
+        triangles = inverse.reshape((-1, 3)).tolist()
     mesh = trimesh.creation.extrude_triangulation(coords, np.asarray(triangles), thickness_m)
     mesh.apply_translation([0.0, 0.0, -thickness_m])
     return _paint(mesh, color)
