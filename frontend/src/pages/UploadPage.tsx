@@ -82,7 +82,7 @@ export default function UploadPage() {
       <label>
         Plan image
         <input type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={(e) => {
-          setFile(e.target.files?.[0] ?? null); setPreparation(originalPreparation()); setJob(null); setError(""); setFileVersion((v) => v + 1);
+          setFile(e.target.files?.[0] ?? null); setPreparation(originalPreparation()); setManualScale(""); setJob(null); setError(""); setFileVersion((v) => v + 1);
         }} />
       </label>
       {file && <ImagePreparation key={fileVersion} file={file} preparation={preparation} onChange={setPreparation} disabled={busy} />}
@@ -102,6 +102,7 @@ export default function UploadPage() {
           placeholder="e.g. 0.01"
         />
       </label>
+      <p style={{ margin: 0, fontSize: 12, color: "#667078" }}>Scale applies to this image. Choosing another image clears it.</p>
       <div className="row">
         <button type="button" className="primary" onClick={() => void submit()} disabled={!file || busy}>
           {busy ? "Analyzing…" : "Analyze plan"}
