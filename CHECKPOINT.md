@@ -488,3 +488,31 @@ new tests/test_perspective.py. Preserve the original perspective.py legacy
 helpers unchanged. Inspect actual git status on resume. No new downloads.
 Last allowance check: 41% remaining after 7278332. Server PID 3025 is healthy
 with AI disabled. User's original job remains untouched.
+
+
+### Rectification core published, 17 November
+
+c09ddfa is pushed. New vision/perspective_rectification.py and
+ tests/test_perspective.py provide strict known-ratio corner validation,
+normalized homography/pole guards, one-pass original-raster warp and prepared
+measurement-reference calculation. Original perspective.py is unchanged.
+119 new cases + existing image preparation = 220 passing tests; Ruff and mypy
+88 files pass. Independent review passed. This is a standalone core; no upload,
+API, pipeline or CLI exposure and no claim of completed photo reconstruction.
+Guide: docs/perspective-rectification.md.
+
+Controlled projective distortion of the private plan verified original-frame
+recovery and known measurement math. Matrix round-trip normalized error2.6e-13,
+mean grayscale difference1.60/255; edge alignment F1 .99983 at fixed2px tolerance.
+These are synthetic image alignment results, not structural accuracy evidence.
+Local outputs: outputs/perspective-core-qa-2026-11-17/verification.json.
+
+Current unfinished unit: compose version3 rectification/ROI/resize provenance
+and teach the structural evaluator homogeneous complete-polygon mapping. It
+must preserve v1/v2 behavior, validate reconstructed transforms, clip geometry
+to the supported analysis frame before inverse projection, and map holes and
+multipolygons. Work may modify perspective_rectification.py, evaluator and
+related tests; inspect actual git status before continuing. Do not expose API/
+UI controls before provenance, scale and worker flow are complete. Last usage
+check29% remaining after core commit; no new download. Server PID3025 and user's
+original job remain unchanged.
