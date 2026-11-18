@@ -70,8 +70,15 @@ from architecture_walkthrough.vision.semantic_filter import (
 )
 from architecture_walkthrough.vision.local_openings import build_thin_line_mask, detect_local_openings
 from architecture_walkthrough.vision.overlay import write_analysis_overlay
-from architecture_walkthrough.vision.plan_roi import detect_plan_roi
+from architecture_walkthrough.vision.plan_roi import detect_plan_roi, validate_crop_rect
 from architecture_walkthrough.vision.image_preparation import preparation_metadata, rotate_image
+from architecture_walkthrough.vision.perspective_rectification import (
+    PerspectiveLimits,
+    perspective_frame,
+    rectified_preparation_metadata,
+    validate_prepared_scale_reference,
+    warp_perspective,
+)
 from architecture_walkthrough.vision.preprocessing import load_image, preprocess_array
 from architecture_walkthrough.vision.providers import build_geometry_provider
 from architecture_walkthrough.vision.wall_detection import RepetitiveDetailRegion, WallBand
@@ -727,7 +734,16 @@ def analyze_image(
     crop_rect: tuple[int, int, int, int] | None = None,
     rotation_quarter_turns: int = 0,
     straighten_degrees: float = 0,
+    perspective: dict[str, object] | None = None,
+    prepared_scale_reference: dict[str, object] | None = None,
 ) -> FloorPlanModel:
+    if perspective is not None:
+        if manual_scale is not None:
+            raise ValueError("perspective rectification cannot reuse source-image manual scale")
+        if prepared_scale_reference is None:
+            raise ValueError("perspective rectification requires a fresh prepared scale reference")
+    elif prepared_scale_reference is not None:
+        raise ValueError("prepared scale reference requires perspective rectification")
     source_pixels_per_metre = _manual_pixels_per_metre(manual_scale)
     output_dir.mkdir(parents=True, exist_ok=True)
     debug_dir = output_dir / "debug"
@@ -737,7 +753,27 @@ def analyze_image(
     image = load_image(input_path)
     stages.record("validate_input", started, image_shape=list(image.shape))
     source_height, source_width = image.shape[:2]
-    image = rotate_image(image, rotation_quarter_turns, straighten_degrees)
+    rectified_frame = None
+    prepared_reference = None
+    if perspective is not None:
+        rectified_frame = perspective_frame(
+            source_width, source_height, perspective,
+            rotation_quarter_turns=rotation_quarter_turns,
+            straighten_degrees=straighten_degrees,
+            limits=PerspectiveLimits(
+                max_width_px=config.limits.max_image_width,
+                max_height_px=config.limits.max_image_height,
+                max_pixels=config.limits.max_image_width * config.limits.max_image_height,
+            ),
+        )
+        prepared_reference = validate_prepared_scale_reference(
+            prepared_scale_reference, rectified_frame.width, rectified_frame.height,
+        )
+        if crop_rect is not None:
+            validate_crop_rect(crop_rect, rectified_frame.width, rectified_frame.height)
+        image = warp_perspective(image, rectified_frame)
+    else:
+        image = rotate_image(image, rotation_quarter_turns, straighten_degrees)
 
     started = time.perf_counter()
     roi_result = detect_plan_roi(
@@ -759,10 +795,46 @@ def analyze_image(
     )
     resized_height, resized_width = preprocessing.resized_shape[:2]
     resize_ratio = max(resized_height, resized_width) / max(preprocessing.original_shape[:2])
-    image_preparation = preparation_metadata(
-        source_width, source_height, rotation_quarter_turns, roi_result.roi,
-        resized_width, resized_height, straighten_degrees,
+    analysis_pixels_per_metre = (
+        source_pixels_per_metre * resize_ratio
+        if source_pixels_per_metre is not None else None
     )
+    if rectified_frame is not None and prepared_reference is not None:
+        image_preparation = rectified_preparation_metadata(
+            rectified_frame, roi_result.roi, resized_width, resized_height,
+        )
+        rect = roi_result.roi.rect
+        scale_x, scale_y = resized_width / rect.width, resized_height / rect.height
+        analysis_points = [
+            [(x - rect.x) * scale_x, (y - rect.y) * scale_y]
+            for x, y in prepared_reference.points
+        ]
+        analysis_distance = math.dist(*analysis_points)
+        analysis_pixels_per_metre = analysis_distance / prepared_reference.distance_m
+        if not (math.isfinite(analysis_pixels_per_metre)
+                and config.scale_solver.min_pixels_per_metre <= analysis_pixels_per_metre
+                <= config.scale_solver.max_pixels_per_metre):
+            raise ValueError(
+                "prepared scale reference produces analysis pixels per metre outside "
+                f"the configured range [{config.scale_solver.min_pixels_per_metre}, "
+                f"{config.scale_solver.max_pixels_per_metre}]"
+            )
+        # Keep the user's rectified-frame measurement and the exact analysis
+        # calibration together in the protected preparation provenance record.
+        image_preparation["prepared_scale_reference"] = {
+            "points": [list(point) for point in prepared_reference.points],
+            "distance_m": prepared_reference.distance_m,
+            "measured_px": prepared_reference.measured_px,
+            "pixels_per_metre": prepared_reference.pixels_per_metre,
+            "analysis_points": analysis_points,
+            "analysis_measured_px": analysis_distance,
+            "analysis_pixels_per_metre": analysis_pixels_per_metre,
+        }
+    else:
+        image_preparation = preparation_metadata(
+            source_width, source_height, rotation_quarter_turns, roi_result.roi,
+            resized_width, resized_height, straighten_degrees,
+        )
     stages.record("preprocess_layers", started, layers={key: str(value) for key, value in preprocessing.layers.items()})
 
     started = time.perf_counter()
@@ -930,10 +1002,7 @@ def analyze_image(
     ]
     scale_result = solve_scale(
         constraints,
-        manual_pixels_per_metre=(
-            source_pixels_per_metre * resize_ratio
-            if source_pixels_per_metre is not None else None
-        ),
+        manual_pixels_per_metre=analysis_pixels_per_metre,
         min_pixels_per_metre=config.scale_solver.min_pixels_per_metre,
         max_pixels_per_metre=config.scale_solver.max_pixels_per_metre,
         outlier_mad_factor=config.scale_solver.outlier_mad_factor,
