@@ -1,6 +1,6 @@
 # PlanStride checkpoint
 
-Updated 17 November 2026 (Asia/Kolkata). Active after the user requested continuation.
+Updated 18 November 2026 (Asia/Kolkata). Active after the user requested continuation.
 Branch consolidation is complete.
 The full PlanStride upgrade is NOT complete.
 
@@ -581,3 +581,103 @@ major task started after finishing the projective provenance unit. Next is the
 API/worker plus complete perspective preview/calibration integration, as listed
 above. All edited files are saved; verify status before resuming. Do not restart
 completed units or rely on chat memory. The broad PlanStride upgrade is incomplete.
+
+## Active integration, 18 November 2026
+
+Resumed main at 4ff43f3, preserving unrelated .DS_Store files. The historical
+17 November handoff above is superseded by this active section. No benchmark
+analyses or quarantined examples were repeated. Latest published CI passed.
+
+In progress (not yet published): perspective upload/API/worker/pipeline and
+frontend corner/known-ratio preview plus fresh two-point scale calibration.
+POST /prepare-perspective returns the canonical one-pass PNG and dimensions
+without analysis or a persisted job. POST /jobs carries paired perspective
+and prepared_scale_reference JSON, rejects inherited manual_scale, validates
+corners/reference/crop in their proper frames and preserves original bytes.
+Pipeline calibration uses actual per-axis ROI resize and nests its audit inside
+server-owned image_preparation v3. Frontend must invalidate stale preparation
+and calibration and preserve whole-state undo/redo before this unit is exposed.
+
+Pipeline focused tests pass; API tests and frontend implementation are in
+progress. Inspect current status and rerun only the checks needed for unfinished
+changes. Do not publish unverified work. Root owns API/checkpoint, agents own
+pipeline plus tests, API tests, and frontend respectively. No new download or
+paid API call; AI disabled. Last five-hour check: 82% remains. Server PID3025
+still runs the previous backend; restart after integration. User original job
+f7c01bb7af734d088de0b63c792ce565 remains untouched.
+
+## Saved and paused at user request, 18 November 2026
+
+THIS IS THE CURRENT RESUME POINT. Stop all implementation until the user says
+continue. The full upgrade and perspective integration remain incomplete.
+
+Published on main: 94c77ca (feat: calibrate rectified plans through analysis
+pipeline), authored Fahad-uz / fahadmanaff@gmail.com and pushed. It contains only
+pipeline.py and tests/test_perspective_pipeline.py. Strict pairing, single warp,
+configured output limits, actual per-axis crop/resize reference scale and v3
+audit are implemented. 25 new pipeline cases; 262 combined perspective and
+preparation cases pass; Ruff and mypy pass. Root also ran 178 API/crop/pipeline
+cases before the final two config-limit tests; all passed. Latest published
+predecessor CI at 4ff43f3 passed. No new full-suite claim for this continuation.
+
+UNFINISHED, SAVED LOCALLY, NOT PUSHED:
+- src/architecture_walkthrough/api/app.py: canonical preview, strict paired JSON,
+  rectified crop/ref bounds and trailing worker propagation. Preview creates a
+  missing work_root and cleans its temporary directory. That latest mkdir fix
+  has not been rerun against the new suite. Root API Ruff/mypy passed before it.
+- tests/test_perspective_upload.py: 78 cases added, not yet a passing suite.
+  Latest partial run: 42 passed, 19 failed, 17 deselected. Actual spawned upload
+  and correction provenance passed. Many failures are test assumptions: allow
+  rejected JobRecords for semantic-invalid /jobs while asserting no analysis or
+  leftover upload; preview alone promises no job. Remove original-image assertion
+  from mock-analysis crop test (metadata was never published); actual spawn and
+  saved upload already test exact source bytes. Rerun after preview mkdir fix.
+  Remaining implementation decision: whitespace manual_scale yields FastAPI422
+  before handler because the existing form is float; perspective contract wants
+  any manual_scale field rejected explicitly. Consider raw string parsing while
+  preserving legacy validation behavior. Check decoded-dimension consistency:
+  API currently uses validated EXIF-aware PIL dimensions, pipeline uses OpenCV.
+  Existing all-EXIF tests passed; verify preview/analysis agree before changing.
+- frontend/src/api.ts, components/ImagePreparation.tsx, imagePreparation.ts,
+  index.css, pages/UploadPage.tsx: implemented ordered-corner/known-ratio preview,
+  crop, fresh two-point calibration, whole-state history and stale request/URL
+  guards. New frontend/tests/perspectivePreparation.test.ts is also saved.
+  Already-running final checks completed: 99 tests pass (9 new), typecheck and
+  production build pass. Browser validation and final review are NOT complete.
+
+EXACT NEXT STEPS:
+1. Read this section, inspect git status/remote and quota; preserve .DS_Store and
+   frontend/.DS_Store. Do not restore backups over current newer files.
+2. Fix new API test assumptions, resolve manual_scale validation, rerun all 78
+   new cases plus legacy upload/crop/worker checks. Review preview cleanup,
+   resource bounds, actual EXIF decode and protected correction provenance.
+3. Finish focused frontend state, serialization, invalidation and stale-response
+   tests; typecheck/build. Review partial errors, reset/undo/redo and original
+   comparison. Do not expose partially validated controls in the running app.
+4. Run full relevant Python checks/Ruff/mypy once integration is stable, then
+   publish API and frontend as separate tested logical changes with commit links.
+5. Restart app with AI disabled, then isolated browser upload → perspective →
+   crop → fresh measurement → analysis → edit/save → generate → walkthrough.
+   Verify original bytes, v3 metadata and scale; use controlled photo fixture at
+   outputs/perspective-core-qa-2026-11-17/synthetic-photo.png. This tests alignment,
+   not automatic structural accuracy. Preserve original user job and tab.
+6. Update docs/perspective-rectification.md and stale core module intro; record
+   actual results/limits/downloads and publish separate documentation checkpoint.
+
+Runtime: PID3025 is healthy on port8001 with the previous backend; it has NOT
+been restarted to load API edits. The frontend agent's candidate production build
+finished during pause. Root archived that candidate dist, then rebuilt only the
+published frontend from HEAD in a temporary directory and restored frontend/dist.
+The paused app therefore serves published compatible UI/backend; WIP sources
+remain untouched. Rebuild the candidate after completing API checks on resume.
+No browser QA or user job modification was done. Verify loaded bundle on resume.
+User job f7c01bb7af734d088de0b63c792ce565 remains untouched. No new download,
+paid service call, dataset run or quarantine access. Last usage check after
+pipeline push: 67% five-hour allowance remains. Pausing is the user's request,
+not a quota threshold. All completed implementation commits are pushed; API/UI
+and new API tests are intentionally local WIP. A separate docs checkpoint commit
+records this pause. Redundant WIP archive/diff/SHA256 inventory:
+outputs/checkpoints/2026-11-18-pause/ (ignored; local recovery only, no secrets).
+This includes unfinished-files.tar.gz, tracked-changes.patch, inventory.json,
+candidate-frontend-dist.tar.gz and published-ui-build.log. Only explicit source
+files and frontend builds were archived, no environment files or credentials.
